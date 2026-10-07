@@ -9,7 +9,6 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import '@babylonjs/core/Materials/standardMaterial';
 import { EMOTIONS, MOTION_STATES, canonicalBlobbiSeed, createBlobbi3D, createBlobbiIdentity, createCanonicalBlobbi3D, type Blobbi3D, type MotionState } from '@blobbi-kit/3d';
 import { seedFromLabel } from './seeds';
-import { installEquivalenceProbe } from './equivalence';
 import { createEnvironment } from './environment';
 import { CharacterController } from './controller';
 import { PRESETS } from './presets';
@@ -226,7 +225,6 @@ engine.runRenderLoop(() => {
   frame(dt);
 });
 window.addEventListener('resize', () => engine.resize());
-installEquivalenceProbe(scene);
 
 // Expose for inspection from the console.
 Object.assign(window, {
