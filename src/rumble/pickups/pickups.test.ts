@@ -4,7 +4,7 @@
  * worth, bounded.
  */
 import { describe, expect, it } from 'vitest';
-import { ARENA } from '../arena';
+import { ARENA, onFloor } from '../arena/layout';
 import { COMBAT, ORBS, POWER } from '../tuning';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from './orbs';
 import { powerCap, powerMultiplier } from './power';
@@ -16,19 +16,19 @@ describe('the orbs', () => {
   it('stand at the arena points, on the platform and off the player spawns', () => {
     const orbs = createOrbs();
     expect(orbs).toHaveLength(3);
+    const { a, b } = ARENA.spawns;
     for (const o of orbs) {
-      expect(Math.abs(o.x)).toBeLessThan(ARENA.width / 2 - 1);
-      expect(Math.abs(o.z)).toBeLessThan(ARENA.depth / 2 - 1);
+      expect(onFloor(o, 0.5)).toBe(true);
       expect(o.y).toBe(ORBS.height);
       expect(o.active).toBe(true);
-      expect(Math.hypot(o.x + 2.5, o.z)).toBeGreaterThan(2);
-      expect(Math.hypot(o.x - 2.5, o.z)).toBeGreaterThan(2);
+      expect(Math.hypot(o.x - a.x, o.z - a.z)).toBeGreaterThan(2);
+      expect(Math.hypot(o.x - b.x, o.z - b.z)).toBeGreaterThan(2);
     }
-    // One is contested: equally far from both spawns; the others favour a side each.
-    const d = orbs.map((o) => [Math.hypot(o.x + 2.5, o.z), Math.hypot(o.x - 2.5, o.z)]);
+    // One is contested: in the centre, equally far from both spawns; one in each wing.
+    const d = orbs.map((o) => [Math.hypot(o.x - a.x, o.z - a.z), Math.hypot(o.x - b.x, o.z - b.z)]);
     expect(d[0][0]).toBeCloseTo(d[0][1]);
-    expect(d[1][0]).toBeLessThan(d[1][1]);
-    expect(d[2][1]).toBeLessThan(d[2][0]);
+    expect(orbs[1].x).toBeGreaterThan(ARENA.centre.halfWidth);
+    expect(orbs[2].x).toBeLessThan(-ARENA.centre.halfWidth);
   });
 
   it('is taken by a fighter within reach, once, and not from further away', () => {

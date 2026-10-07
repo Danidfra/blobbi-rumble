@@ -42,12 +42,28 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 npm run dev          # http://127.0.0.1:5177/rumble.html
 ```
 
-The smallest playable local fight: two Blobbis from the package on one flat
-platform over a void, the SAME normalized gameplay capsule owned by Havok
-for both (`src/rumble/profile.ts`, built from the kit's
+The smallest playable local fight: two Blobbis from the package on one
+arena over a void, the SAME normalized gameplay capsule owned by Havok for
+both (`src/rumble/profile.ts`, built from the kit's
 `BLOBBI_GAMEPLAY_PROFILE` and nothing of any identity). Walk, run, jump,
 shove, punch, grab, drag and throw; whoever stays on the arena scores, first
 to three wins, R restarts, F3 shows colliders and reach.
+
+THE ARENA (`src/rumble/arena/layout.ts`) is three floor slabs: a wide,
+safe centre (8 × 8 m) where the players spawn, and a narrower wing on each
+side (3.5 × 6 m), closer to the rim. The right wing has THE SWEEPER: a low
+bar (0.22 m high) through a post, turning at a constant 1.5 rad/s with a
+2 m reach, moved by Havok as an animated body so it shoves what it meets.
+A fighter under the bar takes its blow through the same impact path and
+hit / tumble rule as a punch, with no player power in it: the blow is the
+bar's speed where it strikes (×2.0), so near the post it only shoves and
+near the tip (3 m/s, impact 6) it tumbles. A jump clears it with timing
+near the tip; it cannot be jumped near the post, where it is slow. The
+blow's direction is the bar's motion there: on the half of the circle
+nearer the centre it sends you back toward the centre, on the outer half
+toward the rim. The orbs follow the zones: one safe and contested in the
+centre, one inside the sweeper's circle on the half that sends you back
+toward the centre, one deep in the left wing 0.6 m from the rim.
 
 | | P1 | P2 |
 | --- | --- | --- |
@@ -113,7 +129,10 @@ src/rumble/
   pickups/orbView.ts  how the orbs look: spheres, discs, a burst when taken
   rounds.ts           ring-out, rounds, the match (pure)
   camera.ts           one shared camera: midpoint, bounded distance, smooth follow (pure)
-  arena.ts            the platform, static, on the ground layer
+  arena/layout.ts     the floor's shape: slabs, rim, spawns (pure)
+  arena/arena.ts      the floor built: slabs, rim lips, the sweeper's circle
+  arena/sweeper.ts    the sweeper: its angle, whom its bar strikes, the blow (pure)
+  arena/sweeperView.ts the bar and post in the scene, moved by Havok
   respawn.ts          fallen / wait (pure)
   debug.ts            PhysicsViewer toggle and the HUD
   main.ts             the game

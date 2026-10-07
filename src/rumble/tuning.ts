@@ -124,16 +124,17 @@ export const PUSH = Object.freeze({
 
 /**
  * POWER ORBS on the arena: where they are, how they are taken, when they
- * return. The platform is 12 × 10 m with the players spawning at x ±2.5 on
- * the centre line: one contested orb ahead of both, equally far from each,
- * and one toward each player's own far corner, a little off the rim, so
- * that leaving the centre has a reason and a risk.
+ * return. One in the centre, ahead of both spawns and equally far from each
+ * (contested, safe); one in the right wing inside the sweeper's circle, on
+ * the half where the bar's blow sends a fighter back toward the centre
+ * (available, but timed against the bar); one deep in the left wing, 0.6 m
+ * from the rim (available, but a shove away from the void).
  */
 export const ORBS = Object.freeze({
   points: [
-    { x: 0, z: 2.5 },
-    { x: -4.3, z: -2.8 },
-    { x: 4.3, z: -2.8 },
+    { x: 0, z: 2.2 },
+    { x: 6.0, z: -1.3 },
+    { x: -6.9, z: 0 },
   ] as readonly { x: number; z: number }[],
   /** The orb floats this high over the platform (its centre), metres. */
   height: 0.6,
@@ -142,6 +143,32 @@ export const ORBS = Object.freeze({
   /** Back this long after being taken, seconds; a fighter within this of the point defers the return. */
   respawnDelay: 5,
   occupiedRadius: 1.1,
+});
+
+/**
+ * THE SWEEPER: a low bar turning about a pivot in the right wing. Slow and
+ * constant, so it can be learned and jumped; its blow is its own (no
+ * player power in it), read from how fast the bar moves where it strikes,
+ * through the same bounded impact path and the same hit / tumble rule as a
+ * punch. Metres, radians, seconds.
+ */
+export const SWEEPER = Object.freeze({
+  /** The pivot, on the floor of the right wing. */
+  pivot: { x: 5.75, z: 0 },
+  /** The bar reaches this far from the pivot on both sides. */
+  reach: 2.0,
+  /** Half of the bar's width across, and its height: it stands from the floor to `top`, low enough for a jump to clear. */
+  halfWidth: 0.12,
+  top: 0.22,
+  /** Radians per second: one turn in about four seconds; the tip moves at 3 m/s, the root barely. */
+  angularSpeed: 1.5,
+  /** The blow's base impact per m/s of bar speed where it strikes (the tip tumbles, the root only shoves), and its lift. */
+  impactPerSpeed: 2.0,
+  lift: 1.2,
+  /** A capsule this close to the bar's side counts as struck: the physical bar keeps what it shoves at exactly zero overlap. */
+  hitMargin: 0.08,
+  /** A fighter is not struck again within this, seconds. */
+  hitCooldown: 0.6,
 });
 
 export const CAMERA = Object.freeze({

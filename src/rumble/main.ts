@@ -20,7 +20,9 @@ import { Scene } from '@babylonjs/core/scene';
 import '@babylonjs/core/Materials/standardMaterial';
 import { createEnvironment } from '../playground/environment';
 import { seedFromLabel } from '../playground/seeds';
-import { createArena } from './arena';
+import { createArena } from './arena/arena';
+import { createSweeper, resetSweeper, sweeperHit, tickSweeper } from './arena/sweeper';
+import { SweeperView } from './arena/sweeperView';
 import { applyCamera, followCamera, wantedCamera, type CameraPose } from './camera';
 import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, release, tickCombat, tryGrab } from './combat/combat';
 import { Fighter } from './combat/fighter';
@@ -32,7 +34,7 @@ import { capsulesTouch } from './physics/contact';
 import { enableHavok } from './physics/world';
 import { RUMBLE_BODY } from './profile';
 import { createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
-import { CAMERA, COMBAT, ORBS, PUSH, ROUND } from './tuning';
+import { CAMERA, COMBAT, ORBS, PUSH, ROUND, SWEEPER } from './tuning';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -60,6 +62,10 @@ async function start() {
   for (const f of fighters) debug.track(f.body.body);
   const orbs = createOrbs();
   const orbView = new OrbView(scene, orbs, env.shadows);
+  const sweeper = createSweeper(2);
+  const sweeperView = new SweeperView(scene, env.shadows);
+  debug.track(sweeperView.bar.physicsBody!);
+  let lastHazard = ['', ''];
   const match = createMatch();
   let cameraPose: CameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   let message = '';
@@ -74,6 +80,7 @@ async function start() {
       debug.toggle();
       for (const f of fighters) f.showDebug(debug.on);
       orbView.showDebug(debug.on);
+      sweeperView.showDebug(debug.on);
       e.preventDefault();
     }
     if (e.code === 'KeyR' && match.phase === 'matchOver') newMatch();
@@ -83,6 +90,8 @@ async function start() {
     for (const f of fighters) f.reset();
     for (const f of fighters) f.body.setGravityFactor(1);
     resetOrbs(orbs);
+    resetSweeper(sweeper);
+    sweeperView.apply(sweeper);
     cameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   };
   const newMatch = () => {
@@ -157,6 +166,27 @@ async function start() {
     }
     tickOrbs(orbs, dt, centres);
     orbView.update(dt);
+    // The sweeper turns; a fighter under its bar takes its blow, through the same reaction as a punch (no player power in it).
+    tickSweeper(sweeper, dt);
+    sweeperView.apply(sweeper);
+    if (playing) {
+      fighters.forEach((f, i) => {
+        const hit = sweeperHit(sweeper, i, f.body.position(), RUMBLE_BODY.capsuleRadius, RUMBLE_BODY.capsuleCenterY);
+        if (!hit) return;
+        // A struck fighter drops what it carries, and is dropped by whoever carries it.
+        const other = fighters[1 - i];
+        if (isHolding(other.combat)) {
+          endGrab(other.combat, f.combat);
+          other.letGo(f);
+        }
+        if (isHolding(f.combat)) {
+          endGrab(f.combat, other.combat);
+          f.letGo(other);
+        }
+        f.react(hit.reaction, (COMBAT.hitSpin * hit.reaction.impact) / COMBAT.tumbleThreshold);
+        lastHazard[i] = `${hit.reaction.kind} ${hit.reaction.impact.toFixed(2)} at ${hit.along.toFixed(2)} m (${hit.speed.toFixed(2)} m/s)`;
+      });
+    }
     const tilts = fighters.map((f) => f.settle());
     fighters.forEach((f, i) => f.follow(dt, frames[i]));
 
@@ -204,7 +234,7 @@ async function start() {
         const v = f.body.velocity();
         return `${f.label} power ${f.powerLevel}: impact ×${f.power.toFixed(2)} push ×${f.pushAuthority.toFixed(2)} speed ×${f.speedMultiplier.toFixed(2)} · wants ${Math.hypot(f.wanted.x, f.wanted.z).toFixed(2)} has ${Math.hypot(v.x, v.z).toFixed(2)} m/s`;
       };
-      lines.push(powerLine(p1), powerLine(p2), `bodies ${touching ? (shoving ? 'TOUCHING: shoving match' : 'TOUCHING: pushing contest') : 'apart'}`);
+      lines.push(powerLine(p1), powerLine(p2), `bodies ${touching ? (shoving ? 'TOUCHING: shoving match' : 'TOUCHING: pushing contest') : 'apart'}`, `sweeper ${((sweeper.angle * 180) / Math.PI).toFixed(0)}° · ${SWEEPER.angularSpeed} rad/s · reach ${SWEEPER.reach} m (ring) · last hit P1 ${lastHazard[0] || '-'} · P2 ${lastHazard[1] || '-'}`);
       lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`, `orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`, `last impact on P1 ${p1.lastImpact.toFixed(2)} · on P2 ${p2.lastImpact.toFixed(2)} · tumble at ${COMBAT.tumbleThreshold}`);
     }
     debug.print(lines);
@@ -227,6 +257,7 @@ async function start() {
       match,
       arena,
       orbs,
+      sweeper,
       keyboard,
       debug,
       plugin,
