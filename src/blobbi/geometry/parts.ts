@@ -130,17 +130,6 @@ function stalk(scene: Scene, pivot: TransformNode, name: string, material: Mater
   return mesh;
 }
 
-/** The kit's quadratic centre line: from `base` along `dir` for half the length, then along `tipDir`. */
-function quadraticLine(base: Vector3, dir: Vector3, tipDir: Vector3, length: number): Vector3[] {
-  const control = base.add(dir.scale(length / 2));
-  const tip = control.add(tipDir.scale(length / 2));
-  return Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => {
-    const t = i / STALK_SAMPLES;
-    const u = 1 - t;
-    return base.scale(u * u).add(control.scale(2 * u * t)).add(tip.scale(t * t));
-  });
-}
-
 /**
  * A centre line that LEAVES THE SKIN ALONG ITS NORMAL and swings to the
  * trait's own direction: a cubic from a root sunk inside the body, whose
@@ -260,42 +249,40 @@ function buildAntenna(scene: Scene, parent: TransformNode, surface: BodySurface,
 
 // ─── Horns ───────────────────────────────────────────────────────────────────
 
-/** The horn's root is this much wider than the horn: it swells out of the body (the kit's ROOT_FLARE). */
-const HORN_ROOT_FLARE = 1.22;
-
 /**
- * A horn is short and plump: a thumb, not a spike. Its profile is the
- * kit's: a flared root pulling in quickly, a soft swell along the sides,
- * and a domed tip whose radius is `roundness` of the half-width.
+ * A horn: the shape it had before the mounting pass, kept as it was. A
+ * straight taper from a slightly flared base (1.1 of the half-width) to a
+ * tip radius of 0.55 × roundness × half-width, along a quadratic centre
+ * line whose control point leans into the curl and whose tip is carried a
+ * little further the same way, closed by a dome of the tip's radius.
+ *
+ * What is NEW is only where it stands and which way it leaves: the base is
+ * sunk `SINK` into the skin along the mount's true normal, `dir` comes from
+ * the kit's rule for the kind (see `buildHorns`), and `curlToward` is the
+ * direction a positive curl bends the tip toward, in the mount's frame.
  */
-function hornProfile(t: number, half: number, roundness: number, skinT: number): number {
-  const tipR = Math.min(0.95, roundness) * half;
-  let r: number;
-  if (t < 0.22) r = lerp(half * HORN_ROOT_FLARE, half, smoothstep(t / 0.22));
-  else if (t < 0.62) r = lerp(half, half * 0.9, smoothstep((t - 0.22) / 0.4));
-  else r = lerp(half * 0.9, tipR, smoothstep((t - 0.62) / 0.38));
-  return r * lerp(1, rootFlare(t, skinT), 0.5);
-}
-
-function hornOn(scene: Scene, parent: TransformNode, h: HornMorphology, materials: BlobbiMaterials, name: string, mount: SurfacePoint, dir: Vector3, curlToward: Vector3, longer: number, widthScale: number): Pivoted {
+function hornOn(scene: Scene, parent: TransformNode, h: HornMorphology, materials: BlobbiMaterials, name: string, mount: SurfacePoint, dir: Vector3, curlToward: Vector3, longer: number): Pivoted {
   const root = v3(mount);
   const normal = n3(mount);
   const pivot = pivotAt(scene, parent, name, root);
-  // A stubby horn cannot bend far without folding; it takes less of the curl (the kit's `bendable`).
-  const bendable = Math.min(1, Math.max(0.3, (h.length * longer) / (1.25 * h.width)));
-  const curl = clamp(h.curvature, -50, 50) * bendable;
-  const tipDir = turnToward(dir, curlToward, curl);
-  const sink = SINK * 0.55 * UNIT;
-  const length = h.length * longer * UNIT + sink;
+  const sink = SINK * UNIT;
+  const length = (h.length * longer + SINK) * UNIT;
+  const half = h.width / 2;
+  const tipR = half * h.roundness * 0.55;
+  const curl = rad(clamp(h.curvature, -50, 50));
   const base = normal.scale(-sink);
-  const path = quadraticLine(base, dir, tipDir, length);
-  const half = (h.width * widthScale) / 2;
+  const control = base.add(dir.scale(length * 0.5)).add(curlToward.scale(Math.sin(curl) * length * 0.45));
+  const tip = base.add(dir.scale(length)).add(curlToward.scale(Math.sin(curl) * length * 0.5));
+  const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => {
+    const t = i / STALK_SAMPLES;
+    const u = 1 - t;
+    return base.scale(u * u).add(control.scale(2 * u * t)).add(tip.scale(t * t));
+  });
   const skinT = sink / length;
-  const tipR = Math.min(0.95, h.roundness) * half;
-  const meshes = [stalk(scene, pivot, `${name}-body`, materials.horn, path, (t) => hornProfile(t, half, h.roundness, skinT))];
-  const tip = path[path.length - 1];
+  const meshes = [stalk(scene, pivot, `${name}-cone`, materials.horn, path, (t) => lerp(half * 1.1, tipR, t) * lerp(1, rootFlare(t, skinT), 0.5))];
   meshes.push(blob(scene, pivot, `${name}-dome`, materials.horn, tip, tipR, tipR, tipR, 14));
-  return { pivot, meshes, root, tip: root.add(tip).add(tipDir.scale(tipR * UNIT)) };
+  const outward = tip.subtract(control).normalize();
+  return { pivot, meshes, root, tip: root.add(tip).add(outward.scale(tipR * UNIT)) };
 }
 
 /**
@@ -316,7 +303,7 @@ function buildHorns(scene: Scene, parent: TransformNode, surface: BodySurface, h
     const mount = surface.pointAt(0, 1 - (HORN_ANCHORS.foreheadHeight + h.position * HORN_ANCHORS.foreheadSpread), 0);
     const n = n3(mount);
     const dir = turnToward(n.add(UP.scale(0.95)).normalize(), UP, tilt * 0.6);
-    return [hornOn(scene, parent, h, materials, `${name}-horn`, mount, dir, UP, 1, 1)];
+    return [hornOn(scene, parent, h, materials, `${name}-horn`, mount, dir, UP, 1)];
   }
   const out: Pivoted[] = [];
   for (const side of [-1, 1] as const) {
@@ -328,13 +315,13 @@ function buildHorns(scene: Scene, parent: TransformNode, surface: BodySurface, h
       const outward = outwardAt(side, n);
       const upright = n.scale(0.6).add(UP.scale(0.4)).normalize();
       const dir = turnToward(upright, outward, tilt * 0.7);
-      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, outward.scale(-1), longer, 1));
+      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, outward.scale(-1), longer));
     } else {
       const mount = surface.pointAt((side * Math.PI) / 2, 1 - (HORN_ANCHORS.sideHeight + h.position * HORN_ANCHORS.sideSpread), 0);
       const n = n3(mount);
       const lift = 0.62 + tilt / 45;
       const dir = n.add(UP.scale(lift)).normalize();
-      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, UP, longer, 1));
+      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, UP, longer));
     }
   }
   return out;
