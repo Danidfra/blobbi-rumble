@@ -42,6 +42,16 @@ export interface Contest {
    * the moment of impact, and when pushing someone from behind.
    */
   shoving: boolean;
+  /**
+   * In a shoving match, an intent within this cosine of the line to the
+   * other body counts as pushing straight into it: the push goes along the
+   * contact line. Each player pushes along its keys, not along that line,
+   * so any small offset between the two would otherwise become a sideways
+   * shear that grows by itself until the bodies slip past each other. A
+   * clearly angled intent (a diagonal) is left as it is: the sideways
+   * escape is the player's to take. Absent, no cone.
+   */
+  headOnCos?: number;
 }
 
 export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boolean, dt: number, p: RumbleBody, contest?: Contest): Steering {
@@ -50,6 +60,10 @@ export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boo
   let tx = intent.x * wanted;
   let tz = intent.z * wanted;
   if (contest?.shoving) {
+    if (moving && contest.headOnCos !== undefined && intent.x * contest.toward.x + intent.z * contest.toward.z >= contest.headOnCos) {
+      tx = wanted * contest.toward.x;
+      tz = wanted * contest.toward.z;
+    }
     const along = tx * contest.toward.x + tz * contest.toward.z;
     if (along > p.walkSpeed) {
       tx -= (along - p.walkSpeed) * contest.toward.x;

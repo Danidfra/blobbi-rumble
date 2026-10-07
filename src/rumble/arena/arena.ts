@@ -1,8 +1,8 @@
 /**
  * THE ARENA, built: three floor slabs over a void (a wide centre, a
  * narrower wing each side), a rim lip along every outer edge so the void
- * reads from any angle, the sweeper's circle faintly on its wing, and the
- * two spawns. Primitive geometry, no art. Its physics is three static
+ * reads from any angle, and the sweeper's circle faintly on its wing.
+ * Primitive geometry, no art. Its physics is three static
  * boxes on the ground layer; nothing stops a body going over the rim. The
  * shape itself is `layout.ts`; this only draws and solidifies it.
  */
@@ -12,7 +12,6 @@ import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import type { Scene } from '@babylonjs/core/scene';
@@ -24,7 +23,6 @@ export { ARENA } from './layout';
 
 export interface Arena {
   slabs: Mesh[];
-  spawns: { a: Vector3; b: Vector3 };
   dispose(): void;
 }
 
@@ -112,7 +110,6 @@ export function createArena(scene: Scene, shadows?: ShadowGenerator): Arena {
 
   return {
     slabs,
-    spawns: { a: new Vector3(ARENA.spawns.a.x, 0, ARENA.spawns.a.z), b: new Vector3(ARENA.spawns.b.x, 0, ARENA.spawns.b.z) },
     dispose: () => {
       for (const d of disposables) d.dispose();
     },

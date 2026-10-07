@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
+import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
 import { ROUND } from './tuning';
 
 describe('rounds', () => {
@@ -40,5 +40,58 @@ describe('rounds', () => {
     expect(ringOut(m, [true, false])).toBe(false);
     restartMatch(m);
     expect(m).toEqual(createMatch());
+  });
+
+  it('four fighters: each ring-out eliminates one, the others play on, the last standing scores', () => {
+    const m = createMatch(4);
+    expect(m.alive).toEqual([true, true, true, true]);
+    expect(ringOut(m, [false, true, false, false])).toBe(false);
+    expect(m.phase).toBe('playing');
+    expect(aliveCount(m)).toBe(3);
+    // An eliminated fighter reported again changes nothing.
+    expect(ringOut(m, [false, true, false, false])).toBe(false);
+    expect(aliveCount(m)).toBe(3);
+    expect(ringOut(m, [true, false, false, false])).toBe(false);
+    expect(aliveCount(m)).toBe(2);
+    expect(m.score).toEqual([0, 0, 0, 0]);
+    expect(ringOut(m, [false, false, false, true])).toBe(true);
+    expect(m.lastWinner).toBe(2);
+    expect(m.score).toEqual([0, 0, 1, 0]);
+    expect(m.phase).toBe('roundOver');
+    // During the pause nothing scores; the next round brings everyone back.
+    expect(ringOut(m, [false, false, true, false])).toBe(false);
+    expect(tickMatch(m, ROUND.resetDelay + 0.01)).toBe('round');
+    expect(m.alive).toEqual([true, true, true, true]);
+    expect(m.round).toBe(2);
+  });
+
+  it('two out in one frame of four leaves two playing; the last two out together is a draw', () => {
+    const m = createMatch(4);
+    expect(ringOut(m, [true, false, true, false])).toBe(false);
+    expect(aliveCount(m)).toBe(2);
+    expect(ringOut(m, [false, true, false, true])).toBe(true);
+    expect(m.lastWinner).toBeNull();
+    expect(m.score).toEqual([0, 0, 0, 0]);
+    expect(m.phase).toBe('roundOver');
+  });
+
+  it('three going out at once from four leaves one: the survivor scores', () => {
+    const m = createMatch(4);
+    expect(ringOut(m, [true, true, false, true])).toBe(true);
+    expect(m.lastWinner).toBe(2);
+    expect(m.score[2]).toBe(1);
+  });
+
+  it('three fighters, first to the target, then a restart keeps the roster size', () => {
+    const m = createMatch(3);
+    for (let r = 0; r < ROUND.target; r++) {
+      ringOut(m, [true, false, false]);
+      ringOut(m, [false, false, true]);
+      tickMatch(m, ROUND.resetDelay + 0.01);
+    }
+    expect(m.phase).toBe('matchOver');
+    expect(matchWinner(m)).toBe(1);
+    restartMatch(m);
+    expect(m).toEqual(createMatch(3));
   });
 });

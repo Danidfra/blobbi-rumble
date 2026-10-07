@@ -37,15 +37,18 @@ export interface CombatState {
   holding: number;
   /** The yaw the held body is kept at, relative to the grabber: turns toward the facing at a bounded rate. */
   holdAngle: number;
-  /** Held by the opponent. */
+  /** Held by another fighter. */
   held: boolean;
+  /** Who this fighter holds (a roster index), and who holds it; -1 for nobody. A body has one holder at most. */
+  victim: number;
+  holder: number;
   /** Knocked off its feet: seconds into the tumble, or -1. */
   tumble: number;
   /** Getting back up: seconds into the recovery, or -1. */
   recovering: number;
 }
 
-export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, holdAngle: 0, held: false, tumble: -1, recovering: -1 });
+export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, holdAngle: 0, held: false, victim: -1, holder: -1, tumble: -1, recovering: -1 });
 
 export function resetCombat(s: CombatState) {
   Object.assign(s, createCombatState());
@@ -154,20 +157,32 @@ export function startTumble(s: CombatState) {
   s.holding = -1;
 }
 
-/** Start a hold if allowed: the grabber may act, the victim is upright, not held or holding, and in reach. The hold begins where the victim is. */
-export function tryGrab(grabber: CombatState, at: Planar, facing: Planar, victim: CombatState, victimAt: Planar, t: Tuning = COMBAT): boolean {
-  if (!canAct(grabber) || victim.held || isHolding(victim) || isDown(victim)) return false;
+/** Whether a body may be taken hold of at all: upright, not held by anyone, and not holding anyone itself. */
+export const grabbable = (victim: CombatState) => !victim.held && !isHolding(victim) && !isDown(victim);
+
+/**
+ * Start a hold if allowed: the grabber may act, the victim is grabbable and
+ * in reach. The hold begins where the victim is. `ids` (roster indices)
+ * records who holds whom; a held body refuses every other grab, so no body
+ * ever has two holders.
+ */
+export function tryGrab(grabber: CombatState, at: Planar, facing: Planar, victim: CombatState, victimAt: Planar, t: Tuning = COMBAT, ids?: { grabber: number; victim: number }): boolean {
+  if (!canAct(grabber) || !grabbable(victim)) return false;
   if (!inReach(at, facing, victimAt, t.grabRange, t.grabArcCos)) return false;
   grabber.holding = 0;
   grabber.holdAngle = Math.atan2(victimAt.x - at.x, victimAt.z - at.z);
+  grabber.victim = ids?.victim ?? -1;
   victim.held = true;
+  victim.holder = ids?.grabber ?? -1;
   return true;
 }
 
 /** End a hold (release, throw, break, fall or reset). */
 export function endGrab(grabber: CombatState, victim: CombatState) {
   grabber.holding = -1;
+  grabber.victim = -1;
   victim.held = false;
+  victim.holder = -1;
 }
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));

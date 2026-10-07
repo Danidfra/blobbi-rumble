@@ -4,7 +4,7 @@
  * worth, bounded.
  */
 import { describe, expect, it } from 'vitest';
-import { ARENA, onFloor } from '../arena/layout';
+import { ARENA, onFloor, spawnPoints } from '../arena/layout';
 import { COMBAT, ORBS, POWER } from '../tuning';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from './orbs';
 import { powerCap, powerMultiplier } from './power';
@@ -13,20 +13,22 @@ const centre = (x: number, z: number, y = 0.525) => ({ x, y, z });
 const far = centre(100, 100);
 
 describe('the orbs', () => {
-  it('stand at the arena points, on the platform and off the player spawns', () => {
+  it('stand at the arena points, on the platform and off every spawn: three, whatever the number of fighters', () => {
     const orbs = createOrbs();
     expect(orbs).toHaveLength(3);
-    const { a, b } = ARENA.spawns;
-    for (const o of orbs) {
-      expect(onFloor(o, 0.5)).toBe(true);
-      expect(o.y).toBe(ORBS.height);
-      expect(o.active).toBe(true);
-      expect(Math.hypot(o.x - a.x, o.z - a.z)).toBeGreaterThan(2);
-      expect(Math.hypot(o.x - b.x, o.z - b.z)).toBeGreaterThan(2);
+    for (const count of [2, 3, 4] as const) {
+      const spawns = spawnPoints(count);
+      for (const o of orbs) {
+        expect(onFloor(o, 0.5)).toBe(true);
+        expect(o.y).toBe(ORBS.height);
+        expect(o.active).toBe(true);
+        for (const s of spawns) expect(Math.hypot(o.x - s.x, o.z - s.z)).toBeGreaterThan(2);
+      }
+      // One is contested: in the middle, equally far from every spawn.
+      const d = spawns.map((s) => Math.hypot(orbs[0].x - s.x, orbs[0].z - s.z));
+      for (const x of d) expect(x).toBeCloseTo(d[0], 1);
     }
-    // One is contested: in the centre, equally far from both spawns; one in each wing.
-    const d = orbs.map((o) => [Math.hypot(o.x - a.x, o.z - a.z), Math.hypot(o.x - b.x, o.z - b.z)]);
-    expect(d[0][0]).toBeCloseTo(d[0][1]);
+    // And one in each wing.
     expect(orbs[1].x).toBeGreaterThan(ARENA.centre.halfWidth);
     expect(orbs[2].x).toBeLessThan(-ARENA.centre.halfWidth);
   });
@@ -79,6 +81,30 @@ describe('the orbs', () => {
     expect(orbs.every((o) => !o.active)).toBe(true);
     resetOrbs(orbs);
     expect(orbs.every((o) => o.active && o.timer === 0)).toBe(true);
+  });
+
+  it('four fighters on one orb: the nearest takes it, an exact tie goes to the lowest index, and nobody else collects', () => {
+    const orbs = createOrbs();
+    const o = orbs[0];
+    const four = [centre(o.x + 0.5, o.z), centre(o.x - 0.45, o.z), centre(o.x, o.z + 0.3), centre(o.x, o.z - 0.6)];
+    expect(collectOrbs(orbs, four)).toEqual([2, -1, -1]);
+    resetOrbs(orbs);
+    // P2, P3 and P4 exactly as near: P2 (index 1).
+    expect(collectOrbs(orbs, [centre(o.x + 0.6, o.z), centre(o.x - 0.4, o.z), centre(o.x, o.z + 0.4), centre(o.x, o.z - 0.4)])).toEqual([1, -1, -1]);
+    // Different orbs the same frame: each to its own nearest.
+    resetOrbs(orbs);
+    const [, swept, exposed] = orbs;
+    expect(collectOrbs(orbs, [far, centre(exposed.x, exposed.z), centre(o.x, o.z), centre(swept.x + 0.2, swept.z)])).toEqual([2, 3, 1]);
+  });
+
+  it('a fighter out of the round (null) takes nothing and keeps nothing from returning', () => {
+    const orbs = createOrbs();
+    const o = orbs[0];
+    expect(collectOrbs(orbs, [null, centre(o.x + 0.6, o.z), null, null])).toEqual([1, -1, -1]);
+    resetOrbs(orbs);
+    expect(collectOrbs(orbs, [null, null, null, null])).toEqual([-1, -1, -1]);
+    collectOrbs(orbs, [centre(o.x, o.z)]);
+    expect(tickOrbs(orbs, ORBS.respawnDelay + 0.1, [null, null, null, null])).toEqual([0]);
   });
 });
 

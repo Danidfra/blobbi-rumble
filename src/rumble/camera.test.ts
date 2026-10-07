@@ -1,22 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { followCamera, wantedCamera } from './camera';
+import { followCamera, framed, wantedCamera } from './camera';
 import { CAMERA } from './tuning';
 
 describe('the shared camera', () => {
-  it('looks at the midpoint, from a distance that grows with the separation within bounds', () => {
-    const near = wantedCamera({ x: -1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 });
+  it('two fighters: looks at the midpoint, from a distance that grows with the separation within bounds', () => {
+    const near = wantedCamera([{ x: -1, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }]);
     expect(near.x).toBe(0);
     expect(near.y).toBe(CAMERA.lift);
     expect(near.radius).toBeCloseTo(Math.max(CAMERA.minRadius, CAMERA.baseRadius + 2 * CAMERA.radiusPerMetre));
-    const far = wantedCamera({ x: -20, y: 0, z: 0 }, { x: 20, y: 0, z: 0 });
+    const far = wantedCamera([{ x: -20, y: 0, z: 0 }, { x: 20, y: 0, z: 0 }]);
     expect(far.radius).toBe(CAMERA.maxRadius);
-    const same = wantedCamera({ x: 3, y: 0, z: 2 }, { x: 3, y: 0, z: 2 });
+    const same = wantedCamera([{ x: 3, y: 0, z: 2 }, { x: 3, y: 0, z: 2 }]);
     expect(same.radius).toBe(Math.max(CAMERA.minRadius, CAMERA.baseRadius));
     expect(same.x).toBe(3);
     expect(same.z).toBe(2);
   });
   it('does not dive after a body in the void', () => {
-    const pose = wantedCamera({ x: 0, y: -30, z: 0 }, { x: 0, y: 0, z: 0 });
+    const pose = wantedCamera([{ x: 0, y: -30, z: 0 }, { x: 0, y: 0, z: 0 }]);
     expect(pose.y).toBe(-1 + CAMERA.lift);
   });
   it('follows smoothly: part of the way each frame, all of the way eventually', () => {
@@ -29,5 +29,40 @@ describe('the shared camera', () => {
     for (let i = 0; i < 600; i++) pose = followCamera(pose, to, 1 / 60);
     expect(pose.x).toBeCloseTo(10, 3);
     expect(pose.radius).toBeCloseTo(12, 3);
+  });
+
+  it('frames every fighter still in: the centre of the box around them, the distance from its diagonal', () => {
+    const four = [
+      { x: -2, y: 0, z: -1 },
+      { x: 2, y: 0, z: -1 },
+      { x: -1, y: 0, z: 1 },
+      { x: 0, y: 0, z: 1 },
+    ];
+    const pose = wantedCamera(four);
+    // The box is x -2..2, z -1..1: its centre, not the mean of the four (which would sit at x -0.25).
+    expect(pose.x).toBeCloseTo(0);
+    expect(pose.z).toBeCloseTo(0);
+    expect(pose.radius).toBeCloseTo(Math.min(CAMERA.maxRadius, CAMERA.baseRadius + Math.hypot(4, 2) * CAMERA.radiusPerMetre));
+    // Three of them: the box shrinks, the view closes in.
+    expect(wantedCamera(four.slice(1)).radius).toBeLessThan(pose.radius);
+    // One left: framed alone, at the closest distance allowed.
+    const one = wantedCamera([{ x: 1, y: 0, z: 1 }]);
+    expect(one.x).toBe(1);
+    expect(one.radius).toBe(Math.max(CAMERA.minRadius, CAMERA.baseRadius));
+  });
+  it('stops framing a body going over the rim or out of the round, and keeps the arena when they spread too wide', () => {
+    expect(framed({ x: 0, y: 0, z: 0 }, true)).toBe(true);
+    expect(framed({ x: 0, y: CAMERA.dropBelow - 0.1, z: 0 }, true)).toBe(false);
+    expect(framed({ x: 0, y: 0, z: 0 }, false)).toBe(false);
+    // Spread across the whole arena and beyond: never further than the bound, the target clamped over the arena.
+    const wide = wantedCamera([
+      { x: -7, y: 0, z: 0 },
+      { x: 20, y: 0, z: 9 },
+    ]);
+    expect(wide.radius).toBe(CAMERA.maxRadius);
+    expect(wide.x).toBe(CAMERA.bounds.x);
+    expect(wide.z).toBe(CAMERA.bounds.z);
+    // Nobody to frame: the middle of the arena.
+    expect(wantedCamera([])).toMatchObject({ x: 0, z: 0 });
   });
 });

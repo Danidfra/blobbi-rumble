@@ -75,9 +75,9 @@ export const COMBAT = Object.freeze({
 });
 
 export const ROUND = Object.freeze({
-  /** First to this many ring-outs wins the match. */
+  /** First to this many rounds (last Blobbi standing) wins the match. */
   target: 3,
-  /** The pause after a ring-out before the next round, seconds. */
+  /** The pause after the round is decided before the next one, seconds. */
   resetDelay: 1.6,
 });
 
@@ -120,19 +120,27 @@ export const PUSH = Object.freeze({
    * springs are the contest and friction steps aside. Restored when apart.
    */
   contactFriction: 0.02,
+  /**
+   * Head-on: in a shoving match, keys held within this cosine of the line to
+   * the other body (about 26°) push along that line, so a frontal contest
+   * stays frontal instead of shearing apart from a few centimetres of
+   * offset. A diagonal (cos 0.71) or a sidestep escapes as before.
+   */
+  headOnCos: 0.9,
 });
 
 /**
  * POWER ORBS on the arena: where they are, how they are taken, when they
- * return. One in the centre, ahead of both spawns and equally far from each
- * (contested, safe); one in the right wing inside the sweeper's circle, on
- * the half where the bar's blow sends a fighter back toward the centre
- * (available, but timed against the bar); one deep in the left wing, 0.6 m
- * from the rim (available, but a shove away from the void).
+ * return. Three, whatever the number of fighters: scarcity is the point.
+ * One in the middle of the centre, equally far from every spawn (contested,
+ * safe); one in the right wing inside the sweeper's circle, on the half
+ * where the bar's blow sends a fighter back toward the centre (available,
+ * but timed against the bar); one deep in the left wing, 0.6 m from the rim
+ * (available, but a shove away from the void).
  */
 export const ORBS = Object.freeze({
   points: [
-    { x: 0, z: 2.2 },
+    { x: 0, z: 0 },
     { x: 6.0, z: -1.3 },
     { x: -6.9, z: 0 },
   ] as readonly { x: number; z: number }[],
@@ -162,9 +170,16 @@ export const SWEEPER = Object.freeze({
   top: 0.22,
   /** Radians per second: one turn in about four seconds; the tip moves at 3 m/s, the root barely. */
   angularSpeed: 1.5,
-  /** The blow's base impact per m/s of bar speed where it strikes (the tip tumbles, the root only shoves), and its lift. */
-  impactPerSpeed: 2.0,
-  lift: 1.2,
+  /**
+   * The blow's base impact: a floor every strike of the leading face has, so
+   * a body hit near the post is clearly shoved and not just nudged, plus
+   * this per m/s of bar speed where it strikes, so the tip stays the
+   * strongest (the root shoves, the middle hits like a punch, the outer
+   * part tumbles); and its lift, enough to show the blow.
+   */
+  impactFloor: 1.4,
+  impactPerSpeed: 1.45,
+  lift: 1.6,
   /** A capsule this close to the bar's side counts as struck: the physical bar keeps what it shoves at exactly zero overlap. */
   hitMargin: 0.08,
   /** A fighter is not struck again within this, seconds. */
@@ -175,7 +190,7 @@ export const CAMERA = Object.freeze({
   /** Looking along +z from -z (alpha) and from this far above level (beta). */
   alpha: -Math.PI / 2,
   beta: 1.05,
-  /** Distance: base plus this per metre of separation, within the bounds. */
+  /** Distance: base plus this per metre of the framed fighters' spread (the diagonal of the box around them), within the bounds. */
   baseRadius: 7.5,
   radiusPerMetre: 0.9,
   minRadius: 7,
@@ -183,6 +198,52 @@ export const CAMERA = Object.freeze({
   /** How quickly the target and the distance follow (1/s). */
   targetFollow: 6,
   radiusFollow: 3,
-  /** The point of interest is lifted this much above the midpoint of the feet. */
+  /** The point of interest is lifted this much above the fighters' mean feet height. */
   lift: 0.5,
+  /** A body whose feet drop below this, metres, is going over the rim: the camera stops framing it. */
+  dropBelow: -0.6,
+  /** The target stays within these of the arena's middle, metres: wide spreads show the arena, not the void between. */
+  bounds: { x: 5, z: 2.5 },
+});
+
+/**
+ * THE LOCAL TEST BOTS: a few readable numbers for the simple, deterministic
+ * opponents that fill the arena while two people play. Not an AI: they
+ * exist to create pressure and interactions. They play through the same
+ * intent, body, combat and power as a person, with no bonus of any kind.
+ */
+export const BOT = Object.freeze({
+  /** How long a chosen target is kept before the bot looks again, seconds. */
+  retargetEvery: 2.2,
+  /** A state is kept at least this long before another is chosen, seconds (no dithering). */
+  minStateTime: 0.4,
+  /** An orb is worth going for when its cost is under the distance to the target plus this, metres. */
+  orbBias: 1.2,
+  /** Extra cost of an orb inside the sweeper's circle, and of one near a rim, metres. */
+  orbSweeperCost: 1.5,
+  orbRimCost: 1.0,
+  /** Close in from further than this to attack range, metres; run when the goal is further than `runBeyond`. */
+  engageRange: 1.5,
+  runBeyond: 3,
+  /** The punch is thrown inside this share of its range, and within this facing cosine of the target. */
+  punchReach: 0.95,
+  punchArcCos: 0.75,
+  /** Of the attack openings where a grab could take the target, this share are grabs (from a seeded sequence, not a die). */
+  grabShare: 0.22,
+  /** After an attack, wait this long plus up to `hesitationJitter` before the next, seconds. */
+  hesitation: 0.25,
+  hesitationJitter: 0.35,
+  /** Carrying: throw when facing the nearest void within this cosine and closer to the rim than `throwRim`, or after `carryMax` seconds anyway. */
+  throwFacingCos: 0.8,
+  throwRim: 2.4,
+  carryMin: 0.35,
+  carryMax: 1.6,
+  /** Look this far ahead along the way it walks: if the floor is not there (with `safeInset` to spare), it turns for the middle instead. */
+  lookAhead: 1.0,
+  attackLookAhead: 0.55,
+  safeInset: 0.35,
+  /** Closer than this to a rim with nothing to do there: back toward the middle. */
+  rimPanic: 0.5,
+  /** Jump the sweeper when its leading face will reach the capsule within this window, seconds. */
+  jumpWindow: { from: 0.03, to: 0.12 },
 });

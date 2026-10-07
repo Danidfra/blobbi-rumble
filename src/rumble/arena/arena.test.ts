@@ -7,8 +7,8 @@
 import { describe, expect, it } from 'vitest';
 import { RUMBLE_BODY } from '../profile';
 import { COMBAT, ORBS, SWEEPER } from '../tuning';
-import { ARENA, arenaExtent, floorSlabs, onFloor, rimDistance, rimSegments } from './layout';
-import { barDirection, barVelocity, createSweeper, resetSweeper, sweeperHit, tickSweeper } from './sweeper';
+import { ARENA, arenaExtent, floorSlabs, onFloor, rimDistance, rimSegments, spawnPoints } from './layout';
+import { barDirection, barVelocity, createSweeper, resetSweeper, sweeperHit, sweeperImpact, tickSweeper } from './sweeper';
 
 const R = RUMBLE_BODY.capsuleRadius;
 const CY = RUMBLE_BODY.capsuleCenterY;
@@ -49,13 +49,26 @@ describe('the arena', () => {
     expect(segments.some(([a, b]) => Math.abs(a.x - joinX) < 1e-6 && Math.abs(b.x - joinX) < 1e-6 && Math.abs(a.z) < ARENA.wings.halfDepth && Math.abs(b.z) < ARENA.wings.halfDepth)).toBe(false);
   });
 
-  it('spawns stand in the centre, well off the rim, apart, clear of the orbs and of the sweeper', () => {
-    for (const s of [ARENA.spawns.a, ARENA.spawns.b]) {
-      expect(rimDistance(s)).toBeGreaterThan(1.5);
-      for (const o of ORBS.points) expect(Math.hypot(o.x - s.x, o.z - s.z)).toBeGreaterThan(2);
-      expect(Math.hypot(SWEEPER.pivot.x - s.x, SWEEPER.pivot.z - s.z)).toBeGreaterThan(SWEEPER.reach + R + 0.5);
+  it('spawns, for two, three and four: in the centre, well off the rim, apart, clear of the orbs and of the sweeper, all as far from the middle orb, facing it', () => {
+    for (const count of [2, 3, 4] as const) {
+      const spawns = spawnPoints(count);
+      expect(spawns).toHaveLength(count);
+      const toMiddleOrb = spawns.map((s) => Math.hypot(ORBS.points[0].x - s.x, ORBS.points[0].z - s.z));
+      for (const s of spawns) {
+        expect(onFloor(s)).toBe(true);
+        expect(Math.abs(s.x)).toBeLessThan(ARENA.centre.halfWidth);
+        expect(rimDistance(s)).toBeGreaterThanOrEqual(1.5);
+        for (const o of ORBS.points) expect(Math.hypot(o.x - s.x, o.z - s.z)).toBeGreaterThan(2);
+        expect(Math.hypot(SWEEPER.pivot.x - s.x, SWEEPER.pivot.z - s.z)).toBeGreaterThan(SWEEPER.reach + R + 0.5);
+        // Facing the middle: never toward a rim or the sweeper.
+        const f = { x: Math.sin(s.yaw), z: Math.cos(s.yaw) };
+        const m = Math.hypot(s.x, s.z);
+        expect((f.x * -s.x + f.z * -s.z) / m).toBeCloseTo(1);
+        expect(onFloor({ x: s.x + f.x * 2, z: s.z + f.z * 2 }, 1)).toBe(true);
+      }
+      for (const d of toMiddleOrb) expect(d).toBeCloseTo(toMiddleOrb[0], 1);
+      for (let i = 0; i < count; i++) for (let j = i + 1; j < count; j++) expect(Math.hypot(spawns[i].x - spawns[j].x, spawns[i].z - spawns[j].z)).toBeGreaterThan(3);
     }
-    expect(Math.hypot(ARENA.spawns.b.x - ARENA.spawns.a.x, ARENA.spawns.b.z - ARENA.spawns.a.z)).toBeGreaterThan(3);
   });
 
   it('the orbs are placed with intent: one safe in the centre, one inside the sweeper, one near the rim', () => {
@@ -116,9 +129,35 @@ describe('the sweeper', () => {
     expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z, SWEEPER.top + 0.01), R, CY)).toBeNull();
     expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z, SWEEPER.top - 0.05), R, CY)).not.toBeNull();
     // Off the bar's line the capsule's underside curves up: beside the bar it clears at a lower height.
+    // (At angle 0 the +x arm moves toward -z: that side is the leading face.)
     s.sinceHit[0] = 99;
-    expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z + 0.5, SWEEPER.top - 0.1), R, CY)).toBeNull();
-    expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z + 0.5, 0), R, CY)).not.toBeNull();
+    expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z - 0.5, SWEEPER.top - 0.1), R, CY)).toBeNull();
+    expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z - 0.5, 0), R, CY)).not.toBeNull();
+  });
+
+  it('strikes only with its leading face: a capsule just behind the bar (landed there after a jump) is not sent after it', () => {
+    const s = createSweeper(1);
+    const p = SWEEPER.pivot;
+    expect(sweeperHit(s, 0, standing(p.x + 1.5, p.z + 0.5), R, CY)).toBeNull();
+    expect(sweeperHit(s, 0, standing(p.x - 1.5, p.z - 0.5), R, CY)).toBeNull();
+    // The other arm moves the other way: its leading face is on the +z side.
+    expect(sweeperHit(s, 0, standing(p.x - 1.5, p.z + 0.5), R, CY)).not.toBeNull();
+  });
+
+  it('every strike of the leading face is readable: the root shoves, the middle hits about like a punch, the outer part tumbles', () => {
+    const s = createSweeper(3);
+    const p = SWEEPER.pivot;
+    const at = (r: number, i: number) => sweeperHit(s, i, standing(p.x + r, p.z - 0.3), R, CY)!.reaction;
+    const root = at(0.7, 0);
+    const middle = at(1.1, 1);
+    const tip = at(SWEEPER.reach - 0.05, 2);
+    expect(root.kind).toBe('hit');
+    expect(root.impact).toBeGreaterThan(COMBAT.punchImpact * 0.6);
+    expect(middle.kind).toBe('hit');
+    expect(Math.abs(middle.impact - COMBAT.punchImpact)).toBeLessThan(0.8);
+    expect(tip.kind).toBe('tumble');
+    expect(tip.impact).toBeGreaterThan(middle.impact);
+    expect(tip.impact).toBeLessThan(COMBAT.impactMax);
   });
 
   it('a hit is not repeated within its cooldown, per fighter', () => {
@@ -139,7 +178,7 @@ describe('the sweeper', () => {
     const root = sweeperHit(s, 1, standing(p.x + 0.4, p.z), R, CY)!;
     expect(tip.reaction.impact).toBeGreaterThan(root.reaction.impact);
     expect(tip.reaction.impact).toBeLessThanOrEqual(COMBAT.impactMax);
-    expect(tip.reaction.impact).toBeCloseTo(Math.min(COMBAT.impactMax, SWEEPER.impactPerSpeed * tip.speed));
+    expect(tip.reaction.impact).toBeCloseTo(Math.min(COMBAT.impactMax, sweeperImpact(tip.speed)));
     expect(tip.reaction.kind).toBe('tumble');
     expect(root.reaction.kind).toBe('hit');
     // Along the bar's velocity at the point of contact (the derivative of the rotation).

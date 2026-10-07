@@ -11,6 +11,8 @@ import { moveIntent, P1_BINDINGS, P2_BINDINGS } from './control/input';
 import { steer } from './control/mover';
 import { animatorInput, facingYaw, initialBridge } from './control/animationBridge';
 import { initialFallState, updateFall } from './respawn';
+import { ROSTER, rosterFor, rosterOptions } from './roster';
+import { spawnPoints } from './arena/layout';
 
 describe('the rumble body', () => {
   it('is the kit\'s normalized profile plus tuning, and knows nothing of any identity', () => {
@@ -127,5 +129,33 @@ describe('falling and respawn', () => {
     expect(updateFall(f, 0, 1 / 60)).toBe(false);
     updateFall(f, -5, 1 / 60);
     expect(f.falls).toBe(2);
+  });
+});
+
+describe('the roster', () => {
+  it('plays four by default: P1 and P2 at the keyboard, P3 and P4 test bots; 2 and 3 on request; all bots on request', () => {
+    const four = rosterFor(rosterOptions(''));
+    expect(four.map((e) => e.label)).toEqual(['P1', 'P2', 'P3', 'P4']);
+    expect(four.map((e) => e.keys !== null)).toEqual([true, true, false, false]);
+    expect(four[0].keys).toBe(P1_BINDINGS);
+    expect(four[1].keys).toBe(P2_BINDINGS);
+    expect(rosterFor(rosterOptions('?players=2'))).toHaveLength(2);
+    expect(rosterFor(rosterOptions('?players=3')).map((e) => e.label)).toEqual(['P1', 'P2', 'P3']);
+    expect(rosterFor(rosterOptions('?players=9'))).toHaveLength(4);
+    expect(rosterFor(rosterOptions('?bots=all')).every((e) => e.keys === null)).toBe(true);
+    for (const count of [2, 3, 4] as const) {
+      const roster = rosterFor({ count, allBots: false });
+      expect(roster).toHaveLength(count);
+      expect(spawnPoints(count)).toHaveLength(count);
+    }
+  });
+
+  it('four visibly different, deterministic individuals, and one gameplay body for all of them', () => {
+    const ids = ROSTER.map((e) => createBlobbiIdentity(seedFromLabel(e.identity)));
+    expect(new Set(ids.map((i) => i.colors.base)).size).toBe(4);
+    // The same label is the same individual, every time.
+    expect(createBlobbiIdentity(seedFromLabel(ROSTER[2].identity)).colors.base).toBe(ids[2].colors.base);
+    // Nothing in the roster carries a stat: the body is the one RUMBLE_BODY.
+    for (const e of ROSTER) expect(Object.keys(e).sort()).toEqual(['identity', 'keys', 'label']);
   });
 });

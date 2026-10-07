@@ -30,9 +30,38 @@ export const ARENA = Object.freeze({
   wings: { halfWidth: 1.75, halfDepth: 3.0 },
   /** The floor's thickness below y = 0, metres. */
   thickness: 0.6,
-  /** Where the players start each round: in the centre, apart, clear of the orbs and the sweeper. */
-  spawns: { a: { x: -2.2, z: 0 }, b: { x: 2.2, z: 0 } },
+  /**
+   * Where the fighters start each round, by how many play: in the centre
+   * slab, apart, at least 1.5 m from every rim, clear of the orbs and the
+   * sweeper, and each as far from the middle orb as the others. Four stand
+   * at the corners of a square around it; three on a triangle; two face
+   * each other across it.
+   */
+  spawnSets: {
+    2: [
+      { x: -2.2, z: 0 },
+      { x: 2.2, z: 0 },
+    ],
+    3: [
+      { x: 0, z: -2.45 },
+      { x: 2.12, z: 1.225 },
+      { x: -2.12, z: 1.225 },
+    ],
+    4: [
+      { x: -2.2, z: -2.2 },
+      { x: 2.2, z: -2.2 },
+      { x: -2.2, z: 2.2 },
+      { x: 2.2, z: 2.2 },
+    ],
+  } as Record<2 | 3 | 4, readonly Planar[]>,
 });
+
+export type FighterCount = 2 | 3 | 4;
+
+/** The spawns for this many fighters, each facing the middle of the arena (a yaw: the direction (sin a, cos a)). */
+export function spawnPoints(count: FighterCount, a = ARENA): { x: number; z: number; yaw: number }[] {
+  return a.spawnSets[count].map((p) => ({ x: p.x, z: p.z, yaw: Math.atan2(-p.x, -p.z) }));
+}
 
 /** The three floor slabs: centre, left wing, right wing. */
 export function floorSlabs(a = ARENA): Rect[] {

@@ -39,15 +39,17 @@ const dist = (a: Point3, b: Point3) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.
 /**
  * Who takes which orb this frame: for each active orb within reach of
  * anyone, the NEAREST fighter takes it (the lower index on an exact tie),
- * so two arriving together never both collect. Returns, per orb, the
+ * so two or more arriving together never both collect. A fighter given as
+ * null (out of the round) takes nothing. Returns, per orb, the
  * taker's index or -1, and marks the taken orbs as gone.
  */
-export function collectOrbs(orbs: Orb[], fighters: readonly Point3[], t: OrbTuning = ORBS): number[] {
+export function collectOrbs(orbs: Orb[], fighters: readonly (Point3 | null)[], t: OrbTuning = ORBS): number[] {
   return orbs.map((o) => {
     if (!o.active) return -1;
     let taker = -1;
     let best: number = t.collectRadius;
     fighters.forEach((f, i) => {
+      if (!f) return;
       const d = dist(o, f);
       if (d < best || (d === best && taker < 0 && d <= t.collectRadius)) {
         best = d;
@@ -67,13 +69,13 @@ export function collectOrbs(orbs: Orb[], fighters: readonly Point3[], t: OrbTuni
  * clear (so it never lands in someone and awards itself). Returns the
  * indices of the orbs that came back this frame.
  */
-export function tickOrbs(orbs: Orb[], dt: number, fighters: readonly Point3[], t: OrbTuning = ORBS): number[] {
+export function tickOrbs(orbs: Orb[], dt: number, fighters: readonly (Point3 | null)[], t: OrbTuning = ORBS): number[] {
   const back: number[] = [];
   orbs.forEach((o, i) => {
     if (o.active) return;
     o.timer = Math.max(0, o.timer - dt);
     if (o.timer > 0) return;
-    const occupied = fighters.some((f) => Math.hypot(f.x - o.x, f.z - o.z) < t.occupiedRadius);
+    const occupied = fighters.some((f) => f !== null && Math.hypot(f.x - o.x, f.z - o.z) < t.occupiedRadius);
     if (occupied) return;
     o.active = true;
     back.push(i);

@@ -42,28 +42,52 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 npm run dev          # http://127.0.0.1:5177/rumble.html
 ```
 
-The smallest playable local fight: two Blobbis from the package on one
-arena over a void, the SAME normalized gameplay capsule owned by Havok for
-both (`src/rumble/profile.ts`, built from the kit's
-`BLOBBI_GAMEPLAY_PROFILE` and nothing of any identity). Walk, run, jump,
-shove, punch, grab, drag and throw; whoever stays on the arena scores, first
-to three wins, R restarts, F3 shows colliders and reach.
+A local party fight: four Blobbis from the package on one arena over a
+void, the SAME normalized gameplay capsule owned by Havok for every one of
+them (`src/rumble/profile.ts`, built from the kit's `BLOBBI_GAMEPLAY_PROFILE`
+and nothing of any identity). Walk, run, jump, shove, punch, grab, drag and
+throw. A ring-out eliminates a fighter from the round and the others play
+on; the last Blobbi standing takes the point (the last ones falling on the
+same frame is a draw, no point), first to three wins, R restarts, F3 shows
+colliders, reach and everyone's state.
+
+P1 and P2 share the keyboard; P3 and P4 are LOCAL TEST BOTS
+(`control/bot.ts`), not an AI: a few states (seek an orb, seek a fighter,
+attack, carry to the void and throw, recover), a look-ahead that turns away
+from the rim, a jump when the sweeper's leading face is about to arrive,
+and a seeded sequence instead of dice. They answer with the same intent a
+keyboard gives, so their fighters have exactly a person's body, combat and
+power. `?players=2|3|4` plays fewer, `?bots=all` hands P1 and P2 to bots too.
+
+Everyone fights everyone. A punch or a grab takes ONE fighter: of those in
+the round within its reach and arc (a grab passes over a held, holding or
+downed body), the nearest, the lower roster index on an exact tie
+(`combat/melee.ts`). A hold names both sides, and a held or holding body
+cannot be grabbed, so a body has one holder at most; a blow on either side
+of a hold (a punch, the sweeper), a tumbling carrier or a ring-out ends it.
+An eliminated fighter is parked out of play and hidden until the next round,
+once its fall has crossed the fall line.
 
 THE ARENA (`src/rumble/arena/layout.ts`) is three floor slabs: a wide,
-safe centre (8 × 8 m) where the players spawn, and a narrower wing on each
-side (3.5 × 6 m), closer to the rim. The right wing has THE SWEEPER: a low
-bar (0.22 m high) through a post, turning at a constant 1.5 rad/s with a
-2 m reach, moved by Havok as an animated body so it shoves what it meets.
-A fighter under the bar takes its blow through the same impact path and
-hit / tumble rule as a punch, with no player power in it: the blow is the
-bar's speed where it strikes (×2.0), so near the post it only shoves and
-near the tip (3 m/s, impact 6) it tumbles. A jump clears it with timing
-near the tip; it cannot be jumped near the post, where it is slow. The
-blow's direction is the bar's motion there: on the half of the circle
-nearer the centre it sends you back toward the centre, on the outer half
-toward the rim. The orbs follow the zones: one safe and contested in the
-centre, one inside the sweeper's circle on the half that sends you back
-toward the centre, one deep in the left wing 0.6 m from the rim.
+safe centre (8 × 8 m) where everyone spawns (four at the corners of a
+square around the middle orb, each facing it; three on a triangle; two
+facing each other), and a narrower wing on each side (3.5 × 6 m), closer to
+the rim. The right wing has THE SWEEPER: a low bar (0.22 m high) through a
+post, turning at a constant 1.5 rad/s with a 2 m reach, moved by Havok as an
+animated body so it shoves what it meets. A fighter met by the bar's
+LEADING face takes its blow through the same impact path and hit / tumble
+rule as a punch, with no player power in it: 1.4 plus 1.45 per m/s of bar
+speed where it strikes, so near the post it shoves (about 3), in the middle
+it hits about like a punch, and on the outer part (3 m/s at the tip, impact
+5.75) it tumbles. A capsule just behind the bar (landed there after a jump)
+is not struck. A jump clears it with timing near the tip; it cannot be
+jumped near the post, where it is slow. The blow's direction is the bar's
+motion there: on the half of the circle nearer the centre it sends you back
+toward the centre, on the outer half toward the rim. The orbs follow the
+zones: one safe and contested in the middle of the centre, one inside the
+sweeper's circle on the half that sends you back toward the centre, one
+deep in the left wing 0.6 m from the rim. Three, whatever the number of
+fighters: scarcity is the point.
 
 | | P1 | P2 |
 | --- | --- | --- |
@@ -90,26 +114,37 @@ recovery rights it and hands control back; a lighter hit is a brief stun.
 Every impact goes through one path (`combat/impact.ts`: base × power ×
 attack × situation, clamped).
 
-Three POWER ORBS sit on the arena (`tuning.ts`, `ORBS`): one contested,
-ahead of both spawns and equally far from each, and one toward each
-player's own far corner, a little off the rim. Walking into one takes it
-(the nearer fighter when two arrive together), it bursts and is gone, and
+Three POWER ORBS sit on the arena (`tuning.ts`, `ORBS`). Walking into one
+takes it (the nearest fighter when several arrive together, the lower
+index on an exact tie), it bursts and is gone, and
 it returns after a few seconds where no one is standing. Each orb is one
 power level; the level's multiplier (`POWER`, +0.08 per orb, capped at
 ×1.48) is the player-power factor of the impact path, so punches and
 throws hit harder, and a standing punch crosses the tumble threshold on
-its own from the third orb. Power is also physical authority: while the
-two capsules touch, steering becomes a bounded spring toward the wanted
+its own from the third orb. Power is also physical authority: while two
+capsules touch, steering becomes a bounded spring toward the wanted
 velocity (`PUSH` in `tuning.ts`), scaled by the fighter's push authority
 (+5% per orb, capped at ×1.30), and the capsules' ground friction steps
 aside for the contest, so a stronger fighter gains ground slowly in a
 sustained shove (about 0.25 m/s at the cap, nothing at equal power) while
 in a shoving match the wanted speed into the other body is capped at a
-walk, so running adds nothing but the impact. Power gives a very small
+walk, so running adds nothing but the impact. In a shoving match, keys held
+within about 26° of the line to the other body push along that line
+(`PUSH.headOnCos`): each player pushes along its keys, so a few centimetres
+of offset used to turn into a sideways shear that slid the two past each
+other within a second; a diagonal or a sidestep still escapes. With more
+than two touching, each body's contest is with the nearest one it touches. Power gives a very small
 walk and run speed bonus (+1% per orb, capped at +6%), never the jump or
 the air share, and touches nothing else (not reach, hold, mass or
-recovery). It resets every round. The HUD shows each player's multiplier;
-a powered Blobbi has a glowing ring at its feet.
+recovery). It resets every round. The HUD shows each player's multiplier,
+score, whether it is still in, and which are bots; a powered Blobbi has a
+glowing ring at its feet, and every Blobbi carries its label over its head.
+
+THE CAMERA frames every fighter still in the round and on the arena (a body
+going over the rim stops counting once it drops below the floor): the
+centre of the box around them, from a distance that grows with the box's
+diagonal within bounds, the target kept over the arena when they spread
+too wide.
 
 The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 
@@ -118,17 +153,20 @@ src/rumble/
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place
   physics/            Havok on the scene; the gameplay capsule (upright, grounded by a ground-layer raycast, teleport, friction); capsule contact (pure)
-  control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure)
+  roster.ts           who plays: labels, identities, keys or bot; ?players=, ?bots=all
+  control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure); the intent-source seam
+  control/bot.ts      the local test bot: world view to an intent (pure), and its intent source
   control/mover.ts    intent to a bounded velocity change, applied as an impulse; a bounded spring while contested (pure)
   control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
   combat/impact.ts    one impact-strength path and the hit / tumble rule (pure)
   combat/combat.ts    punch, stun, grab, hold, throw, tumble, recovery: pure state and geometry
-  combat/fighter.ts   one player, the same class for both: body, input, combat, fall, and the visual Blobbi
+  combat/melee.ts     whom a punch or grab takes among several; who holds whom (pure)
+  combat/fighter.ts   one player, the same class for all: body, intent source, combat, fall, elimination, and the visual Blobbi
   pickups/orbs.ts     the orbs: where, taken by whom, when back (pure)
   pickups/power.ts    a level's impact multiplier, capped (pure)
   pickups/orbView.ts  how the orbs look: spheres, discs, a burst when taken
-  rounds.ts           ring-out, rounds, the match (pure)
-  camera.ts           one shared camera: midpoint, bounded distance, smooth follow (pure)
+  rounds.ts           elimination, last Blobbi standing, rounds, the match (pure)
+  camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
   arena/layout.ts     the floor's shape: slabs, rim, spawns (pure)
   arena/arena.ts      the floor built: slabs, rim lips, the sweeper's circle
   arena/sweeper.ts    the sweeper: its angle, whom its bar strikes, the blow (pure)
@@ -138,9 +176,10 @@ src/rumble/
   main.ts             the game
 ```
 
-`window.rumble` exposes the scene, both fighters, the match, `step(n)` to
-drive frames by hand and `key(code, down)` / `press(code)` to inject input,
-for scripted checks.
+`window.rumble` exposes the scene, the fighters and bots, the match, an
+event log, `step(n)` to drive frames by hand, `key(code, down)` /
+`press(code)` to inject input, `script(i, intent)` / `setBots(on)` to drive
+any fighter directly, and `holdsConsistent()`, for scripted checks.
 
 ## History
 

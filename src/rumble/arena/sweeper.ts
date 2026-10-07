@@ -43,6 +43,9 @@ export function barVelocity(angle: number, s: number, t: SweeperTuning = SWEEPER
   return { x: -Math.sin(angle) * s * w, z: -Math.cos(angle) * s * w };
 }
 
+/** The blow's base impact where the bar moves at `speed`: a floor every real strike has, plus the bar's speed there. */
+export const sweeperImpact = (speed: number, t: SweeperTuning = SWEEPER) => t.impactFloor + t.impactPerSpeed * speed;
+
 export interface Capsule {
   /** Capsule centre. */
   x: number;
@@ -63,8 +66,9 @@ export interface SweeperHit {
  * plus the capsule's radius (and a small margin, for the physical bar keeps
  * what it shoves at exactly zero overlap) of the bar's line, inside the
  * bar's reach from the pivot, and the capsule low enough that the bar's
- * box meets the sphere at the capsule's bottom. A capsule jumped clear is not hit; so the bar's height
- * and the jump decide it, not a rule.
+ * box meets the sphere at the capsule's bottom, on the side the bar is
+ * moving toward. A capsule jumped clear is not hit; so the bar's height and
+ * the jump decide it, not a rule.
  */
 export function sweeperHit(s: SweeperState, index: number, c: Capsule, capsuleRadius: number, capsuleCentreY: number, t: SweeperTuning = SWEEPER): SweeperHit | null {
   if (s.sinceHit[index] < t.hitCooldown) return null;
@@ -81,7 +85,9 @@ export function sweeperHit(s: SweeperState, index: number, c: Capsule, capsuleRa
   if (dh * dh + dv * dv >= capsuleRadius * capsuleRadius) return null;
   const v = barVelocity(s.angle, along, t);
   const speed = Math.hypot(v.x, v.z);
-  const impact = resolveImpact({ base: t.impactPerSpeed * speed });
+  // Only the bar's leading face strikes: a capsule behind it (landed behind it after a jump, or left there as it passed) is not sent along after it.
+  if (speed > 0.05 && (c.x - px) * v.x + (c.z - pz) * v.z < 0) return null;
+  const impact = resolveImpact({ base: sweeperImpact(speed, t) });
   const dir = speed > 1e-6 ? { x: v.x / speed, z: v.z / speed } : { x: d.z, z: -d.x };
   const reaction: Reaction = { kind: reactionKind(impact, false, COMBAT), impact, dvx: dir.x * impact, dvy: t.lift, dvz: dir.z * impact, dir };
   s.sinceHit[index] = 0;

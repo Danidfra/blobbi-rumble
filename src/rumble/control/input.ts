@@ -103,7 +103,13 @@ export class Keyboard {
   }
 }
 
-export class PlayerInput {
+/** Whatever drives a fighter: a person's keys or a test bot. A fighter reads one intent a frame from it. */
+export interface IntentSource {
+  enabled: boolean;
+  read(cameraYaw: number): MoveIntent;
+}
+
+export class PlayerInput implements IntentSource {
   enabled = true;
   constructor(
     private readonly keyboard: Keyboard,
@@ -115,5 +121,30 @@ export class PlayerInput {
     const actions = { jump: this.keyboard.take(this.bindings.jump), punch: this.keyboard.take(this.bindings.punch), grab: this.keyboard.take(this.bindings.grab) };
     if (!this.enabled) return { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
     return moveIntent(this.keyboard.held, cameraYaw, this.bindings, actions);
+  }
+}
+
+const IDLE: MoveIntent = { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
+
+/**
+ * A dev hook for scripted checks: whatever drives a fighter, with an intent
+ * that may be set from outside in its place (`script`), its actions firing
+ * once as a press does. Null leaves the fighter to its own driver.
+ */
+export class ScriptableInput implements IntentSource {
+  script: MoveIntent | null = null;
+  constructor(readonly base: IntentSource) {}
+  get enabled() {
+    return this.base.enabled;
+  }
+  set enabled(on: boolean) {
+    this.base.enabled = on;
+  }
+  read(cameraYaw: number): MoveIntent {
+    const own = this.base.read(cameraYaw);
+    if (!this.script) return own;
+    const out = this.enabled ? this.script : IDLE;
+    this.script = { ...this.script, jump: false, punch: false, grab: false };
+    return out;
   }
 }

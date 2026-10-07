@@ -23,3 +23,25 @@ export function capsuleGap(a: Centre, b: Centre, p: RumbleBody = RUMBLE_BODY): n
 }
 
 export const capsulesTouch = (a: Centre, b: Centre, margin: number, p: RumbleBody = RUMBLE_BODY): boolean => capsuleGap(a, b, p) <= margin;
+
+/**
+ * For each body, the nearest other body its capsule touches, or -1. Bodies
+ * given as null (out of the round) touch nothing. With several fighters a
+ * body may touch more than one; its pushing contest is with the nearest.
+ */
+export function nearestContacts(centres: readonly (Centre | null)[], margin: number, p: RumbleBody = RUMBLE_BODY): number[] {
+  return centres.map((a, i) => {
+    if (!a) return -1;
+    let best = -1;
+    let bestGap = Infinity;
+    centres.forEach((b, j) => {
+      if (j === i || !b) return;
+      const gap = capsuleGap(a, b, p);
+      if (gap <= margin && gap < bestGap) {
+        bestGap = gap;
+        best = j;
+      }
+    });
+    return best;
+  });
+}

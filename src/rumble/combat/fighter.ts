@@ -1,7 +1,8 @@
 /**
- * A FIGHTER: one player, the same class for both. A gameplay body owned by
- * Havok, an input, a combat state, a fall state, and the visual Blobbi
- * that follows the body. Everything either player can do is here, once.
+ * A FIGHTER: one player, the same class for every one of them, a person's
+ * or a test bot's. A gameplay body owned by Havok, an intent source, a
+ * combat state, a fall state, and the visual Blobbi that follows the body.
+ * Everything any fighter can do is here, once.
  *
  * Each frame: read the intent (scaled by how much control the combat
  * state leaves), steer the body by a bounded impulse, start a punch on
@@ -13,13 +14,15 @@
 import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
+import { Mesh as MeshClass } from '@babylonjs/core/Meshes/mesh';
 import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import { createBlobbi3D, type AnimatorInput, type Blobbi3D, type ExpressionName } from '@blobbi-kit/3d';
 import { animatorInput, facingYaw, initialBridge, type BridgeState } from '../control/animationBridge';
-import type { MoveIntent, PlayerInput } from '../control/input';
+import type { IntentSource, MoveIntent } from '../control/input';
 import { steer, type Contest } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
@@ -75,12 +78,18 @@ export class Fighter {
   powerLevel = 0;
   /** The impact of the last blow or throw this fighter received, m/s (debug). */
   lastImpact = 0;
+  /** Rung out of this round: parked out of play, hidden, until the next. */
+  eliminated = false;
   private lastExpression: ExpressionName = 'happy';
   private squash = 0;
   private readonly rings: Mesh[] = [];
   private readonly powerRing: Mesh;
   private readonly powerRingMat: StandardMaterial;
   private powerFlash = 0;
+  /** Who is who, among four: the label floating over the head, facing the camera. */
+  private readonly tag: Mesh;
+  private readonly tagMat: StandardMaterial;
+  private readonly tagTex: DynamicTexture;
 
   constructor(
     readonly label: string,
@@ -88,7 +97,7 @@ export class Fighter {
     seed: string,
     readonly spawn: Vector3,
     readonly spawnYaw: number,
-    readonly input: PlayerInput,
+    readonly input: IntentSource,
     shadows?: ShadowGenerator,
     readonly profile: RumbleBody = RUMBLE_BODY,
   ) {
@@ -118,6 +127,30 @@ export class Fighter {
     this.powerRing.material = this.powerRingMat;
     this.powerRing.isPickable = false;
     this.powerRing.setEnabled(false);
+    this.tag = MeshBuilder.CreatePlane(`${label}-tag`, { width: 0.5, height: 0.25 }, scene);
+    this.tag.billboardMode = MeshClass.BILLBOARDMODE_ALL;
+    this.tag.isPickable = false;
+    this.tagTex = new DynamicTexture(`${label}-tag-tex`, { width: 128, height: 64 }, scene, true);
+    this.tagTex.hasAlpha = true;
+    const ctx = this.tagTex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 128, 64);
+    ctx.fillStyle = 'rgba(30,34,52,0.72)';
+    ctx.beginPath();
+    ctx.roundRect(14, 6, 100, 52, 18);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 36px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 64, 34);
+    this.tagTex.update();
+    this.tagMat = new StandardMaterial(`${label}-tag-mat`, scene);
+    this.tagMat.diffuseTexture = this.tagTex;
+    this.tagMat.emissiveColor = Color3.White();
+    this.tagMat.disableLighting = true;
+    this.tagMat.useAlphaFromDiffuseTexture = true;
+    this.tagMat.backFaceCulling = false;
+    this.tag.material = this.tagMat;
   }
 
   /** The impact multiplier this fighter's blows and throws carry. */
@@ -170,7 +203,7 @@ export class Fighter {
 
   /**
    * Steer by intent, within the control the combat state allows. `contest`
-   * is given while this body is against the other fighter's: the steering
+   * is given while this body is against another fighter's: the steering
    * then pushes as a bounded spring, with this fighter's push authority.
    * Returns what happened, for combat and animation.
    */
@@ -301,6 +334,7 @@ export class Fighter {
     this.blobbi.update(presentationInput(c, truth));
     const feet = this.body.feet();
     for (const ring of this.rings) ring.position.set(feet.x, feet.y + 0.02, feet.z);
+    this.tag.position.set(centre.x, centre.y + 1.0, centre.z);
     // Power shows as the ground ring: on from the first level, a little brighter and wider each level, with a flash on gain.
     this.powerFlash = Math.max(0, this.powerFlash - dt);
     const powered = this.powerLevel > 0;
@@ -371,8 +405,25 @@ export class Fighter {
     return !before && this.fall.fallen;
   }
 
-  /** Back to the spawn, upright and at rest, with no transient state. */
+  /**
+   * Out of the round: once its fall has been seen (it is below the fall
+   * line), the body leaves play, parked under the arena where it touches
+   * nothing, and the Blobbi is hidden until the next round.
+   */
+  eliminate(parking: Vector3) {
+    this.eliminated = true;
+    this.body.park(parking);
+    this.blobbi.rig.root.setEnabled(false);
+    this.tag.setEnabled(false);
+    this.powerRing.setEnabled(false);
+    for (const ring of this.rings) ring.setEnabled(false);
+  }
+
+  /** Back to the spawn, upright and at rest, with no transient state; back in play if it was out. */
   reset() {
+    this.eliminated = false;
+    this.blobbi.rig.root.setEnabled(true);
+    this.tag.setEnabled(true);
     this.body.teleport(this.spawn);
     this.yaw = this.spawnYaw;
     this.fall = initialFallState();
@@ -386,7 +437,7 @@ export class Fighter {
   }
 
   showDebug(on: boolean) {
-    for (const ring of this.rings) ring.setEnabled(on);
+    for (const ring of this.rings) ring.setEnabled(on && !this.eliminated);
   }
 
   dispose() {
@@ -395,5 +446,8 @@ export class Fighter {
     for (const ring of this.rings) ring.dispose();
     this.powerRing.dispose();
     this.powerRingMat.dispose();
+    this.tag.dispose();
+    this.tagMat.dispose();
+    this.tagTex.dispose();
   }
 }

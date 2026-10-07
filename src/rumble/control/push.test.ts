@@ -64,6 +64,25 @@ describe('power as authority', () => {
     expect(steer(0, 0, run, true, 1, p, { ...contest(1, 1, false), gain: 1 }).dvx).toBeCloseTo(p.runSpeed);
   });
 
+  it('head-on: keys held nearly into the other body push along the contact line; a diagonal or a sidestep is left alone', () => {
+    // The other body is a little off the key direction (about 11°), as it is a moment into any real contest.
+    const toward = { x: Math.cos(0.2), z: Math.sin(0.2) };
+    const c = { ...contest(1, 1, true), toward, gain: 1, headOnCos: PUSH.headOnCos };
+    const straight = steer(0, 0, { x: 1, z: 0, run: false, jump: false }, true, 1, p, c);
+    // Along the line, at the walk: no sideways part left to shear the two apart.
+    expect(straight.dvx / Math.hypot(straight.dvx, straight.dvz)).toBeCloseTo(toward.x);
+    expect(straight.dvz / Math.hypot(straight.dvx, straight.dvz)).toBeCloseTo(toward.z);
+    // An unasked sideways drift is resisted, not followed.
+    expect(steer(0, 0.4, { x: 1, z: 0, run: false, jump: false }, true, 1 / 60, p, c).dvz).toBeLessThan(0);
+    // A diagonal is the player's escape: untouched.
+    const d = Math.SQRT1_2;
+    const diag = steer(0, 0, { x: d, z: -d, run: false, jump: false }, true, 1, p, c);
+    const plain = steer(0, 0, { x: d, z: -d, run: false, jump: false }, true, 1, p, { ...c, headOnCos: undefined });
+    expect(diag).toEqual(plain);
+    // Not a shoving match (the other is not pushing back): no cone.
+    expect(steer(0, 0, { x: 1, z: 0, run: false, jump: false }, true, 1, p, { ...c, shoving: false }).dvz).toBeCloseTo(0);
+  });
+
   it('two upright capsules touch when their axes are within two radii, in the plane and in height', () => {
     const a = { x: 0, y: 0.525, z: 0 };
     expect(capsuleGap(a, { x: 0.8, y: 0.525, z: 0 })).toBeCloseTo(0);
