@@ -39,9 +39,28 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 ## Blobbi Rumble
 
 ```
-npm run dev          # http://127.0.0.1:5177/rumble.html
+npm run dev          # http://127.0.0.1:5177/rumble.html            local: the match runs in the page
+npm run server       # ws://127.0.0.1:8787                          the authoritative server (one match)
+                     # http://127.0.0.1:5177/rumble.html?network=1  a network client (open several)
 npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60)
 ```
+
+NETWORK PLAY (`src/rumble/net/`, M7B): `npm run server` runs one
+authoritative match in Node at a fixed 60 Hz and sends its state to every
+client at 20 Hz over a WebSocket (`ws`). Each browser that connects takes
+the first free slot (P1..P4) and plays it with any of WASD / arrows,
+Shift, Space / Enter, F / K, G / L; empty slots are test bots, a fifth
+client watches. Clients send only `{ t: 'input', seq, intent }` (and
+pings); the server validates it, applies it to the connection's own
+fighter, acknowledges the highest `seq` applied in each state, and decides
+everything else. One-shot requests (jump, punch, grab) wait in the match
+until a step takes them, so no later input can erase them. A client that
+leaves hands its fighter straight back to its bot; a silent one (a frozen
+tab) is let go of after a second. The next match starts by itself five
+seconds after one is won. The client draws the newest state as it comes,
+with no prediction or interpolation yet. Server environment: `PORT`,
+`HOST`, `TICK_HZ`, `SNAPSHOT_HZ`, and, dev only, `LAG_MS` / `JITTER_MS`
+(added one-way delay each way); client: `?server=ws://host:port`.
 
 THE AUTHORITATIVE MATCH (`src/rumble/sim/`) is the whole game with no
 renderer, DOM, keyboard or clock: `createRumbleMatch({ havok, players })`,
@@ -177,6 +196,13 @@ src/rumble/
     sweeperBody.ts      the sweeper's animated bar and post
     read.ts             reading a snapshot back into combat predicates
     havokNode.ts        Havok's wasm from the package file, for Node
+  net/                the network boundary (M7B):
+    protocol.ts         the wire messages, validation of untrusted input, state freshness (pure)
+    host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart
+    server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag
+    server-cli.ts       `npm run server`
+  client/             the browser client: presenter.ts (draws snapshots, diffing them for feedback),
+                      local.ts (the match in the page), network.ts (a client of the server)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place
@@ -203,7 +229,7 @@ src/rumble/
     orbView.ts          spheres, discs, a burst when taken
     camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
     debug.ts            F3 collider wireframes and the HUD
-  main.ts             the browser client: intents in, step, draw
+  main.ts             picks local or network mode
 ```
 
 `window.rumble` exposes the scene, the match, the views and bots, the

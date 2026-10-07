@@ -51,6 +51,9 @@ export interface FighterSnapshot {
   tilt: number;
   /** The impact of the last blow or throw it received, m/s. */
   lastImpact: number;
+  /** Blows, throws and sweeper hits received, and jumps made, over the match: compare two snapshots to see one happen. */
+  hits: number;
+  jumps: number;
 }
 
 export interface OrbSnapshot {

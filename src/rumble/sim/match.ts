@@ -110,6 +110,17 @@ export class RumbleMatch {
     p.grab ||= clean.grab;
   }
 
+  /**
+   * Forget a player's intent entirely: no movement held, no request waiting.
+   * For whoever hands a fighter from one producer to another (a person
+   * leaving, a bot taking over), so nothing of the last one carries on.
+   */
+  clearInput(id: PlayerId) {
+    const i = this.indexOf(id);
+    this.intents[i] = { ...IDLE_INTENT };
+    this.pending[i] = { jump: false, punch: false, grab: false };
+  }
+
   /** Start a new match: scores, rounds and everything on the arena back to the start. */
   restart(): MatchEvent[] {
     this.events = [];
@@ -289,6 +300,8 @@ export class RumbleMatch {
           touching: idOf(this.contacts[i]),
           tilt: f.tilt,
           lastImpact: f.lastImpact,
+          hits: f.hits,
+          jumps: f.jumps,
         };
       }),
       phase: m.phase,

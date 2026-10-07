@@ -65,6 +65,14 @@ export class FighterSim {
   tilt = 0;
   /** Ground contact as of the last steering. */
   grounded = true;
+  /**
+   * How many blows, throws and sweeper hits it has received, and how many
+   * times it has jumped, over the whole match: counters a client compares
+   * between snapshots to show a squash or a jump, which no snapshot rate
+   * can miss the way it could miss a one-step flag.
+   */
+  hits = 0;
+  jumps = 0;
 
   constructor(
     readonly id: PlayerId,
@@ -143,6 +151,7 @@ export class FighterSim {
     if (s.jumpTo !== null) {
       b.setLinearVelocity(new Vector3(v.x + s.dvx, s.jumpTo, v.z + s.dvz));
       jumped = true;
+      this.jumps += 1;
     }
     if (intent.punch) tryPunch(this.combat);
     this.grounded = grounded;
@@ -158,6 +167,7 @@ export class FighterSim {
   react(r: Reaction, spin: number) {
     this.push(r.dvx, r.dvy, r.dvz);
     this.lastImpact = r.impact;
+    this.hits += 1;
     if (r.kind === 'tumble') this.knockDown(r.dir, spin);
   }
 
