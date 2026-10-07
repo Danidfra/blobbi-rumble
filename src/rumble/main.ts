@@ -1,12 +1,14 @@
 /**
- * BLOBBI RUMBLE, MILESTONE 2: two local players, punch, grab and throw,
+ * BLOBBI RUMBLE: two local players, punch, grab and throw, power orbs,
  * ring-outs and a first-to-three match.
  *
  * One elevated platform over a void. Two visibly different Blobbis from
  * `@blobbi-kit/3d`, each a `Fighter`: the SAME body, controller and
  * combat, with its own keys. Falling off the arena gives the other player
- * the point; both at once is a draw. F3 shows colliders and reach, R
- * restarts a finished match.
+ * the point; both at once is a draw. Three power orbs sit on the arena:
+ * taking one makes a fighter's blows and throws hit harder, for the round.
+ * F3 shows colliders, reach and the orbs' state, R restarts a finished
+ * match.
  *
  *   physics body ──► position / velocity / ground contact ──► visual Blobbi
  *
@@ -24,10 +26,12 @@ import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, releas
 import { Fighter } from './combat/fighter';
 import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput } from './control/input';
 import { PhysicsDebug } from './debug';
+import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from './pickups/orbs';
+import { OrbView } from './pickups/orbView';
 import { enableHavok } from './physics/world';
 import { RUMBLE_BODY } from './profile';
 import { createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
-import { CAMERA, COMBAT, ROUND } from './tuning';
+import { CAMERA, COMBAT, ORBS, ROUND } from './tuning';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -41,7 +45,7 @@ env.camera.upperRadiusLimit = CAMERA.maxRadius;
 env.camera.alpha = CAMERA.alpha;
 env.camera.beta = CAMERA.beta;
 
-const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'F3 colliders & reach · R restart a finished match'];
+const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match'];
 
 async function start() {
   const plugin = await enableHavok(scene, RUMBLE_BODY.gravity);
@@ -53,6 +57,8 @@ async function start() {
   const p2 = new Fighter('P2', scene, seedFromLabel('blobbi-1'), arena.spawns.b, -Math.PI / 2, new PlayerInput(keyboard, P2_BINDINGS), env.shadows);
   const fighters: [Fighter, Fighter] = [p1, p2];
   for (const f of fighters) debug.track(f.body.body);
+  const orbs = createOrbs();
+  const orbView = new OrbView(scene, orbs, env.shadows);
   const match = createMatch();
   let cameraPose: CameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   let message = '';
@@ -61,6 +67,7 @@ async function start() {
     if (e.code === 'F3') {
       debug.toggle();
       for (const f of fighters) f.showDebug(debug.on);
+      orbView.showDebug(debug.on);
       e.preventDefault();
     }
     if (e.code === 'KeyR' && match.phase === 'matchOver') newMatch();
@@ -69,6 +76,7 @@ async function start() {
   const resetRound = () => {
     for (const f of fighters) f.reset();
     for (const f of fighters) f.body.setGravityFactor(1);
+    resetOrbs(orbs);
     cameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   };
   const newMatch = () => {
@@ -119,6 +127,17 @@ async function start() {
       interact(p1, p2, frames[0].intent, dt);
       interact(p2, p1, frames[1].intent, dt);
     }
+    // Orbs: taken by whoever reaches one (the nearer of two), back after a while where no one stands.
+    const centres = fighters.map((f) => f.body.position());
+    if (playing) {
+      collectOrbs(orbs, centres).forEach((taker, i) => {
+        if (taker < 0) return;
+        fighters[taker].gainPower();
+        orbView.taken(i);
+      });
+    }
+    tickOrbs(orbs, dt, centres);
+    orbView.update(dt);
     const tilts = fighters.map((f) => f.settle());
     fighters.forEach((f, i) => f.follow(dt, frames[i]));
 
@@ -146,8 +165,10 @@ async function start() {
     cameraPose = followCamera(cameraPose, wantedCamera(p1.body.feet(), p2.body.feet()), dt);
     applyCamera(env.camera, cameraPose);
 
+    const power = (f: Fighter) => `×${f.power.toFixed(2)}${f.powerLevel > 0 ? ` (${f.powerLevel} orb${f.powerLevel === 1 ? '' : 's'})` : ''}`;
     const lines = [
       `P1  ${match.score[0]} - ${match.score[1]}  P2     round ${match.round} · first to ${ROUND.target}`,
+      `power  P1 ${power(p1)}  ·  P2 ${power(p2)}`,
       message || (playing ? '' : '…'),
       '',
       ...CONTROLS,
@@ -159,7 +180,8 @@ async function start() {
         const what = c.tumble >= 0 ? `tumble ${c.tumble.toFixed(2)}` : c.recovering >= 0 ? `recover ${c.recovering.toFixed(2)}` : c.held ? 'held' : isHolding(c) ? `holding ${(c.holdAngle * 57.3).toFixed(0)}°` : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
         return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(13)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} tilt ${((tilts[fighters.indexOf(f)] * 180) / Math.PI).toFixed(0)}°`;
       };
-      lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`);
+      const orbLine = orbs.map((o, i) => `${i}:${o.active ? 'up' : `back in ${o.timer.toFixed(1)}s`}`).join(' · ');
+      lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`, `orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`, `last impact on P1 ${p1.lastImpact.toFixed(2)} · on P2 ${p2.lastImpact.toFixed(2)} · tumble at ${COMBAT.tumbleThreshold}`);
     }
     debug.print(lines);
     scene.render();
@@ -180,6 +202,7 @@ async function start() {
       p2,
       match,
       arena,
+      orbs,
       keyboard,
       debug,
       plugin,

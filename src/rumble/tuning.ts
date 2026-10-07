@@ -81,6 +81,38 @@ export const ROUND = Object.freeze({
   resetDelay: 1.6,
 });
 
+/**
+ * POWER: what a collected orb gives. One level per orb; the impact
+ * multiplier of each level, the last entry being the cap. Power multiplies
+ * the impact of a punch and a throw through `resolveImpact` and nothing
+ * else: not speed, reach, hold, mass or recovery.
+ */
+export const POWER = Object.freeze({
+  multipliers: [1.0, 1.08, 1.16, 1.24, 1.32, 1.4, 1.48] as readonly number[],
+});
+
+/**
+ * POWER ORBS on the arena: where they are, how they are taken, when they
+ * return. The platform is 12 × 10 m with the players spawning at x ±2.5 on
+ * the centre line: one contested orb ahead of both, equally far from each,
+ * and one toward each player's own far corner, a little off the rim, so
+ * that leaving the centre has a reason and a risk.
+ */
+export const ORBS = Object.freeze({
+  points: [
+    { x: 0, z: 2.5 },
+    { x: -4.3, z: -2.8 },
+    { x: 4.3, z: -2.8 },
+  ] as readonly { x: number; z: number }[],
+  /** The orb floats this high over the platform (its centre), metres. */
+  height: 0.6,
+  /** Collected when a fighter's capsule centre is within this of the orb's centre, metres (the capsule's radius is 0.4). */
+  collectRadius: 0.72,
+  /** Back this long after being taken, seconds; a fighter within this of the point defers the return. */
+  respawnDelay: 5,
+  occupiedRadius: 1.1,
+});
+
 export const CAMERA = Object.freeze({
   /** Looking along +z from -z (alpha) and from this far above level (beta). */
   alpha: -Math.PI / 2,

@@ -56,6 +56,7 @@ to three wins, R restarts, F3 shows colliders and reach.
 | jump | Space | Enter |
 | punch | F | K |
 | grab / throw | G | L |
+| take an orb | walk into it | walk into it |
 
 ```
 physics body (Havok capsule) ──► position / velocity / ground contact ──► visual Blobbi
@@ -71,8 +72,21 @@ hard enough hit, frees the victim's capsule to tumble (a real rotation of
 the body, not a ragdoll) with little steering authority, then a short
 recovery rights it and hands control back; a lighter hit is a brief stun.
 Every impact goes through one path (`combat/impact.ts`: base × power ×
-attack × situation, clamped) so later power multipliers plug in there. The
-kit package knows nothing of Havok; everything game-side is `src/rumble/`:
+attack × situation, clamped).
+
+Three POWER ORBS sit on the arena (`tuning.ts`, `ORBS`): one contested,
+ahead of both spawns and equally far from each, and one toward each
+player's own far corner, a little off the rim. Walking into one takes it
+(the nearer fighter when two arrive together), it bursts and is gone, and
+it returns after a few seconds where no one is standing. Each orb is one
+power level; the level's multiplier (`POWER`, +0.08 per orb, capped at
+×1.48) is the player-power factor of the impact path, so punches and
+throws hit harder, and a standing punch crosses the tumble threshold on
+its own from the third orb. Power changes nothing else (not speed, reach,
+hold, mass or recovery) and resets every round. The HUD shows each
+player's multiplier; a powered Blobbi has a glowing ring at its feet.
+
+The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 
 ```
 src/rumble/
@@ -85,6 +99,9 @@ src/rumble/
   combat/impact.ts    one impact-strength path and the hit / tumble rule (pure)
   combat/combat.ts    punch, stun, grab, hold, throw, tumble, recovery: pure state and geometry
   combat/fighter.ts   one player, the same class for both: body, input, combat, fall, and the visual Blobbi
+  pickups/orbs.ts     the orbs: where, taken by whom, when back (pure)
+  pickups/power.ts    a level's impact multiplier, capped (pure)
+  pickups/orbView.ts  how the orbs look: spheres, discs, a burst when taken
   rounds.ts           ring-out, rounds, the match (pure)
   camera.ts           one shared camera: midpoint, bounded distance, smooth follow (pure)
   arena.ts            the platform, static, on the ground layer

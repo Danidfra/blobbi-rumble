@@ -35,6 +35,7 @@ import {
   turnAngle,
 } from './combat';
 import { punchSituational, reactionKind, resolveImpact } from './impact';
+import { powerCap, powerMultiplier } from '../pickups/power';
 
 const east = { x: 1, z: 0 };
 const at = (x: number, z = 0) => ({ x, z });
@@ -99,6 +100,24 @@ describe('punch', () => {
     const strong = createCombatState();
     tryPunch(strong);
     expect(landPunch(strong, at(0), east, 0, 1.5, createCombatState(), at(0.9), walk)!.kind).toBe('tumble');
+  });
+
+  it('a punch carries the attacker\'s power through the impact path: a standing punch reaches the tumble as power grows, and no more than the bound', () => {
+    const impactAt = (power: number, speed = 0) => {
+      const a = createCombatState();
+      tryPunch(a);
+      return landPunch(a, at(0), east, speed, power, createCombatState(), at(0.9), walk)!;
+    };
+    for (let level = 1; level <= powerCap(); level++) {
+      expect(impactAt(powerMultiplier(level)).impact).toBeCloseTo(Math.min(COMBAT.impactMax, COMBAT.punchImpact * powerMultiplier(level)));
+    }
+    // The tumble is not a rule on the level: it falls out of the resolved impact crossing the threshold.
+    const firstTumble = [0, 1, 2, 3, 4, 5, 6].find((level) => impactAt(powerMultiplier(level)).kind === 'tumble');
+    expect(firstTumble).toBeGreaterThan(0);
+    expect(COMBAT.punchImpact * powerMultiplier(firstTumble!)).toBeGreaterThanOrEqual(COMBAT.tumbleThreshold);
+    expect(COMBAT.punchImpact * powerMultiplier(firstTumble! - 1)).toBeLessThan(COMBAT.tumbleThreshold);
+    // Running and at the cap: still bounded.
+    expect(impactAt(powerMultiplier(powerCap()), RUMBLE_BODY.runSpeed).impact).toBeLessThanOrEqual(COMBAT.impactMax);
   });
 
   it('stuns the victim, who then keeps little control and cannot act until it wears off', () => {
@@ -278,6 +297,13 @@ describe('the hold', () => {
 });
 
 describe('throw and tumble', () => {
+  it('a throw carries the attacker\'s power too, bounded', () => {
+    const still = { x: 0, z: 0 };
+    expect(throwImpact(east, still, powerMultiplier(2))).toBeCloseTo(COMBAT.throwBase * powerMultiplier(2));
+    expect(throwImpact(east, still, powerMultiplier(2))).toBeGreaterThan(throwImpact(east, still, 1));
+    expect(throwImpact(east, { x: RUMBLE_BODY.runSpeed, z: 0 }, powerMultiplier(powerCap()))).toBeLessThanOrEqual(COMBAT.impactMax);
+  });
+
   it('throws along the hold direction through the impact path, always into a tumble', () => {
     expect(throwImpact(east, at(0))).toBeCloseTo(COMBAT.throwBase);
     expect(throwImpact(east, at(3))).toBeCloseTo(Math.min(COMBAT.impactMax, COMBAT.throwBase + 3 * COMBAT.throwGain));

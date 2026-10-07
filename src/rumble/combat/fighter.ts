@@ -23,6 +23,7 @@ import type { MoveIntent, PlayerInput } from '../control/input';
 import { steer } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
+import { powerCap, powerMultiplier } from '../pickups/power';
 import { initialFallState, updateFall, type FallState } from '../respawn';
 import { COMBAT } from '../tuning';
 import {
@@ -70,11 +71,16 @@ export class Fighter {
   fall: FallState = initialFallState();
   bridge: BridgeState = initialBridge();
   yaw: number;
-  /** The attacker's power multiplier (1 until a later milestone grows it). */
-  power = 1;
+  /** Orbs taken this round; the impact multiplier they stand for is `power`. */
+  powerLevel = 0;
+  /** The impact of the last blow or throw this fighter received, m/s (debug). */
+  lastImpact = 0;
   private lastExpression: ExpressionName = 'happy';
   private squash = 0;
   private readonly rings: Mesh[] = [];
+  private readonly powerRing: Mesh;
+  private readonly powerRingMat: StandardMaterial;
+  private powerFlash = 0;
 
   constructor(
     readonly label: string,
@@ -104,6 +110,25 @@ export class Fighter {
     };
     ring('grab-ring', COMBAT.grabRange, '#2bb3ff');
     ring('punch-ring', COMBAT.punchRange, '#ff4d4d');
+    // The power ring: a thin glow on the ground under a powered fighter, brighter with each level. Hidden at zero.
+    this.powerRing = MeshBuilder.CreateTorus(`${label}-power-ring`, { diameter: 1.0, thickness: 0.05, tessellation: 48 }, scene);
+    this.powerRingMat = new StandardMaterial(`${label}-power-ring-mat`, scene);
+    this.powerRingMat.emissiveColor = Color3.FromHexString('#ffb020');
+    this.powerRingMat.disableLighting = true;
+    this.powerRing.material = this.powerRingMat;
+    this.powerRing.isPickable = false;
+    this.powerRing.setEnabled(false);
+  }
+
+  /** The impact multiplier this fighter's blows and throws carry. */
+  get power(): number {
+    return powerMultiplier(this.powerLevel);
+  }
+
+  /** An orb taken: one level more (the multiplier caps on its own). */
+  gainPower() {
+    this.powerLevel += 1;
+    this.powerFlash = 0.3;
   }
 
   /** Capsule centre and facing in the ground plane; feet in space. */
@@ -164,6 +189,7 @@ export class Fighter {
   /** Receive a blow or a throw: the velocity change, and a tumble when the reaction says so. */
   react(r: Reaction, spin: number) {
     this.push(r.dvx, r.dvy, r.dvz);
+    this.lastImpact = r.impact;
     this.squash = COMBAT.hitSquash;
     if (r.kind === 'tumble') this.knockDown(r.dir, spin);
   }
@@ -257,6 +283,18 @@ export class Fighter {
     this.blobbi.update(presentationInput(c, truth));
     const feet = this.body.feet();
     for (const ring of this.rings) ring.position.set(feet.x, feet.y + 0.02, feet.z);
+    // Power shows as the ground ring: on from the first level, a little brighter and wider each level, with a flash on gain.
+    this.powerFlash = Math.max(0, this.powerFlash - dt);
+    const powered = this.powerLevel > 0;
+    this.powerRing.setEnabled(powered);
+    if (powered) {
+      const k = Math.min(1, this.powerLevel / powerCap());
+      const flash = this.powerFlash / 0.3;
+      const size = 1 + 0.25 * k + 0.6 * flash;
+      this.powerRing.position.set(feet.x, feet.y + 0.025, feet.z);
+      this.powerRing.scaling.set(size, 1, size);
+      this.powerRingMat.alpha = 0.35 + 0.45 * k + 0.2 * flash;
+    }
 
     // Feedback the kit has no animation for yet, laid over its pose.
     const rig = this.blobbi.rig;
@@ -323,6 +361,9 @@ export class Fighter {
     this.bridge = initialBridge();
     resetCombat(this.combat);
     this.squash = 0;
+    this.powerLevel = 0;
+    this.powerFlash = 0;
+    this.lastImpact = 0;
     this.blobbi.animator.setState(null);
   }
 
@@ -334,5 +375,7 @@ export class Fighter {
     this.body.dispose();
     this.blobbi.dispose();
     for (const ring of this.rings) ring.dispose();
+    this.powerRing.dispose();
+    this.powerRingMat.dispose();
   }
 }
