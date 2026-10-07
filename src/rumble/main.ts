@@ -187,8 +187,8 @@ async function start() {
         return cameraPose;
       },
       /** Drive frames by hand (a hidden tab gets none); scripted checks step the physics at a fixed 1/60 s. */
-      step(frames = 1) {
-        for (let i = 0; i < frames; i++) frame(1 / 60);
+      step(frames = 1, dt = 1 / 60) {
+        for (let i = 0; i < frames; i++) frame(dt);
       },
       key(code: string, down: boolean) {
         window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));

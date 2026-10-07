@@ -28,6 +28,7 @@ import { COMBAT } from '../tuning';
 import {
   controlFactor,
   createCombatState,
+  facingFollowsVelocity,
   holdAnchor,
   holdDirection,
   isDown,
@@ -234,8 +235,9 @@ export class Fighter {
   follow(dt: number, frame: FighterFrame) {
     const c = this.combat;
     const v = this.body.velocity();
-    // A stunned, held or downed body keeps its facing: it is not walking anywhere.
-    if (!isStunned(c) && !c.held && !isDown(c)) this.yaw = facingYaw(v.x, v.z, this.yaw, dt);
+    // A stunned, held or downed body keeps its facing; a carrier turns only by its own steering.
+    const steering = frame.intent.x !== 0 || frame.intent.z !== 0;
+    if (facingFollowsVelocity(c, steering)) this.yaw = facingYaw(v.x, v.z, this.yaw, dt);
     const root = this.blobbi.rig.root;
     const centre = this.body.position();
     if (isDown(c) && !this.body.isUpright()) {

@@ -4,6 +4,7 @@
  * how it pulls, when it breaks), the throw, the tumble and the recovery.
  */
 import { describe, expect, it } from 'vitest';
+import { facingYaw } from '../control/animationBridge';
 import { steer } from '../control/mover';
 import { RUMBLE_BODY } from '../profile';
 import { COMBAT } from '../tuning';
@@ -12,6 +13,7 @@ import {
   controlFactor,
   createCombatState,
   endGrab,
+  facingFollowsVelocity,
   holdAnchor,
   holdBreaks,
   holdDirection,
@@ -202,6 +204,76 @@ describe('the hold', () => {
     // The hold moves with the grabber.
     const moving = holdPull(anchor, at(2), anchor, feet(0), 1);
     expect(moving.victim.x).toBeCloseTo(2);
+  });
+
+  it('turns the carrier only by its own steering: the load cannot turn it', () => {
+    const c = createCombatState();
+    expect(facingFollowsVelocity(c, false)).toBe(true);
+    c.holding = 0;
+    expect(facingFollowsVelocity(c, false)).toBe(false);
+    expect(facingFollowsVelocity(c, true)).toBe(true);
+    const held = createCombatState();
+    held.held = true;
+    expect(facingFollowsVelocity(held, true)).toBe(false);
+  });
+
+  /**
+   * The carrier and its load as points, with the game's own rules: braking
+   * steering, the hold spring and its reaction, the hold direction chasing
+   * the facing. A standing carrier whose hold direction is off its facing
+   * (as after a turn) must settle, even at a low frame rate, where each
+   * frame's reaction is large.
+   */
+  function standingHold(dt: number, loadTurnsCarrier: boolean) {
+    const g = { x: 0, z: 0, vx: 0, vz: 0 };
+    const v = { x: Math.sin(Math.PI / 2) * COMBAT.holdDistance, y: COMBAT.holdHeight, z: 0, vx: 0, vy: 0, vz: 0 };
+    let yaw = 0;
+    const c = createCombatState();
+    c.holding = 0;
+    c.holdAngle = Math.PI / 2;
+    let maxSpeed = 0;
+    let yawSpan = 0;
+    const frames = Math.round(2 / dt);
+    for (let i = 0; i < frames; i++) {
+      c.holding += dt;
+      const s = steer(g.vx, g.vz, { x: 0, z: 0, run: false, jump: false }, true, dt, RUMBLE_BODY);
+      g.vx += s.dvx;
+      g.vz += s.dvz;
+      // As the game orders it: steer, then the hold (direction, anchor, pull, reaction), then the facing from the body's velocity.
+      stepHold(c, yaw, dt);
+      const anchor = holdAnchor(feet(g.x, 0, g.z), c.holdAngle);
+      const pull = holdPull(anchor, at(g.vx, g.vz), feet(v.x, v.y, v.z), feet(v.vx, v.vy, v.vz), dt);
+      v.vx += pull.victim.x;
+      v.vy += pull.victim.y;
+      v.vz += pull.victim.z;
+      g.vx += pull.grabber.x;
+      g.vz += pull.grabber.z;
+      const before = yaw;
+      if (loadTurnsCarrier || facingFollowsVelocity(c, false)) yaw = facingYaw(g.vx, g.vz, yaw, dt);
+      g.x += g.vx * dt;
+      g.z += g.vz * dt;
+      v.x += v.vx * dt;
+      v.y += v.vy * dt;
+      v.z += v.vz * dt;
+      if (i * dt > 1) {
+        maxSpeed = Math.max(maxSpeed, Math.hypot(g.vx, g.vz));
+        yawSpan = Math.max(yawSpan, Math.abs(yaw - before));
+      }
+    }
+    return { maxSpeed, yawSpan, holdAngle: c.holdAngle, yaw };
+  }
+
+  it('a standing carrier does not shake: the hold settles at 60 and at 16 frames per second', () => {
+    for (const dt of [1 / 60, 1 / 16]) {
+      const settled = standingHold(dt, false);
+      expect(settled.maxSpeed).toBeLessThan(0.02);
+      expect(settled.yawSpan).toBe(0);
+      expect(settled.holdAngle).toBeCloseTo(settled.yaw);
+    }
+    // The loop this guards against: with the load's reaction turning the carrier, the same hold shakes at a low frame rate.
+    const shaking = standingHold(1 / 16, true);
+    expect(shaking.maxSpeed).toBeGreaterThan(0.3);
+    expect(shaking.yawSpan).toBeGreaterThan(0.3);
   });
 });
 

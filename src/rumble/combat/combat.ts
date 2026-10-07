@@ -186,6 +186,19 @@ export function stepHold(grabber: CombatState, facingYaw: number, dt: number, t:
 
 export const holdDirection = (grabber: CombatState): Planar => ({ x: Math.sin(grabber.holdAngle), z: Math.cos(grabber.holdAngle) });
 
+/**
+ * Whether the facing may follow the body's velocity this frame. Not while
+ * stunned, held or down (the body is not walking anywhere), and while
+ * carrying only when the player steers: the load's reaction on the carrier
+ * must not turn it, or the hold direction chases that turn, the anchor
+ * swings, and the spring kicks back the other way, a loop that shook a
+ * standing carrier at low frame rates.
+ */
+export function facingFollowsVelocity(c: CombatState, steering: boolean): boolean {
+  if (isStunned(c) || c.held || isDown(c)) return false;
+  return !isHolding(c) || steering;
+}
+
 /** Where the held body is kept: ahead along the hold direction, and lifted. `feet` is the grabber's feet. */
 export function holdAnchor(grabberFeet: Point, holdAngle: number, t: Tuning = COMBAT): Point {
   return { x: grabberFeet.x + Math.sin(holdAngle) * t.holdDistance, y: grabberFeet.y + t.holdHeight, z: grabberFeet.z + Math.cos(holdAngle) * t.holdDistance };
