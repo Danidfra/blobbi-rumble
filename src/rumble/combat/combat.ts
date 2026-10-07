@@ -1,18 +1,26 @@
 /**
  * COMBAT, as pure state and pure geometry. A fighter's combat state is a
- * few timers and a hold; the rules that start a punch, land it, start or
- * break a grab, pull the held body and throw it are functions of plain
- * numbers, so every one of them is tested without an engine.
+ * few timers, a hold and a tumble; the rules that start a punch, land it,
+ * start, turn, pull and break a hold, throw, and knock a body into a tumble
+ * and back are functions of plain numbers, so every one of them is tested
+ * without an engine.
  *
- * Positions are capsule centres in the ground plane (x, z); a facing is a
- * unit vector in that plane.
+ * Positions are capsule centres in the ground plane (x, z) unless a `y` is
+ * named; a facing is a unit vector in that plane; angles are yaws (the
+ * direction (sin a, cos a)).
  */
 import { COMBAT } from '../tuning';
+import { reactionKind, resolveImpact, type ReactionKind } from './impact';
 
 export type Tuning = typeof COMBAT;
 
 export interface Planar {
   x: number;
+  z: number;
+}
+export interface Point {
+  x: number;
+  y: number;
   z: number;
 }
 
@@ -27,21 +35,23 @@ export interface CombatState {
   stun: number;
   /** Holding the opponent, for this long so far; -1 when not. */
   holding: number;
+  /** The yaw the held body is kept at, relative to the grabber: turns toward the facing at a bounded rate. */
+  holdAngle: number;
   /** Held by the opponent. */
   held: boolean;
+  /** Knocked off its feet: seconds into the tumble, or -1. */
+  tumble: number;
+  /** Getting back up: seconds into the recovery, or -1. */
+  recovering: number;
 }
 
-export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, held: false });
+export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, holdAngle: 0, held: false, tumble: -1, recovering: -1 });
 
 export function resetCombat(s: CombatState) {
-  s.punchCooldown = 0;
-  s.punchTime = -1;
-  s.punchLanded = false;
-  s.stun = 0;
-  s.holding = -1;
-  s.held = false;
+  Object.assign(s, createCombatState());
 }
 
+/** Advance every timer. A finished tumble becomes a recovery; a finished recovery is over. */
 export function tickCombat(s: CombatState, dt: number, t: Tuning = COMBAT) {
   s.punchCooldown = Math.max(0, s.punchCooldown - dt);
   if (s.punchTime >= 0) {
@@ -50,18 +60,38 @@ export function tickCombat(s: CombatState, dt: number, t: Tuning = COMBAT) {
   }
   s.stun = Math.max(0, s.stun - dt);
   if (s.holding >= 0) s.holding += dt;
+  if (s.tumble >= 0) {
+    s.tumble += dt;
+    if (s.tumble >= t.tumbleDuration) {
+      s.tumble = -1;
+      s.recovering = 0;
+    }
+  } else if (s.recovering >= 0) {
+    s.recovering += dt;
+    if (s.recovering >= t.recoveryDuration) s.recovering = -1;
+  }
 }
 
 export const isPunching = (s: CombatState) => s.punchTime >= 0;
 export const punchActive = (s: CombatState, t: Tuning = COMBAT) => s.punchTime >= 0 && s.punchTime <= t.punchActive && !s.punchLanded;
 export const isStunned = (s: CombatState) => s.stun > 0;
 export const isHolding = (s: CombatState) => s.holding >= 0;
+export const isTumbling = (s: CombatState) => s.tumble >= 0;
+export const isRecovering = (s: CombatState) => s.recovering >= 0;
+/** Off its feet, one way or the other: the body is not upright. */
+export const isDown = (s: CombatState) => isTumbling(s) || isRecovering(s);
 
-/** A fighter may act (punch, grab) when it is neither stunned, held, holding nor mid-punch. */
-export const canAct = (s: CombatState) => !isStunned(s) && !s.held && !isHolding(s) && !isPunching(s);
+/** A fighter may act (punch, grab) when it is upright, free, not stunned, not held, not holding and not mid-punch. */
+export const canAct = (s: CombatState) => !isDown(s) && !isStunned(s) && !s.held && !isHolding(s) && !isPunching(s);
 
-/** How much of its steering authority a fighter has: stunned and held bodies keep little, so knockback and pulls are not cancelled. */
+/**
+ * How much of its steering authority a fighter has. Tumbling leaves a
+ * little (enough to lean toward the arena, never enough to cancel a throw),
+ * recovery half, a stun almost none, a hold a fifth.
+ */
 export function controlFactor(s: CombatState, t: Tuning = COMBAT): number {
+  if (isTumbling(s)) return t.tumbleControl;
+  if (isRecovering(s)) return t.recoveryControl;
   if (isStunned(s)) return t.stunControl;
   if (s.held) return t.grabbedControl;
   return 1;
@@ -88,30 +118,48 @@ export function inReach(attacker: Planar, facing: Planar, victim: Planar, range:
   return { x: ux, z: uz };
 }
 
-export interface Knock {
+/** What a body receives: a velocity change, and how it reacts to it. */
+export interface Reaction {
+  kind: ReactionKind;
+  /** The clamped impact, m/s. */
+  impact: number;
   /** Velocity change, m/s. */
   dvx: number;
   dvy: number;
   dvz: number;
+  /** The unit direction the blow travels in, in the ground plane. */
+  dir: Planar;
 }
 
 /**
  * Land a punch if it is active and the victim is in reach: marks it landed,
- * stuns the victim, and returns the knockback along the attacker's facing.
+ * resolves the impact (base, the attacker's power, the running bonus), and
+ * returns the reaction: a hit with a short stun, or a tumble at the
+ * threshold.
  */
-export function landPunch(attacker: CombatState, at: Planar, facing: Planar, victim: CombatState, victimAt: Planar, t: Tuning = COMBAT): Knock | null {
+export function landPunch(attacker: CombatState, at: Planar, facing: Planar, attackerSpeedAlong: number, power: number, victim: CombatState, victimAt: Planar, walkSpeed: number, t: Tuning = COMBAT): Reaction | null {
   if (!punchActive(attacker, t)) return null;
   if (!inReach(at, facing, victimAt, t.punchRange, t.punchArcCos)) return null;
   attacker.punchLanded = true;
+  const impact = resolveImpact({ base: t.punchImpact, power, situational: attackerSpeedAlong > walkSpeed ? t.punchRunBonus : 1 }, t);
+  const kind = reactionKind(impact, false, t);
   victim.stun = Math.max(victim.stun, t.hitStun);
-  return { dvx: facing.x * t.punchKnock, dvy: t.punchLift, dvz: facing.z * t.punchKnock };
+  return { kind, impact, dvx: facing.x * impact, dvy: t.punchLift, dvz: facing.z * impact, dir: { x: facing.x, z: facing.z } };
 }
 
-/** Start a hold if allowed: the grabber may act, the victim is not held or holding, and is in reach. */
+/** Knock a body into a tumble (and out of any hold it had). */
+export function startTumble(s: CombatState) {
+  s.tumble = 0;
+  s.recovering = -1;
+  s.holding = -1;
+}
+
+/** Start a hold if allowed: the grabber may act, the victim is upright, not held or holding, and in reach. The hold begins where the victim is. */
 export function tryGrab(grabber: CombatState, at: Planar, facing: Planar, victim: CombatState, victimAt: Planar, t: Tuning = COMBAT): boolean {
-  if (!canAct(grabber) || victim.held || isHolding(victim)) return false;
+  if (!canAct(grabber) || victim.held || isHolding(victim) || isDown(victim)) return false;
   if (!inReach(at, facing, victimAt, t.grabRange, t.grabArcCos)) return false;
   grabber.holding = 0;
+  grabber.holdAngle = Math.atan2(victimAt.x - at.x, victimAt.z - at.z);
   victim.held = true;
   return true;
 }
@@ -122,50 +170,69 @@ export function endGrab(grabber: CombatState, victim: CombatState) {
   victim.held = false;
 }
 
-/** Whether a hold must break on its own: it has lasted too long, or the bodies have come apart. */
-export function holdBreaks(grabber: CombatState, at: Planar, victimAt: Planar, t: Tuning = COMBAT): boolean {
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/** Turn `current` toward `target` by at most `maxDelta`, the short way round. */
+export function turnAngle(current: number, target: number, maxDelta: number): number {
+  const d = wrapAngle(target - current);
+  if (Math.abs(d) <= maxDelta) return wrapAngle(target);
+  return wrapAngle(current + Math.sign(d) * maxDelta);
+}
+
+/** The hold direction follows the grabber's facing at a bounded rate: a reversal swings the held body round, never through. */
+export function stepHold(grabber: CombatState, facingYaw: number, dt: number, t: Tuning = COMBAT) {
+  grabber.holdAngle = turnAngle(grabber.holdAngle, facingYaw, t.holdTurnRate * dt);
+}
+
+export const holdDirection = (grabber: CombatState): Planar => ({ x: Math.sin(grabber.holdAngle), z: Math.cos(grabber.holdAngle) });
+
+/** Where the held body is kept: ahead along the hold direction, and lifted. `feet` is the grabber's feet. */
+export function holdAnchor(grabberFeet: Point, holdAngle: number, t: Tuning = COMBAT): Point {
+  return { x: grabberFeet.x + Math.sin(holdAngle) * t.holdDistance, y: grabberFeet.y + t.holdHeight, z: grabberFeet.z + Math.cos(holdAngle) * t.holdDistance };
+}
+
+/** Whether a hold must break on its own: it has lasted too long, or the held body has been pushed too far from its anchor. */
+export function holdBreaks(grabber: CombatState, anchor: Point, victimFeet: Point, t: Tuning = COMBAT): boolean {
   if (!isHolding(grabber)) return false;
   if (grabber.holding > t.grabMaxHold) return true;
-  return Math.hypot(victimAt.x - at.x, victimAt.z - at.z) > t.grabBreakDistance;
+  return Math.hypot(victimFeet.x - anchor.x, victimFeet.y - anchor.y, victimFeet.z - anchor.z) > t.grabBreakDistance;
 }
 
 export interface Pull {
-  /** The held body's velocity change this frame, and the grabber's reaction. */
-  victim: Planar;
+  /** The held body's velocity change this frame (3D), and the grabber's reaction (in the plane). */
+  victim: Point;
   grabber: Planar;
 }
 
 /**
- * The spring that keeps a held body in front of its grabber: a bounded
- * velocity change toward the hold point, moving with the grabber, and a
- * share of it back on the grabber.
+ * The spring that keeps a held body at its anchor: a bounded velocity
+ * change toward the anchor, moving with the grabber, and a share of its
+ * horizontal part back on the grabber. The held body is weightless while
+ * held, so the spring carries it up as well as along.
  */
-export function holdPull(at: Planar, facing: Planar, vel: Planar, victimAt: Planar, victimVel: Planar, dt: number, t: Tuning = COMBAT): Pull {
-  const hx = at.x + facing.x * t.holdDistance;
-  const hz = at.z + facing.z * t.holdDistance;
-  const wantX = (hx - victimAt.x) * t.holdStiffness + vel.x;
-  const wantZ = (hz - victimAt.z) * t.holdStiffness + vel.z;
-  let dvx = wantX - victimVel.x;
-  let dvz = wantZ - victimVel.z;
+export function holdPull(anchor: Point, grabberVel: Planar, victimFeet: Point, victimVel: Point, dt: number, t: Tuning = COMBAT): Pull {
+  let dvx = (anchor.x - victimFeet.x) * t.holdStiffness + grabberVel.x - victimVel.x;
+  let dvy = (anchor.y - victimFeet.y) * t.holdStiffness - victimVel.y;
+  let dvz = (anchor.z - victimFeet.z) * t.holdStiffness + grabberVel.z - victimVel.z;
   const max = t.holdMaxPull * dt;
-  const len = Math.hypot(dvx, dvz);
+  const len = Math.hypot(dvx, dvy, dvz);
   if (len > max && len > 0) {
     dvx *= max / len;
+    dvy *= max / len;
     dvz *= max / len;
   }
-  return { victim: { x: dvx, z: dvz }, grabber: { x: -dvx * t.holdReaction, z: -dvz * t.holdReaction } };
+  return { victim: { x: dvx, y: dvy, z: dvz }, grabber: { x: -dvx * t.holdReaction, z: -dvz * t.holdReaction } };
 }
 
-/** The velocity a released body is given, along the grabber's facing, from the grabber's own speed that way: a shove standing still, a throw on the run. */
-export function throwVelocity(facing: Planar, grabberVel: Planar, t: Tuning = COMBAT): Knock {
-  const along = Math.max(0, grabberVel.x * facing.x + grabberVel.z * facing.z);
-  const speed = Math.min(t.throwMax, t.throwBase + t.throwGain * along);
-  return { dvx: facing.x * speed, dvy: t.throwLift, dvz: facing.z * speed };
+/** The impact of a throw: base plus gain times the grabber's speed along the hold direction, through the impact path. */
+export function throwImpact(dir: Planar, grabberVel: Planar, power = 1, t: Tuning = COMBAT): number {
+  const along = Math.max(0, grabberVel.x * dir.x + grabberVel.z * dir.z);
+  return resolveImpact({ base: t.throwBase + t.throwGain * along, power }, t);
 }
 
-/** Throw: end the hold, stun the thrown body, and say how it leaves. */
-export function release(grabber: CombatState, victim: CombatState, facing: Planar, grabberVel: Planar, t: Tuning = COMBAT): Knock {
+/** Throw: end the hold, and say how the thrown body leaves. It always tumbles. */
+export function release(grabber: CombatState, victim: CombatState, dir: Planar, grabberVel: Planar, power = 1, t: Tuning = COMBAT): Reaction {
   endGrab(grabber, victim);
-  victim.stun = Math.max(victim.stun, t.throwStun);
-  return throwVelocity(facing, grabberVel, t);
+  const impact = throwImpact(dir, grabberVel, power, t);
+  return { kind: reactionKind(impact, true, t), impact, dvx: dir.x * impact, dvy: t.throwLift, dvz: dir.z * impact, dir };
 }

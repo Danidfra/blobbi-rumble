@@ -3,22 +3,23 @@
  *
  * The capsule is built from `RUMBLE_BODY` and nothing else: the visual
  * Blobbi it will carry is never consulted, so every character collides,
- * weighs and moves the same. It stays upright by having no rotational
- * inertia at all (Havok then never turns it), which is what a party-game
- * character wants until a stun or a ragdoll says otherwise.
+ * weighs and moves the same. Upright, it has no rotational inertia at all
+ * (Havok then never turns it); knocked down, it is given the inertia of a
+ * capsule its size and really tumbles, until the game rights it and locks
+ * it upright again.
  *
  * The body's transform node is an invisible capsule mesh at the capsule's
- * centre; the visual Blobbi's root is placed at its feet each frame.
+ * centre; the visual Blobbi is placed on it each frame.
  */
 import { PhysicsAggregate } from '@babylonjs/core/Physics/v2/physicsAggregate';
 import { PhysicsShapeType, PhysicsMotionType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
 import { PhysicsRaycastResult } from '@babylonjs/core/Physics/physicsRaycastResult';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { Quaternion, Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { PhysicsBody } from '@babylonjs/core/Physics/v2/physicsBody';
-import type { Scene } from '@babylonjs/core/scene';
 import type { PhysicsEngine } from '@babylonjs/core/Physics/v2/physicsEngine';
+import type { Scene } from '@babylonjs/core/scene';
 import { LAYER, RUMBLE_BODY, type RumbleBody } from '../profile';
 
 export interface GameplayBody {
@@ -27,12 +28,20 @@ export interface GameplayBody {
   body: PhysicsBody;
   /** The capsule's centre, world. */
   position(): Vector3;
-  /** Where the feet are, world: the centre dropped by the profile's centre height. */
+  /** Where the feet are, world: the centre dropped straight down by the profile's centre height (whatever the tilt). */
   feet(): Vector3;
   velocity(): Vector3;
+  /** The capsule's orientation (identity while upright). */
+  rotation(): Quaternion;
   /** Whether the ground is within the probe distance below the feet. */
   grounded(): boolean;
-  /** Put the body back somewhere, at rest. */
+  /** Lock the body upright (no rotational inertia, orientation snapped to identity) or free it to tumble. */
+  setUpright(locked: boolean): void;
+  isUpright(): boolean;
+  setAngularVelocity(v: Vector3): void;
+  /** 1 under gravity, 0 weightless (a held body). */
+  setGravityFactor(factor: number): void;
+  /** Put the body back somewhere, upright and at rest. */
   teleport(feet: Vector3): void;
   dispose(): void;
 }
@@ -45,14 +54,28 @@ export function createGameplayBody(scene: Scene, name: string, feetAt: Vector3, 
   const aggregate = new PhysicsAggregate(mesh, PhysicsShapeType.CAPSULE, { mass: profile.mass, friction: profile.friction, restitution: profile.restitution }, scene);
   const body = aggregate.body;
   body.setMotionType(PhysicsMotionType.DYNAMIC);
-  // No rotational inertia: the capsule cannot tip, spin or roll. Mass stays.
-  body.setMassProperties({ mass: profile.mass, inertia: Vector3.Zero() });
   body.setLinearDamping(profile.linearDamping);
-  body.setAngularDamping(1);
+  body.setAngularDamping(profile.angularDamping);
   aggregate.shape.filterMembershipMask = LAYER.character;
   aggregate.shape.filterCollideMask = LAYER.ground | LAYER.character;
-  // The node may be moved by hand (a respawn): let the body read it before each step.
+  // The node may be moved by hand (a respawn, a righting): let the body read it before each step.
   body.disablePreStep = false;
+  if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
+
+  let upright = false;
+  const setUpright = (locked: boolean) => {
+    if (locked) {
+      // No rotational inertia: the capsule cannot tip, spin or roll. Mass stays.
+      body.setMassProperties({ mass: profile.mass, inertia: Vector3.Zero() });
+      body.setAngularVelocity(Vector3.Zero());
+      mesh.rotationQuaternion!.copyFrom(Quaternion.Identity());
+    } else {
+      const i = profile.tumbleInertia;
+      body.setMassProperties({ mass: profile.mass, inertia: new Vector3(i.x, i.y, i.z) });
+    }
+    upright = locked;
+  };
+  setUpright(true);
 
   const engine = () => scene.getPhysicsEngine() as PhysicsEngine;
   const ray = new PhysicsRaycastResult();
@@ -74,8 +97,15 @@ export function createGameplayBody(scene: Scene, name: string, feetAt: Vector3, 
     position: () => mesh.position.clone(),
     feet: () => new Vector3(mesh.position.x, mesh.position.y - profile.capsuleCenterY, mesh.position.z),
     velocity: () => body.getLinearVelocity(),
+    rotation: () => mesh.rotationQuaternion!.clone(),
     grounded,
+    setUpright,
+    isUpright: () => upright,
+    setAngularVelocity: (v) => body.setAngularVelocity(v),
+    setGravityFactor: (f) => body.setGravityFactor(f),
     teleport: (feet) => {
+      setUpright(true);
+      body.setGravityFactor(1);
       mesh.position.set(feet.x, feet.y + profile.capsuleCenterY, feet.z);
       body.setLinearVelocity(Vector3.Zero());
       body.setAngularVelocity(Vector3.Zero());

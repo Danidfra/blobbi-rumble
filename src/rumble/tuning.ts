@@ -1,9 +1,11 @@
 /**
  * EVERY NUMBER THE GAME IS TUNED WITH, in one place. The body itself is
  * `profile.ts`; this is combat, rounds and the camera. Nothing here comes
- * from an identity or a morphology.
+ * from an identity or a morphology. Units: metres, seconds, m/s for
+ * velocity changes ("impact"), radians.
  */
 export const COMBAT = Object.freeze({
+  // ── Punch ──
   /** A punch lands on an opponent whose capsule centre is within this distance, metres (capsules touch at 0.8). */
   punchRange: 1.15,
   /** ... and within this half-angle of the attacker's facing (cosine). 0.5 is 60° either side. */
@@ -12,33 +14,64 @@ export const COMBAT = Object.freeze({
   punchActive: 0.12,
   punchRecovery: 0.2,
   punchCooldown: 0.55,
-  /** Knockback: horizontal velocity change along the attacker's facing, and a small lift, m/s. */
-  punchKnock: 4.2,
+  /** A punch's base impact: the velocity change it gives, m/s, along the attacker's facing, and its lift. */
+  punchImpact: 4.2,
   punchLift: 1.4,
+  /** Situational: a punch thrown while moving faster than a walk, along the facing, is this much stronger. */
+  punchRunBonus: 1.35,
   /** How long a hit victim has reduced control, seconds, and how much of its steering authority it keeps. */
   hitStun: 0.38,
   stunControl: 0.08,
+
+  // ── Impact ──
+  /** No single blow or throw changes a velocity by more than this, m/s, whatever the multipliers. */
+  impactMax: 8,
+  /** An impact at or above this, m/s, knocks the victim into a tumble instead of a hit reaction. */
+  tumbleThreshold: 5.2,
+
+  // ── Grab and hold ──
   /** A grab starts on an opponent within this distance and this facing cosine. */
   grabRange: 1.15,
   grabArcCos: 0.3,
-  /** Where the held opponent is kept: this far in front of the grabber, metres. */
+  /** Where the held body is kept: this far ahead of the grabber along the HOLD direction, and this high above its feet. */
   holdDistance: 0.9,
-  /** The spring that keeps them there (1/s) and the most it may change their velocity per second (m/s²). */
+  holdHeight: 0.55,
+  /** The hold direction turns toward the grabber's facing at most this fast, rad/s: a held body is swung round, never flipped through. */
+  holdTurnRate: 3.5,
+  /** The spring that keeps the held body at the anchor (1/s) and the most it may change its velocity per second (m/s²). */
   holdStiffness: 9,
   holdMaxPull: 45,
   /** The share of the pull the grabber feels back: the held body has presence. */
   holdReaction: 0.45,
-  /** The held body's steering authority and the longest a hold lasts before it lets go, seconds. */
+  /** A carrying grabber moves at this share of its speeds. */
+  carrySpeed: 0.85,
+  /** The held body's steering authority, the longest a hold lasts, seconds, and how far from the anchor it may be pushed before the hold breaks, metres. */
   grabbedControl: 0.2,
-  grabMaxHold: 2.5,
-  /** A hold breaks if the bodies get this far apart (a wall, a punch from the side). */
-  grabBreakDistance: 2.2,
-  /** Release: the thrown body leaves along the grabber's facing at base + gain × grabber speed, capped, with a lift; then it is stunned. */
-  throwBase: 2.2,
+  grabMaxHold: 4,
+  grabBreakDistance: 1.6,
+
+  // ── Throw ──
+  /** Release: the thrown body leaves along the hold direction at base + gain × grabber speed that way, capped by impactMax, with a lift. */
+  throwBase: 3.0,
   throwGain: 1.3,
-  throwMax: 6.5,
-  throwLift: 1.3,
-  throwStun: 0.45,
+  throwLift: 1.6,
+  /** The spin a throw gives, rad/s, pitching the body over its direction of travel. */
+  throwSpin: 7,
+
+  // ── Tumble and recovery ──
+  /** A tumble lasts this long, then recovery; the fighter's steering authority in each. */
+  tumbleDuration: 0.45,
+  tumbleControl: 0.15,
+  recoveryDuration: 0.35,
+  recoveryControl: 0.35,
+  /** The spin a strong punch gives, rad/s, at the tumble threshold (scales with the impact). */
+  hitSpin: 5,
+  /** How fast a recovering body rights itself: angular rate per radian of tilt (1/s), capped, and the tilt under which it is snapped upright. */
+  uprightRate: 9,
+  uprightMaxRate: 12,
+  uprightSnap: 0.08,
+  /** How long the hit squash shows on a victim, seconds. */
+  hitSquash: 0.14,
 });
 
 export const ROUND = Object.freeze({

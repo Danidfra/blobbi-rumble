@@ -64,9 +64,15 @@ physics body (Havok capsule) ──► position / velocity / ground contact ─�
 The visual Blobbi follows its body every frame (root at the capsule's feet,
 facing along its velocity, animator fed from the body's state) and never
 feeds back. Punches, holds and throws are bounded velocity changes on the
-bodies; a hit or a throw leaves the victim with little steering authority
-for a moment so the momentum is not cancelled. The kit package knows
-nothing of Havok; everything game-side is `src/rumble/`:
+bodies. A grab lifts the victim to a hold point in front of the grabber
+that turns with the grabber at a bounded rate, so reversing direction
+swings the held body around rather than through the carrier. A throw, or a
+hard enough hit, frees the victim's capsule to tumble (a real rotation of
+the body, not a ragdoll) with little steering authority, then a short
+recovery rights it and hands control back; a lighter hit is a brief stun.
+Every impact goes through one path (`combat/impact.ts`: base × power ×
+attack × situation, clamped) so later power multipliers plug in there. The
+kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 
 ```
 src/rumble/
@@ -76,7 +82,8 @@ src/rumble/
   control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure)
   control/mover.ts    intent to a bounded velocity change, applied as an impulse (pure)
   control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
-  combat/combat.ts    punch, stun, grab, hold, throw: pure state and geometry
+  combat/impact.ts    one impact-strength path and the hit / tumble rule (pure)
+  combat/combat.ts    punch, stun, grab, hold, throw, tumble, recovery: pure state and geometry
   combat/fighter.ts   one player, the same class for both: body, input, combat, fall, and the visual Blobbi
   rounds.ts           ring-out, rounds, the match (pure)
   camera.ts           one shared camera: midpoint, bounded distance, smooth follow (pure)

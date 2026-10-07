@@ -1,29 +1,57 @@
 /**
- * The combat rules, as plain numbers: punch timing and reach, knockback,
- * stun and control, grab reach and release, the hold's pull, the throw.
+ * The combat rules, as plain numbers: punch timing, reach and impact,
+ * stun and control, the hold (where it keeps the held body, how it turns,
+ * how it pulls, when it breaks), the throw, the tumble and the recovery.
  */
 import { describe, expect, it } from 'vitest';
+import { steer } from '../control/mover';
+import { RUMBLE_BODY } from '../profile';
 import { COMBAT } from '../tuning';
 import {
   canAct,
   controlFactor,
   createCombatState,
   endGrab,
+  holdAnchor,
   holdBreaks,
+  holdDirection,
   holdPull,
   inReach,
+  isDown,
   isHolding,
+  isRecovering,
+  isTumbling,
   landPunch,
   release,
   resetCombat,
-  throwVelocity,
+  startTumble,
+  stepHold,
+  throwImpact,
   tickCombat,
   tryGrab,
   tryPunch,
+  turnAngle,
 } from './combat';
+import { punchSituational, reactionKind, resolveImpact } from './impact';
 
 const east = { x: 1, z: 0 };
 const at = (x: number, z = 0) => ({ x, z });
+const feet = (x: number, y = 0, z = 0) => ({ x, y, z });
+const walk = RUMBLE_BODY.walkSpeed;
+
+describe('impact', () => {
+  it('is base × power × attack × situational, clamped, and reads as a hit or a tumble by the threshold', () => {
+    expect(resolveImpact({ base: 4 })).toBe(4);
+    expect(resolveImpact({ base: 4, power: 1.5 })).toBe(6);
+    expect(resolveImpact({ base: 4, power: 2, attack: 2, situational: 2 })).toBe(COMBAT.impactMax);
+    expect(resolveImpact({ base: -1 })).toBe(0);
+    expect(reactionKind(COMBAT.tumbleThreshold - 0.01)).toBe('hit');
+    expect(reactionKind(COMBAT.tumbleThreshold)).toBe('tumble');
+    expect(reactionKind(1, true)).toBe('tumble');
+    expect(punchSituational(walk + 0.1, walk)).toBe(COMBAT.punchRunBonus);
+    expect(punchSituational(walk, walk)).toBe(1);
+  });
+});
 
 describe('punch', () => {
   it('starts once, then waits out its cooldown', () => {
@@ -41,121 +69,210 @@ describe('punch', () => {
     const a = createCombatState();
     const v = createCombatState();
     tryPunch(a);
-    expect(landPunch(a, at(0), east, v, at(COMBAT.punchRange + 0.05))).toBeNull();
-    expect(landPunch(a, at(0), east, v, at(-0.9))).toBeNull();
-    const hit = landPunch(a, at(0), east, v, at(0.9));
+    expect(landPunch(a, at(0), east, 0, 1, v, at(COMBAT.punchRange + 0.05), walk)).toBeNull();
+    expect(landPunch(a, at(0), east, 0, 1, v, at(-0.9), walk)).toBeNull();
+    const hit = landPunch(a, at(0), east, 0, 1, v, at(0.9), walk);
     expect(hit).not.toBeNull();
-    expect(hit!.dvx).toBeCloseTo(COMBAT.punchKnock);
+    expect(hit!.kind).toBe('hit');
+    expect(hit!.impact).toBe(COMBAT.punchImpact);
+    expect(hit!.dvx).toBeCloseTo(COMBAT.punchImpact);
     expect(hit!.dvz).toBeCloseTo(0);
     expect(hit!.dvy).toBe(COMBAT.punchLift);
-    expect(landPunch(a, at(0), east, v, at(0.9))).toBeNull();
+    expect(landPunch(a, at(0), east, 0, 1, v, at(0.9), walk)).toBeNull();
     const b = createCombatState();
     tryPunch(b);
     tickCombat(b, COMBAT.punchActive + 0.01);
-    expect(landPunch(b, at(0), east, createCombatState(), at(0.9))).toBeNull();
+    expect(landPunch(b, at(0), east, 0, 1, createCombatState(), at(0.9), walk)).toBeNull();
   });
 
-  it('knocks along the attacker\'s facing, whichever way the victim is offset within the arc', () => {
-    const a = createCombatState();
-    tryPunch(a);
-    const north = { x: 0, z: 1 };
-    const hit = landPunch(a, at(0), north, createCombatState(), { x: 0.4, z: 0.8 });
-    expect(hit!.dvx).toBeCloseTo(0);
-    expect(hit!.dvz).toBeCloseTo(COMBAT.punchKnock);
+  it('an ordinary punch is a hit; a running punch, or a stronger attacker, reaches the tumble', () => {
+    const plain = createCombatState();
+    tryPunch(plain);
+    expect(landPunch(plain, at(0), east, 0, 1, createCombatState(), at(0.9), walk)!.kind).toBe('hit');
+    const running = createCombatState();
+    tryPunch(running);
+    const r = landPunch(running, at(0), east, RUMBLE_BODY.runSpeed, 1, createCombatState(), at(0.9), walk)!;
+    expect(r.impact).toBeCloseTo(COMBAT.punchImpact * COMBAT.punchRunBonus);
+    expect(r.kind).toBe('tumble');
+    const strong = createCombatState();
+    tryPunch(strong);
+    expect(landPunch(strong, at(0), east, 0, 1.5, createCombatState(), at(0.9), walk)!.kind).toBe('tumble');
   });
 
   it('stuns the victim, who then keeps little control and cannot act until it wears off', () => {
     const a = createCombatState();
     const v = createCombatState();
     tryPunch(a);
-    landPunch(a, at(0), east, v, at(0.9));
+    landPunch(a, at(0), east, 0, 1, v, at(0.9), walk);
     expect(v.stun).toBe(COMBAT.hitStun);
     expect(controlFactor(v)).toBe(COMBAT.stunControl);
     expect(canAct(v)).toBe(false);
-    expect(tryPunch(v)).toBe(false);
     tickCombat(v, COMBAT.hitStun + 0.01);
     expect(controlFactor(v)).toBe(1);
     expect(canAct(v)).toBe(true);
   });
 });
 
-describe('grab', () => {
-  it('starts only inside its range and arc, and never on a held or holding opponent', () => {
+describe('the hold', () => {
+  it('starts only inside its range and arc, never on a held, holding or downed opponent, and begins where the opponent is', () => {
     const g = createCombatState();
     const v = createCombatState();
     expect(tryGrab(g, at(0), east, v, at(COMBAT.grabRange + 0.05))).toBe(false);
     expect(tryGrab(g, at(0), east, v, at(-0.9))).toBe(false);
-    expect(tryGrab(g, at(0), east, v, at(0.9))).toBe(true);
+    const down = createCombatState();
+    startTumble(down);
+    expect(tryGrab(g, at(0), east, down, at(0.9))).toBe(false);
+    expect(tryGrab(g, at(0), east, v, { x: 0.6, z: 0.6 })).toBe(true);
     expect(isHolding(g)).toBe(true);
     expect(v.held).toBe(true);
+    expect(g.holdAngle).toBeCloseTo(Math.PI / 4);
     expect(controlFactor(v)).toBe(COMBAT.grabbedControl);
-    // Neither may grab or punch while the hold lasts.
     expect(tryGrab(v, at(0.9), { x: -1, z: 0 }, g, at(0))).toBe(false);
     expect(tryPunch(g)).toBe(false);
     expect(tryPunch(v)).toBe(false);
     endGrab(g, v);
     expect(isHolding(g)).toBe(false);
     expect(v.held).toBe(false);
-    expect(controlFactor(v)).toBe(1);
   });
 
-  it('breaks on its own after the longest hold or when the bodies come apart', () => {
+  it('keeps the held body ahead along the hold direction and lifted', () => {
+    const a = holdAnchor(feet(1, 0, 2), Math.PI / 2);
+    expect(a.x).toBeCloseTo(1 + COMBAT.holdDistance);
+    expect(a.z).toBeCloseTo(2);
+    expect(a.y).toBeCloseTo(COMBAT.holdHeight);
+    expect(COMBAT.holdHeight).toBeGreaterThan(0.3);
+    expect(COMBAT.holdDistance).toBeGreaterThanOrEqual(2 * RUMBLE_BODY.capsuleRadius);
+  });
+
+  it('turns toward the facing at a bounded rate, the short way, never through: a 180° reversal swings round', () => {
+    expect(turnAngle(0, 0.1, 1)).toBeCloseTo(0.1);
+    expect(turnAngle(0, 1, 0.25)).toBeCloseTo(0.25);
+    expect(turnAngle(0, -1, 0.25)).toBeCloseTo(-0.25);
+    // 3 to -3 is 0.283 the short way (through ±π), so one step of 0.5 arrives, wrapped.
+    expect(turnAngle(3, -3, 0.5)).toBeCloseTo(-3, 6);
+    expect(turnAngle(3, -3, 0.1)).toBeCloseTo(3.1, 6);
     const g = createCombatState();
     const v = createCombatState();
     tryGrab(g, at(0), east, v, at(0.9));
-    expect(holdBreaks(g, at(0), at(0.9))).toBe(false);
-    expect(holdBreaks(g, at(0), at(COMBAT.grabBreakDistance + 0.1))).toBe(true);
-    tickCombat(g, COMBAT.grabMaxHold + 0.01);
-    expect(holdBreaks(g, at(0), at(0.9))).toBe(true);
-  });
-
-  it('pulls the held body toward the hold point, bounded, with a reaction on the grabber', () => {
+    expect(g.holdAngle).toBeCloseTo(Math.PI / 2);
+    // The grabber reverses: the facing is now -x. The anchor stays a full hold distance from the grabber every frame
+    // and moves by at most the turn rate, so it sweeps round the side and never crosses the grabber.
     const dt = 1 / 60;
-    // Held body sitting exactly at the hold point, both still: no pull.
-    const still = holdPull(at(0), east, at(0), at(COMBAT.holdDistance), at(0), dt);
-    expect(Math.hypot(still.victim.x, still.victim.z)).toBeCloseTo(0);
-    // Held body behind the point: pulled forward, the grabber pulled back by the reaction share.
-    const behind = holdPull(at(0), east, at(0), at(COMBAT.holdDistance - 0.3), at(0), dt);
-    expect(behind.victim.x).toBeGreaterThan(0);
-    expect(behind.grabber.x).toBeCloseTo(-behind.victim.x * COMBAT.holdReaction);
-    // Never more than the bound per frame.
-    const far = holdPull(at(0), east, at(0), at(COMBAT.holdDistance + 5), at(0), dt);
-    expect(Math.hypot(far.victim.x, far.victim.z)).toBeCloseTo(COMBAT.holdMaxPull * dt);
-    // The hold moves with the grabber: a walking grabber's velocity is part of what the held body is asked to match.
-    const moving = holdPull(at(0), east, at(2), at(COMBAT.holdDistance), at(0), 1);
-    expect(moving.victim.x).toBeCloseTo(2);
+    let last = holdAnchor(feet(0), g.holdAngle);
+    let maxStep = 0;
+    let minDistance = Infinity;
+    for (let i = 0; i < 120; i++) {
+      stepHold(g, -Math.PI / 2, dt);
+      const a = holdAnchor(feet(0), g.holdAngle);
+      maxStep = Math.max(maxStep, Math.hypot(a.x - last.x, a.z - last.z));
+      minDistance = Math.min(minDistance, Math.hypot(a.x, a.z));
+      last = a;
+    }
+    expect(minDistance).toBeCloseTo(COMBAT.holdDistance, 6);
+    expect(maxStep).toBeLessThanOrEqual(COMBAT.holdDistance * COMBAT.holdTurnRate * dt + 1e-9);
+    expect(g.holdAngle).toBeCloseTo(-Math.PI / 2);
+    expect(holdDirection(g).x).toBeCloseTo(-1);
+    // Within the time a reversal takes, the hold is still valid.
+    expect(g.holding).toBeLessThan(COMBAT.grabMaxHold);
   });
 
-  it('throws along the facing: a shove standing still, more on the run, never past the cap, and stuns', () => {
-    const still = throwVelocity(east, at(0));
-    expect(still.dvx).toBeCloseTo(COMBAT.throwBase);
-    const run = throwVelocity(east, at(3));
-    expect(run.dvx).toBeCloseTo(Math.min(COMBAT.throwMax, COMBAT.throwBase + 3 * COMBAT.throwGain));
-    expect(throwVelocity(east, at(100)).dvx).toBe(COMBAT.throwMax);
-    // Running away from the facing adds nothing.
-    expect(throwVelocity(east, at(-3)).dvx).toBeCloseTo(COMBAT.throwBase);
+  it('breaks on its own after the longest hold or when the held body is pushed off its anchor', () => {
     const g = createCombatState();
     const v = createCombatState();
     tryGrab(g, at(0), east, v, at(0.9));
-    const k = release(g, v, east, at(1));
-    expect(k.dvx).toBeGreaterThan(COMBAT.throwBase);
-    expect(isHolding(g)).toBe(false);
-    expect(v.held).toBe(false);
-    expect(v.stun).toBe(COMBAT.throwStun);
+    const anchor = holdAnchor(feet(0), g.holdAngle);
+    expect(holdBreaks(g, anchor, feet(anchor.x, anchor.y, anchor.z))).toBe(false);
+    expect(holdBreaks(g, anchor, feet(anchor.x + COMBAT.grabBreakDistance + 0.1, anchor.y, anchor.z))).toBe(true);
+    tickCombat(g, COMBAT.grabMaxHold + 0.01);
+    expect(holdBreaks(g, anchor, feet(anchor.x, anchor.y, anchor.z))).toBe(true);
+  });
+
+  it('pulls the held body toward the anchor in three dimensions, bounded, with a reaction on the grabber', () => {
+    const dt = 1 / 60;
+    const anchor = feet(COMBAT.holdDistance, COMBAT.holdHeight, 0);
+    const still = holdPull(anchor, at(0), anchor, feet(0), dt);
+    expect(Math.hypot(still.victim.x, still.victim.y, still.victim.z)).toBeCloseTo(0);
+    // Below and behind the anchor: pulled up and forward; the grabber feels the horizontal part back.
+    const low = holdPull(anchor, at(0), feet(COMBAT.holdDistance - 0.3, 0, 0), feet(0), dt);
+    expect(low.victim.y).toBeGreaterThan(0);
+    expect(low.victim.x).toBeGreaterThan(0);
+    expect(low.grabber.x).toBeCloseTo(-low.victim.x * COMBAT.holdReaction);
+    const far = holdPull(anchor, at(0), feet(COMBAT.holdDistance + 5, 0, 0), feet(0), dt);
+    expect(Math.hypot(far.victim.x, far.victim.y, far.victim.z)).toBeCloseTo(COMBAT.holdMaxPull * dt);
+    // The hold moves with the grabber.
+    const moving = holdPull(anchor, at(2), anchor, feet(0), 1);
+    expect(moving.victim.x).toBeCloseTo(2);
   });
 });
 
-describe('state', () => {
-  it('a reset clears everything transient', () => {
+describe('throw and tumble', () => {
+  it('throws along the hold direction through the impact path, always into a tumble', () => {
+    expect(throwImpact(east, at(0))).toBeCloseTo(COMBAT.throwBase);
+    expect(throwImpact(east, at(3))).toBeCloseTo(Math.min(COMBAT.impactMax, COMBAT.throwBase + 3 * COMBAT.throwGain));
+    expect(throwImpact(east, at(100))).toBe(COMBAT.impactMax);
+    expect(throwImpact(east, at(-3))).toBeCloseTo(COMBAT.throwBase);
+    expect(throwImpact(east, at(0), 1.5)).toBeCloseTo(COMBAT.throwBase * 1.5);
+    const g = createCombatState();
+    const v = createCombatState();
+    tryGrab(g, at(0), east, v, at(0.9));
+    const k = release(g, v, holdDirection(g), at(1));
+    expect(k.kind).toBe('tumble');
+    expect(k.dvx).toBeGreaterThan(COMBAT.throwBase);
+    expect(k.dvy).toBe(COMBAT.throwLift);
+    expect(isHolding(g)).toBe(false);
+    expect(v.held).toBe(false);
+  });
+
+  it('a tumble runs its course into a recovery and then back to normal, with control reduced on the way', () => {
     const s = createCombatState();
-    tryPunch(s);
-    s.stun = 1;
-    s.holding = 0.5;
-    s.held = true;
-    resetCombat(s);
+    startTumble(s);
+    expect(isTumbling(s)).toBe(true);
+    expect(isDown(s)).toBe(true);
+    expect(canAct(s)).toBe(false);
+    expect(controlFactor(s)).toBe(COMBAT.tumbleControl);
+    expect(COMBAT.tumbleControl).toBeLessThan(0.3);
+    tickCombat(s, COMBAT.tumbleDuration + 0.001);
+    expect(isTumbling(s)).toBe(false);
+    expect(isRecovering(s)).toBe(true);
+    expect(controlFactor(s)).toBe(COMBAT.recoveryControl);
+    tickCombat(s, COMBAT.recoveryDuration + 0.001);
+    expect(isDown(s)).toBe(false);
+    expect(controlFactor(s)).toBe(1);
+    expect(canAct(s)).toBe(true);
     expect(s).toEqual(createCombatState());
   });
-  it('inReach gives the unit direction to the opponent', () => {
+
+  it('a tumbling player can lean but cannot cancel or reverse a throw', () => {
+    // Thrown at a typical throw speed, holding straight back for the whole tumble: the steering is bounded by
+    // the tumble's share of the acceleration, so the body keeps most of its momentum.
+    const p = { ...RUMBLE_BODY, acceleration: RUMBLE_BODY.acceleration * COMBAT.tumbleControl, braking: RUMBLE_BODY.braking * COMBAT.tumbleControl };
+    const thrown = throwImpact(east, at(1.5));
+    let vx = thrown;
+    const dt = 1 / 60;
+    for (let t = 0; t < COMBAT.tumbleDuration; t += dt) vx += steer(vx, 0, { x: -1, z: 0, run: true, jump: false }, true, dt, p).dvx;
+    expect(vx).toBeGreaterThan(thrown * 0.55);
+    // But holding back did make a difference.
+    let free = thrown;
+    for (let t = 0; t < COMBAT.tumbleDuration; t += dt) free += steer(free, 0, { x: 0, z: 0, run: false, jump: false }, false, dt, p).dvx;
+    expect(vx).toBeLessThan(free);
+  });
+
+  it('a knock-down ends a hold the victim had, and a reset clears everything', () => {
+    const g = createCombatState();
+    const v = createCombatState();
+    tryGrab(g, at(0), east, v, at(0.9));
+    startTumble(g);
+    expect(isHolding(g)).toBe(false);
+    g.stun = 1;
+    g.held = true;
+    g.recovering = 0.1;
+    resetCombat(g);
+    expect(g).toEqual(createCombatState());
+  });
+});
+
+describe('inReach', () => {
+  it('gives the unit direction to the opponent', () => {
     const d = inReach(at(0), east, { x: 0.6, z: 0.6 }, 2, 0);
     expect(d!.x).toBeCloseTo(Math.SQRT1_2);
     expect(d!.z).toBeCloseTo(Math.SQRT1_2);

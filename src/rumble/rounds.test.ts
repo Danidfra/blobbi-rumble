@@ -9,11 +9,10 @@ describe('rounds', () => {
     expect(m.score).toEqual([0, 1]);
     expect(m.lastWinner).toBe(1);
     expect(m.phase).toBe('roundOver');
-    // No scoring while the round is over.
     expect(ringOut(m, [false, true])).toBe(false);
     expect(m.score).toEqual([0, 1]);
-    expect(tickMatch(m, ROUND.resetDelay / 2)).toBe(false);
-    expect(tickMatch(m, ROUND.resetDelay)).toBe(true);
+    expect(tickMatch(m, ROUND.resetDelay / 2)).toBeNull();
+    expect(tickMatch(m, ROUND.resetDelay)).toBe('round');
     expect(m.phase).toBe('playing');
     expect(m.round).toBe(2);
   });
@@ -26,15 +25,18 @@ describe('rounds', () => {
     expect(m.phase).toBe('roundOver');
   });
 
-  it('first to the target wins, the match waits, and a restart clears it', () => {
+  it('first to the target wins: the match says so once, so the scene settles, then waits for a restart', () => {
     const m = createMatch();
-    for (let i = 0; i < ROUND.target; i++) {
+    for (let i = 0; i < ROUND.target - 1; i++) {
       ringOut(m, [false, true]);
-      tickMatch(m, ROUND.resetDelay + 0.01);
+      expect(tickMatch(m, ROUND.resetDelay + 0.01)).toBe('round');
     }
-    expect(m.score[0]).toBe(ROUND.target);
+    ringOut(m, [false, true]);
+    expect(tickMatch(m, ROUND.resetDelay + 0.01)).toBe('over');
     expect(m.phase).toBe('matchOver');
     expect(matchWinner(m)).toBe(0);
+    // Nothing more happens on its own: no second 'over', no scoring.
+    expect(tickMatch(m, 10)).toBeNull();
     expect(ringOut(m, [true, false])).toBe(false);
     restartMatch(m);
     expect(m).toEqual(createMatch());

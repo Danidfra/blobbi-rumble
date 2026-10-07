@@ -2,7 +2,7 @@
  * RING-OUT, ROUNDS AND THE MATCH, as pure state. Falling off the arena is
  * the only way to score: the one who stays scores. Both falling in the
  * same frame is a draw and no point. First to `ROUND.target` wins; the
- * match then waits for a restart.
+ * match then settles and waits for a restart.
  */
 import { ROUND } from './tuning';
 
@@ -39,19 +39,23 @@ export function ringOut(m: MatchState, fell: [boolean, boolean], rules = ROUND):
   return true;
 }
 
-/** Advance the round-over pause. Returns true on the frame a new round should begin (or the match is decided). */
-export function tickMatch(m: MatchState, dt: number, rules = ROUND): boolean {
-  if (m.phase !== 'roundOver') return false;
+/**
+ * Advance the round-over pause. On the frame it ends: 'round' when a new
+ * round should begin, 'over' when the match is decided and the scene should
+ * settle (both bodies back at their spawns, at rest, until a restart).
+ */
+export function tickMatch(m: MatchState, dt: number, rules = ROUND): 'round' | 'over' | null {
+  if (m.phase !== 'roundOver') return null;
   m.timer -= dt;
-  if (m.timer > 0) return false;
+  if (m.timer > 0) return null;
   m.timer = 0;
   if (m.score[0] >= rules.target || m.score[1] >= rules.target) {
     m.phase = 'matchOver';
-    return false;
+    return 'over';
   }
   m.phase = 'playing';
   m.round += 1;
-  return true;
+  return 'round';
 }
 
 export const matchWinner = (m: MatchState, rules = ROUND): Player | null => (m.score[0] >= rules.target ? 0 : m.score[1] >= rules.target ? 1 : null);

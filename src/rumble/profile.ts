@@ -25,8 +25,11 @@ export interface RumbleBody {
   /** The capsule's friction against the platform and other bodies. */
   friction: number;
   restitution: number;
-  /** Havok linear damping, a mild drag that settles pushed bodies. */
+  /** Havok linear damping, a mild drag that settles pushed bodies, and angular damping for a tumbling body. */
   linearDamping: number;
+  angularDamping: number;
+  /** The rotational inertia a body is given while it tumbles, kg·m² about each axis (a capsule this size); upright it has none. */
+  tumbleInertia: { x: number; y: number; z: number };
   /** Gravity, m/s² (a little stronger than Earth's: party games fall quickly). */
   gravity: number;
   /** How far under a character's feet the ground may be and still count, metres. */
@@ -47,6 +50,8 @@ export const RUMBLE_BODY: Readonly<RumbleBody> = Object.freeze({
   friction: 0.35,
   restitution: 0.05,
   linearDamping: 0.6,
+  angularDamping: 1.2,
+  tumbleInertia: { x: 5, y: 3, z: 5 },
   gravity: 14,
   groundProbe: 0.08,
 });

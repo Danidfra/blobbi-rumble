@@ -20,7 +20,7 @@ import { createEnvironment } from '../playground/environment';
 import { seedFromLabel } from '../playground/seeds';
 import { createArena } from './arena';
 import { applyCamera, followCamera, wantedCamera, type CameraPose } from './camera';
-import { endGrab, holdBreaks, holdPull, isHolding, landPunch, release, tickCombat, tryGrab } from './combat/combat';
+import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, release, tickCombat, tryGrab } from './combat/combat';
 import { Fighter } from './combat/fighter';
 import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput } from './control/input';
 import { PhysicsDebug } from './debug';
@@ -68,6 +68,7 @@ async function start() {
 
   const resetRound = () => {
     for (const f of fighters) f.reset();
+    for (const f of fighters) f.body.setGravityFactor(1);
     cameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   };
   const newMatch = () => {
@@ -78,22 +79,31 @@ async function start() {
 
   /** One fighter's attack and hold on the other, this frame. */
   const interact = (me: Fighter, other: Fighter, intent: { punch: boolean; grab: boolean }, dt: number) => {
-    // A landed punch: knockback along the facing, a short stun; a hold on the victim breaks.
-    const knock = landPunch(me.combat, me.at(), me.facing(), other.combat, other.at());
-    if (knock) {
-      if (isHolding(other.combat)) endGrab(other.combat, me.combat);
-      other.knock(knock);
+    // A landed punch: the impact path decides a hit or a tumble; a hold on the victim breaks.
+    const reaction = landPunch(me.combat, me.at(), me.facing(), me.speedAlongFacing(), me.power, other.combat, other.at(), RUMBLE_BODY.walkSpeed);
+    if (reaction) {
+      if (isHolding(other.combat)) {
+        endGrab(other.combat, me.combat);
+        other.letGo(me);
+      }
+      other.react(reaction, (COMBAT.hitSpin * reaction.impact) / COMBAT.tumbleThreshold);
     }
     if (intent.grab) {
-      if (isHolding(me.combat)) other.knock(release(me.combat, other.combat, me.facing(), me.velocity()));
-      else tryGrab(me.combat, me.at(), me.facing(), other.combat, other.at());
+      if (isHolding(me.combat)) {
+        const thrown = release(me.combat, other.combat, me.holdDir(), me.velocity(), me.power);
+        me.letGo(other);
+        other.react(thrown, COMBAT.throwSpin);
+      } else if (tryGrab(me.combat, me.at(), me.facing(), other.combat, other.at())) me.hold(other);
     }
     if (isHolding(me.combat)) {
-      if (holdBreaks(me.combat, me.at(), other.at())) endGrab(me.combat, other.combat);
-      else {
-        const pull = holdPull(me.at(), me.facing(), me.velocity(), other.at(), other.velocity(), dt);
-        other.knock(pull.victim);
-        me.knock(pull.grabber);
+      const anchor = me.holdStep(dt);
+      if (holdBreaks(me.combat, anchor, other.feet()) || isTumbling(me.combat)) {
+        endGrab(me.combat, other.combat);
+        me.letGo(other);
+      } else {
+        const pull = holdPull(anchor, me.velocity(), other.feet(), other.velocity3(), dt);
+        other.push(pull.victim.x, pull.victim.y, pull.victim.z);
+        me.push(pull.grabber.x, 0, pull.grabber.z);
       }
     }
   };
@@ -109,6 +119,7 @@ async function start() {
       interact(p1, p2, frames[0].intent, dt);
       interact(p2, p1, frames[1].intent, dt);
     }
+    const tilts = fighters.map((f) => f.settle());
     fighters.forEach((f, i) => f.follow(dt, frames[i]));
 
     // Ring-out: who crossed the fall line this frame. A fall breaks any hold.
@@ -116,13 +127,19 @@ async function start() {
     if (fell[0] || fell[1]) {
       endGrab(p1.combat, p2.combat);
       endGrab(p2.combat, p1.combat);
+      p1.letGo(p2);
+      p2.letGo(p1);
     }
     if (ringOut(match, fell)) {
       message = match.lastWinner === null ? 'DOUBLE RING-OUT · no point' : `${fighters[match.lastWinner].label} SCORES`;
     }
-    if (tickMatch(match, dt)) {
+    const ended = tickMatch(match, dt);
+    if (ended === 'round') {
       resetRound();
       message = '';
+    } else if (ended === 'over') {
+      // The scene settles: both back at their spawns, at rest, until a restart.
+      resetRound();
     }
     if (match.phase === 'matchOver') message = `${fighters[matchWinner(match)!].label} WINS · press R to play again`;
 
@@ -139,8 +156,8 @@ async function start() {
       const state = (f: Fighter) => {
         const c = f.combat;
         const v = f.body.velocity();
-        const what = c.held ? 'held' : isHolding(c) ? 'holding' : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
-        return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(10)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} cd ${c.punchCooldown.toFixed(2)}`;
+        const what = c.tumble >= 0 ? `tumble ${c.tumble.toFixed(2)}` : c.recovering >= 0 ? `recover ${c.recovering.toFixed(2)}` : c.held ? 'held' : isHolding(c) ? `holding ${(c.holdAngle * 57.3).toFixed(0)}°` : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
+        return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(13)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} tilt ${((tilts[fighters.indexOf(f)] * 180) / Math.PI).toFixed(0)}°`;
       };
       lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`);
     }
