@@ -23,7 +23,9 @@ const BABYLON = resolve(__dirname, 'node_modules/@babylonjs/core');
 
 export default defineConfig({
   server: { host: '127.0.0.1', port: 5177, fs: { allow: [__dirname, KIT_DIR] } },
-  build: { target: 'es2022', chunkSizeWarningLimit: 4000 },
+  build: { target: 'es2022', chunkSizeWarningLimit: 4000, rollupOptions: { input: { playground: resolve(__dirname, 'index.html'), rumble: resolve(__dirname, 'rumble.html') } } },
+  // Havok's loader finds its wasm next to its own module; pre-bundling would move it.
+  optimizeDeps: { exclude: ['@babylonjs/havok'] },
   resolve: {
     dedupe: ['@babylonjs/core'],
     // Belt and braces for the test runner: every `@babylonjs/core/...` import, from the linked package too, is this copy.

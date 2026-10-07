@@ -39,6 +39,47 @@ wheel to zoom. The panel picks a seed (the canonical Blobbi, the 2D lab's named
 seeds, real nostr-pet dev seeds, or any pasted 64-digit seed), an expression,
 sleeping, a pinned motion state, and a lineup of eight presets to compare.
 
+## Blobbi Rumble, milestone 1: the Havok physics sandbox
+
+```
+npm run dev          # http://127.0.0.1:5177/rumble.html
+```
+
+One flat platform over a void. Two visibly different Blobbis from the
+package, each carried by the SAME normalized gameplay capsule owned by
+Havok (`src/rumble/profile.ts`, built from the kit's
+`BLOBBI_GAMEPLAY_PROFILE` and nothing of any identity). A is the player:
+WASD / arrows to move, Shift to run, Space to jump. B is a dummy with mass
+that collides, can be pushed, and falls. A body below the arena respawns at
+its spawn after a short wait; the HUD counts falls. F3 shows the colliders.
+
+```
+physics body (Havok capsule) ──► position / velocity / ground contact ──► visual Blobbi
+```
+
+The visual Blobbi follows its body every frame (its root at the capsule's
+feet, its facing along its velocity, its animator fed from the body's state)
+and never feeds back into the physics. The kit package knows nothing of
+Havok; everything game-side is `src/rumble/`:
+
+```
+src/rumble/
+  profile.ts              the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
+  physics/world.ts        Havok, enabled on the scene
+  physics/body.ts         the gameplay capsule: upright (no inertia), grounded by a ground-layer raycast, teleport for respawns
+  control/input.ts        keys to a camera-relative intent (pure)
+  control/mover.ts        intent to a bounded velocity change, applied as an impulse (pure)
+  control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
+  control/playerController.ts
+  arena.ts                the platform, static, on the ground layer
+  respawn.ts              fallen / wait / respawn (pure)
+  debug.ts                PhysicsViewer toggle and the HUD
+  main.ts                 the sandbox
+```
+
+`window.rumble` exposes the scene, both fighters, `step(n)` to drive frames
+by hand and `key(code, down)` to inject input, for scripted checks.
+
 ## History
 
 The renderer was grown here first (`src/blobbi/`, commits up to `aaffaa7`,

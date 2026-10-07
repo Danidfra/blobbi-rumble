@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blobbi Rumble: physics sandbox</title>
+    <link rel="stylesheet" href="/src/playground/styles.css" />
+    <style>
+      #hud { position: fixed; right: 12px; top: 12px; width: 300px; background: rgba(255,255,255,0.86); backdrop-filter: blur(10px); border-radius: 14px; padding: 10px 14px; font: 12px ui-monospace, Menlo, monospace; color: #2b2b3a; white-space: pre; box-shadow: 0 8px 30px rgba(40,50,80,0.18); }
+      #hud b { font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="hud"></div>
+    <script type="module" src="/src/rumble/main.ts"></script>
+  </body>
+</html>

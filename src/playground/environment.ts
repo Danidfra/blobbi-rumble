@@ -23,7 +23,12 @@ export interface Environment {
   ground: Mesh;
 }
 
-export function createEnvironment(scene: Scene, canvas: HTMLCanvasElement): Environment {
+export interface EnvironmentOptions {
+  /** The lawn and its bushes, wall and step. Off for a scene that brings its own ground. */
+  props?: boolean;
+}
+
+export function createEnvironment(scene: Scene, canvas: HTMLCanvasElement, options: EnvironmentOptions = {}): Environment {
   scene.clearColor = new Color4(0.86, 0.9, 0.97, 1);
   scene.ambientColor = new Color3(0.35, 0.35, 0.4);
 
@@ -53,8 +58,10 @@ export function createEnvironment(scene: Scene, canvas: HTMLCanvasElement): Envi
   shadows.blurKernel = 24;
   shadows.darkness = 0.45;
 
+  const withProps = options.props !== false;
   // The ground: a wide disc with a faint grid so motion reads.
   const ground = MeshBuilder.CreateGround('ground', { width: 60, height: 60, subdivisions: 2 }, scene);
+  ground.setEnabled(withProps);
   const groundMat = new StandardMaterial('ground-mat', scene);
   const tex = new DynamicTexture('ground-tex', { width: 512, height: 512 }, scene, true);
   const ctx = tex.getContext() as CanvasRenderingContext2D;
@@ -113,7 +120,8 @@ export function createEnvironment(scene: Scene, canvas: HTMLCanvasElement): Envi
   props.push(stepBox);
   for (const p of props) {
     p.receiveShadows = true;
-    shadows.addShadowCaster(p);
+    p.setEnabled(withProps);
+    if (withProps) shadows.addShadowCaster(p);
   }
 
   scene.fogMode = Scene.FOGMODE_LINEAR;
