@@ -12,7 +12,9 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import { ORBS } from '../tuning';
-import type { Orb } from './orbs';
+import type { OrbSnapshot } from '../sim/snapshot';
+
+type Orb = Pick<OrbSnapshot, 'x' | 'y' | 'z' | 'active'>;
 
 const ORB_COLOUR = '#ffb020';
 const BURST_TIME = 0.35;
@@ -31,7 +33,7 @@ export class OrbView {
 
   constructor(
     scene: Scene,
-    private readonly orbs: Orb[],
+    private orbs: readonly Orb[],
     shadows?: ShadowGenerator,
   ) {
     this.orbMat = new StandardMaterial('orb-mat', scene);
@@ -84,8 +86,9 @@ export class OrbView {
     this.bursts[i].setEnabled(true);
   }
 
-  /** Follow the state: show what is there, bob it, age the bursts. */
-  update(dt: number) {
+  /** Follow the match's orbs (a snapshot's): show what is there, bob it, age the bursts. */
+  update(dt: number, orbs: readonly Orb[] = this.orbs) {
+    this.orbs = orbs;
     this.time += dt;
     this.orbs.forEach((o, i) => {
       const sphere = this.spheres[i];

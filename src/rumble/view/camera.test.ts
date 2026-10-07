@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { followCamera, framed, wantedCamera } from './camera';
-import { CAMERA } from './tuning';
+import { CAMERA } from '../tuning';
 
 describe('the shared camera', () => {
   it('two fighters: looks at the midpoint, from a distance that grows with the separation within bounds', () => {

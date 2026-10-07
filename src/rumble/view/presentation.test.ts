@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BlobbiAnimator } from '@blobbi-kit/3d';
-import { presentationInput } from './fighter';
-import { createCombatState, startTumble, tickCombat } from './combat';
+import { presentationInput } from './fighterView';
+import { createCombatState, startTumble, tickCombat } from '../combat/combat';
 import { COMBAT } from '../tuning';
 
 const moving = { dt: 1 / 60, speed: 1.4, grounded: true, verticalVelocity: 0, jumped: false, landed: false, impact: 0 };

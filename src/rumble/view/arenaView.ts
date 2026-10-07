@@ -1,13 +1,10 @@
 /**
- * THE ARENA, built: three floor slabs over a void (a wide centre, a
+ * HOW THE ARENA LOOKS: three floor slabs over a void (a wide centre, a
  * narrower wing each side), a rim lip along every outer edge so the void
  * reads from any angle, and the sweeper's circle faintly on its wing.
- * Primitive geometry, no art. Its physics is three static
- * boxes on the ground layer; nothing stops a body going over the rim. The
- * shape itself is `layout.ts`; this only draws and solidifies it.
+ * Primitive geometry, no art, and no physics: the floor's collision is the
+ * match's (`sim/arenaBody.ts`). The shape itself is `arena/layout.ts`.
  */
-import { PhysicsAggregate } from '@babylonjs/core/Physics/v2/physicsAggregate';
-import { PhysicsShapeType } from '@babylonjs/core/Physics/v2/IPhysicsEnginePlugin';
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { DynamicTexture } from '@babylonjs/core/Materials/Textures/dynamicTexture';
@@ -15,11 +12,10 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import type { Scene } from '@babylonjs/core/scene';
-import { LAYER } from '../profile';
 import { SWEEPER } from '../tuning';
-import { ARENA, floorSlabs, rimSegments, type Rect } from './layout';
+import { ARENA, floorSlabs, rimSegments, type Rect } from '../arena/layout';
 
-export { ARENA } from './layout';
+export { ARENA } from '../arena/layout';
 
 export interface Arena {
   slabs: Mesh[];
@@ -65,12 +61,9 @@ export function createArena(scene: Scene, shadows?: ShadowGenerator): Arena {
     mat.specularColor = Color3.Black();
     slab.material = mat;
     slab.receiveShadows = true;
-    const aggregate = new PhysicsAggregate(slab, PhysicsShapeType.BOX, { mass: 0, friction: 0.8, restitution: 0 }, scene);
-    aggregate.shape.filterMembershipMask = LAYER.ground;
-    aggregate.shape.filterCollideMask = LAYER.ground | LAYER.character;
     shadows?.addShadowCaster(slab);
     slabs.push(slab);
-    disposables.push(aggregate, slab, mat, tex);
+    disposables.push(slab, mat, tex);
   });
 
   // The rim: a red lip along every outer edge, flush with the floor, so the void reads.

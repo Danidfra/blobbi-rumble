@@ -1,46 +1,42 @@
 /**
- * BLOBBI RUMBLE: up to four Blobbis, punch, grab and throw, power orbs, a
- * sweeper, ring-outs, last Blobbi standing, first to three.
+ * BLOBBI RUMBLE, THE BROWSER CLIENT: up to four Blobbis, punch, grab and
+ * throw, power orbs, a sweeper, ring-outs, last Blobbi standing, first to
+ * three. `?players=2|3|4`, `?bots=all`; F3 debug, R restarts a finished
+ * match.
  *
- * One designed arena over a void. Every fighter is a `Fighter` from the
- * roster: the SAME body, controller and combat, driven by a person's keys
- * (P1, P2) or by a local test bot (P3, P4 by default). Falling off the
- * arena eliminates a fighter from the round; the others play on, and the
- * last one standing takes the point (the last ones falling together is a
- * draw). Three power orbs sit on the arena, whatever the number of
- * fighters. F3 shows colliders, reach and the state of everything, R
- * restarts a finished match. `?players=2|3|4`, `?bots=all`.
+ * The match itself is `sim/match.ts`, the authority: it owns the bodies,
+ * combat, orbs, sweeper, rounds and scores, in a physics world of its own
+ * that is never drawn. This client only produces intents (P1 and P2 from
+ * the keyboard, P3 and P4 from local test bots), steps the match once per
+ * frame, and draws what the snapshot says:
  *
- *   physics body ──► position / velocity / ground contact ──► visual Blobbi
+ *   keys / bots ──intent──► RumbleMatch.step(dt) ──snapshot + events──► views, camera, HUD
  *
- * Nothing visual feeds back into the physics, and the kit package knows
+ * Nothing drawn feeds back into the match, and the kit package knows
  * nothing of any of this.
  */
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import '@babylonjs/core/Materials/standardMaterial';
 import { createEnvironment } from '../playground/environment';
 import { seedFromLabel } from '../playground/seeds';
-import { createArena } from './arena/arena';
-import { spawnPoints } from './arena/layout';
-import { createSweeper, resetSweeper, sweeperHit, tickSweeper } from './arena/sweeper';
-import { SweeperView } from './arena/sweeperView';
-import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from './camera';
-import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from './combat/combat';
-import { Fighter, type FighterFrame } from './combat/fighter';
-import { freeHolds, grabTarget, holdsConsistent, punchTarget, settleHolds, type Combatant, type Hold } from './combat/melee';
-import { BotInput, type BotWorld } from './control/bot';
+import { isHolding } from './combat/combat';
+import { BotInput, botWorldFrom } from './control/bot';
 import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, type MoveIntent } from './control/input';
-import { PhysicsDebug } from './debug';
-import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from './pickups/orbs';
-import { OrbView } from './pickups/orbView';
-import { nearestContacts } from './physics/contact';
-import { enableHavok } from './physics/world';
+import { powerMultiplier, pushAuthority, speedMultiplier } from './pickups/power';
+import { loadHavok } from './physics/world';
 import { RUMBLE_BODY } from './profile';
 import { rosterFor, rosterOptions } from './roster';
-import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
-import { CAMERA, COMBAT, ORBS, PUSH, ROUND, SWEEPER } from './tuning';
+import { createRumbleMatch } from './sim/match';
+import { combatOf } from './sim/read';
+import type { MatchEvent, MatchSnapshot } from './sim/snapshot';
+import { CAMERA, COMBAT, ORBS, ROUND, SWEEPER } from './tuning';
+import { createArena } from './view/arenaView';
+import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from './view/camera';
+import { PhysicsDebug } from './view/debug';
+import { FighterView } from './view/fighterView';
+import { OrbView } from './view/orbView';
+import { SweeperView } from './view/sweeperView';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -56,296 +52,155 @@ env.camera.beta = CAMERA.beta;
 
 const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match'];
 
-/** What happened, for scripted checks and the playtest report. */
-interface RumbleEvent {
-  t: number;
-  round: number;
-  kind: 'punch' | 'grab' | 'throw' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'out' | 'round';
-  who: number;
-  on?: number;
-  note?: string;
-}
-
-const IDLE: MoveIntent = { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
-
 async function start() {
-  const plugin = await enableHavok(scene, RUMBLE_BODY.gravity);
-  createArena(scene, env.shadows);
-  const debug = new PhysicsDebug(scene, hud);
-  const keyboard = new Keyboard([P1_BINDINGS, P2_BINDINGS]);
+  const havok = await loadHavok();
   const options = rosterOptions(location.search);
   const roster = rosterFor(options);
-  const spawns = spawnPoints(options.count);
+  const match = createRumbleMatch({ havok, players: roster.map((e) => ({ id: e.label })) });
+  const ids = match.ids;
+
+  // Presentation: the arena, the fighters' looks, the orbs, the sweeper, the debug layer.
+  createArena(scene, env.shadows);
+  const debug = new PhysicsDebug(scene, hud);
+  const views = roster.map((e) => new FighterView(e.label, e.label, scene, seedFromLabel(e.identity), env.shadows));
+  let snapshot: MatchSnapshot = match.snapshot();
+  const orbView = new OrbView(scene, snapshot.orbs, env.shadows);
+  const sweeperView = new SweeperView(scene, env.shadows);
+
+  // Intent producers: the keyboard for people, test bots for the rest, each behind a scripting hook for checks.
+  const keyboard = new Keyboard([P1_BINDINGS, P2_BINDINGS]);
   const bots: (BotInput | null)[] = [];
-  const scripts: ScriptableInput[] = [];
-  /** Scripted checks may switch the bots off, and count matches so each one's rounds differ. */
-  let botsOn = true;
-  let matchCount = 0;
-  const fighters = roster.map((entry, i) => {
+  const inputs = roster.map((entry, i) => {
     const driver = entry.keys ? new PlayerInput(keyboard, entry.keys) : new BotInput(i + 1);
     bots.push(driver instanceof BotInput ? driver : null);
-    const input = new ScriptableInput(driver);
-    scripts.push(input);
-    return new Fighter(entry.label, scene, seedFromLabel(entry.identity), new Vector3(spawns[i].x, 0, spawns[i].z), spawns[i].yaw, input, env.shadows);
+    return new ScriptableInput(driver);
   });
-  const n = fighters.length;
-  for (const f of fighters) debug.track(f.body.body);
-  const orbs = createOrbs();
-  const orbView = new OrbView(scene, orbs, env.shadows);
-  const sweeper = createSweeper(n);
-  const sweeperView = new SweeperView(scene, env.shadows);
-  debug.track(sweeperView.bar.physicsBody!);
-  const lastHazard: string[] = Array(n).fill('');
-  const match = createMatch(n);
-  const subjects = () => fighters.filter((f) => framed(f.body.feet(), !f.eliminated)).map((f) => f.body.feet());
-  let cameraPose: CameraPose = wantedCamera(subjects());
+  /** Scripted checks may switch the bots off; matches are counted so each one's bot rounds differ. */
+  let botsOn = true;
+  let matchCount = 0;
+  const resetBots = (round: number) => bots.forEach((b) => b?.reset(round + 1000 * matchCount));
+
+  const subjects = (s: MatchSnapshot) =>
+    s.fighters
+      .map((f) => ({ x: f.position.x, y: f.position.y - RUMBLE_BODY.capsuleCenterY, z: f.position.z, alive: !f.eliminated }))
+      .filter((f) => framed(f, f.alive))
+      .map(({ x, y, z }) => ({ x, y, z }));
+  let cameraPose: CameraPose = wantedCamera(subjects(snapshot));
   let message = '';
-  let time = 0;
-  let frameCount = 0;
-  const events: RumbleEvent[] = [];
-  const log = (e: Omit<RumbleEvent, 't' | 'round'>) => events.push({ t: +time.toFixed(2), round: match.round, ...e });
-  const wasTouching: boolean[] = Array(n).fill(false);
-  let lastIntents: MoveIntent[] = fighters.map(() => IDLE);
-  let lastContacts: number[] = Array(n).fill(-1);
+  const lastHazard: Record<string, string> = {};
+  const events: MatchEvent[] = [];
 
   window.addEventListener('keydown', (e) => {
     if (e.code === 'F3') {
       debug.toggle();
-      for (const f of fighters) f.showDebug(debug.on);
+      for (const v of views) v.showDebug(debug.on);
       orbView.showDebug(debug.on);
       sweeperView.showDebug(debug.on);
       e.preventDefault();
     }
-    if (e.code === 'KeyR' && match.phase === 'matchOver') newMatch();
+    if (e.code === 'KeyR' && snapshot.phase === 'matchOver') newMatch();
   });
 
-  const resetRound = () => {
-    for (const f of fighters) f.reset();
-    for (const f of fighters) f.body.setGravityFactor(1);
-    for (const b of bots) b?.reset(match.round + 1000 * matchCount);
-    resetOrbs(orbs);
-    resetSweeper(sweeper);
-    sweeperView.apply(sweeper);
-    cameraPose = wantedCamera(subjects());
-  };
   const newMatch = () => {
     matchCount += 1;
-    restartMatch(match);
-    resetRound();
-    message = '';
+    show(match.restart(), match.snapshot());
+    snapshot = match.snapshot();
   };
 
-  const combatants = (): Combatant[] => fighters.map((f) => ({ combat: f.combat, at: f.at(), facing: f.facing(), active: !f.eliminated }));
-  /** Holds that ended: each victim has its weight back. */
-  const dropped = (holds: Hold[]) => {
-    for (const h of holds) fighters[h.holder].letGo(fighters[h.victim]);
-  };
-  /** A blow lands on `j` (a punch or the sweeper): any hold it is part of ends first, as holder or as held, then the reaction. */
-  const strike = (list: Combatant[], j: number, reaction: Reaction, by: number) => {
-    const ended = freeHolds(list, j);
-    dropped(ended);
-    for (const h of ended) if (by !== h.holder && by !== h.victim) log({ kind: 'interrupt', who: by, on: j, note: `${fighters[h.holder].label} lost ${fighters[h.victim].label}` });
-    fighters[j].react(reaction, (COMBAT.hitSpin * reaction.impact) / COMBAT.tumbleThreshold);
-  };
-
-  /** One fighter's attack and hold this frame, against whichever fighter it takes. */
-  const interact = (list: Combatant[], i: number, intent: MoveIntent, dt: number) => {
-    const me = fighters[i];
-    if (me.eliminated) return;
-    // A punch in its active window lands on one fighter: the nearest in reach and arc.
-    if (punchActive(me.combat)) {
-      const j = punchTarget(list, i);
-      if (j >= 0) {
-        const other = fighters[j];
-        const reaction = landPunch(me.combat, me.at(), me.facing(), me.speedAlongFacing(), me.power, other.combat, other.at(), RUMBLE_BODY.walkSpeed);
-        if (reaction) {
-          log({ kind: 'punch', who: i, on: j, note: `${reaction.kind} ${reaction.impact.toFixed(1)}${other.combat.held ? ' on a held body' : isHolding(other.combat) ? ' on a carrier' : ''}` });
-          strike(list, j, reaction, i);
-        }
+  /** Show what the match decided: feedback on the views, messages, and fresh starts. Returns who jumped. */
+  const show = (stepEvents: readonly MatchEvent[], s: MatchSnapshot) => {
+    const jumped = new Set<string>();
+    const outs: string[] = [];
+    let decided = false;
+    const view = (id: string | null | undefined) => views[ids.indexOf(id ?? '')];
+    for (const e of stepEvents) {
+      events.push(e);
+      switch (e.kind) {
+        case 'jump':
+          jumped.add(e.who!);
+          break;
+        case 'punch':
+        case 'throw':
+          view(e.on)?.struck();
+          break;
+        case 'sweeper':
+          view(e.who)?.struck();
+          lastHazard[e.who!] = `${e.reaction} ${e.impact!.toFixed(2)} ${e.note}`;
+          break;
+        case 'orb':
+          view(e.who)?.powered();
+          orbView.taken(e.orb!);
+          break;
+        case 'out':
+          outs.push(e.who!);
+          break;
+        case 'round':
+          decided = true;
+          message = e.who === null ? `${outs.join(' & ')} OUT · nobody left · no point` : `${e.who} IS THE LAST BLOBBI STANDING`;
+          break;
+        case 'newRound':
+        case 'match':
+        case 'newMatch':
+          for (const v of views) v.reset();
+          resetBots(s.round);
+          cameraPose = wantedCamera(subjects(s));
+          message = '';
+          break;
       }
     }
-    if (intent.grab) {
-      const v = me.combat.victim;
-      if (isHolding(me.combat) && v >= 0) {
-        const victim = fighters[v];
-        const thrown = release(me.combat, victim.combat, me.holdDir(), me.velocity(), me.power);
-        me.letGo(victim);
-        victim.react(thrown, COMBAT.throwSpin);
-        log({ kind: 'throw', who: i, on: v, note: thrown.impact.toFixed(1) });
-      } else {
-        const j = grabTarget(list, i);
-        if (j >= 0 && tryGrab(me.combat, me.at(), me.facing(), fighters[j].combat, fighters[j].at(), COMBAT, { grabber: i, victim: j })) {
-          me.hold(fighters[j]);
-          log({ kind: 'grab', who: i, on: j });
-        }
-      }
-    }
-    const v = me.combat.victim;
-    if (isHolding(me.combat) && v >= 0) {
-      const victim = fighters[v];
-      const anchor = me.holdStep(dt);
-      if (holdBreaks(me.combat, anchor, victim.feet()) || isTumbling(me.combat)) {
-        endGrab(me.combat, victim.combat);
-        me.letGo(victim);
-        log({ kind: 'drop', who: i, on: v, note: 'hold broke' });
-      } else {
-        const pull = holdPull(anchor, me.velocity(), victim.feet(), victim.velocity3(), dt);
-        victim.push(pull.victim.x, pull.victim.y, pull.victim.z);
-        me.push(pull.grabber.x, 0, pull.grabber.z);
-      }
-    }
+    if (outs.length > 0 && !decided && s.phase === 'playing') message = `${outs.join(' & ')} OUT · ${s.fighters.filter((f) => f.alive).length} left`;
+    return jumped;
   };
-
-  const botWorld = (self: number, list: Combatant[]): BotWorld => ({
-    self,
-    fighters: list.map((c, j) => ({ ...c, powerLevel: fighters[j].powerLevel })),
-    orbs,
-    sweeperAngle: sweeper.angle,
-    grounded: fighters[self].body.grounded(),
-  });
 
   const frame = (dt: number) => {
-    time += dt;
-    frameCount += 1;
     const look = env.camera.target.subtract(env.camera.position);
     const cameraYaw = Math.atan2(look.x, look.z);
-    const playing = match.phase === 'playing';
-    fighters.forEach((f, i) => (f.input.enabled = playing && !f.eliminated && (botsOn || !bots[i] || scripts[i].script !== null)));
-    for (const f of fighters) if (!f.eliminated) tickCombat(f.combat, dt);
+    // Intents for this step, from what the producers see now.
+    const before = snapshot;
+    const playing = before.phase === 'playing';
+    inputs.forEach((input, i) => (input.enabled = playing && !before.fighters[i].eliminated && (botsOn || !bots[i] || input.script !== null)));
+    bots.forEach((b, i) => b?.plan(botWorldFrom(before, ids[i]), dt));
+    inputs.forEach((input, i) => match.setInput(ids[i], input.read(cameraYaw)));
 
-    // Body against body: each touching fighter's pushing contest is with the nearest body it touches.
-    const centres = fighters.map((f) => (f.eliminated ? null : f.body.position()));
-    const contacts = nearestContacts(centres, PUSH.contactMargin);
-    lastContacts = contacts;
-    fighters.forEach((f, i) => {
-      const touching = contacts[i] >= 0;
-      if (touching !== wasTouching[i]) {
-        wasTouching[i] = touching;
-        f.body.setFriction(touching ? PUSH.contactFriction : RUMBLE_BODY.friction);
-      }
-    });
-
-    // The bots look at the arena as it stands, and decide.
-    const before = combatants();
-    bots.forEach((b, i) => b?.plan(botWorld(i, before), dt));
-
-    // Steering. A shoving match is two touching fighters pushing into each other (read from the last frame's intents: one frame late, never wrong by much).
-    const frames: FighterFrame[] = fighters.map((f, i) => {
-      if (f.eliminated) {
-        f.input.read(cameraYaw); // presses are consumed, so none queue up for the next round
-        return { grounded: false, jumped: false, intent: IDLE };
-      }
-      const j = contacts[i];
-      if (j < 0) return f.update(dt, cameraYaw);
-      const a = centres[i]!;
-      const b = centres[j]!;
-      const span = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-      const toward = { x: (b.x - a.x) / span, z: (b.z - a.z) / span };
-      const mine = lastIntents[i];
-      const theirs = lastIntents[j];
-      const shoving = mine.x * toward.x + mine.z * toward.z > 0.3 && -(theirs.x * toward.x + theirs.z * toward.z) > 0.3;
-      return f.update(dt, cameraYaw, { gain: PUSH.gain, brakeGain: PUSH.brakeGain, authority: f.pushAuthority, toward, shoving, headOnCos: PUSH.headOnCos });
-    });
-    lastIntents = frames.map((fr) => fr.intent);
-
-    if (playing) {
-      // Attacks resolve one fighter at a time; the first to act turns round with the frames, so no seat always wins a simultaneous grab.
-      const list = combatants();
-      for (let k = 0; k < n; k++) {
-        const i = (k + frameCount) % n;
-        interact(list, i, frames[i].intent, dt);
-      }
-    }
-    // Every hold stays a true pair (a holder that tumbled lets go here).
-    dropped(settleHolds(combatants()));
-
-    // Orbs: taken by whoever reaches one (the nearest), back after a while where no one stands.
-    const bodies = fighters.map((f) => (f.eliminated ? null : f.body.position()));
-    if (playing) {
-      collectOrbs(orbs, bodies).forEach((taker, i) => {
-        if (taker < 0) return;
-        fighters[taker].gainPower();
-        orbView.taken(i);
-        log({ kind: 'orb', who: taker, note: `orb ${i} → level ${fighters[taker].powerLevel}` });
-      });
-    }
-    tickOrbs(orbs, dt, bodies);
-    orbView.update(dt);
-
-    // The sweeper turns; a fighter under its leading face takes its blow, through the same reaction as a punch (no player power in it).
-    tickSweeper(sweeper, dt);
-    sweeperView.apply(sweeper);
-    if (playing) {
-      const list = combatants();
-      fighters.forEach((f, i) => {
-        if (f.eliminated) return;
-        const hit = sweeperHit(sweeper, i, f.body.position(), RUMBLE_BODY.capsuleRadius, RUMBLE_BODY.capsuleCenterY);
-        if (!hit) return;
-        strike(list, i, hit.reaction, -1);
-        lastHazard[i] = `${hit.reaction.kind} ${hit.reaction.impact.toFixed(2)} at ${hit.along.toFixed(2)} m (${hit.speed.toFixed(2)} m/s)`;
-        log({ kind: 'sweeper', who: i, note: lastHazard[i] });
-      });
-    }
-    const tilts = fighters.map((f) => (f.eliminated ? 0 : f.settle()));
-    fighters.forEach((f, i) => {
-      if (!f.eliminated) f.follow(dt, frames[i]);
-    });
-
-    // Ring-outs: who crossed the fall line this frame. Each is out of the round: its holds end, its body leaves play.
-    const fell = fighters.map((f) => !f.eliminated && f.checkFall(dt));
-    if (fell.some(Boolean)) {
-      const list = combatants();
-      fell.forEach((out, i) => {
-        if (!out) return;
-        dropped(freeHolds(list, i));
-        if (match.phase === 'playing') {
-          fighters[i].eliminate(new Vector3(i * 3, -40, 0));
-          log({ kind: 'out', who: i, note: `${aliveCount(match) - 1} left` });
-        }
-      });
-      const outs = fell.map((f, i) => (f ? fighters[i].label : '')).filter(Boolean);
-      if (ringOut(match, fell)) {
-        message = match.lastWinner === null ? `${outs.join(' & ')} OUT · nobody left · no point` : `${fighters[match.lastWinner].label} IS THE LAST BLOBBI STANDING`;
-        log({ kind: 'round', who: match.lastWinner ?? -1, note: match.lastWinner === null ? 'draw' : 'win' });
-      } else if (match.phase === 'playing') message = `${outs.join(' & ')} OUT · ${aliveCount(match)} left`;
-    }
-    const ended = tickMatch(match, dt);
-    if (ended === 'round') {
-      resetRound();
-      message = '';
-    } else if (ended === 'over') {
-      // The scene settles: everyone back at their spawns, at rest, until a restart.
-      resetRound();
-    }
-    if (match.phase === 'matchOver') message = `${fighters[matchWinner(match)!].label} WINS THE MATCH · press R to play again`;
+    // The authority steps; the client draws the outcome.
+    const stepEvents = match.step(dt);
+    snapshot = match.snapshot();
+    const s = snapshot;
+    const jumped = show(stepEvents, s);
+    s.fighters.forEach((f, i) => views[i].apply(f, dt, jumped.has(f.id)));
+    orbView.update(dt, s.orbs);
+    sweeperView.apply(s.sweeper.angle);
+    debug.sync(s);
+    if (s.phase === 'matchOver' && s.matchWinner) message = `${s.matchWinner} WINS THE MATCH · press R to play again`;
 
     // The camera frames whoever is still in the round and on the arena.
-    const wanted = subjects();
+    const wanted = subjects(s);
     if (wanted.length > 0) cameraPose = followCamera(cameraPose, wantedCamera(wanted), dt);
     applyCamera(env.camera, cameraPose);
 
-    const lines = [`round ${match.round} · first to ${ROUND.target} · last Blobbi standing`, ''];
-    fighters.forEach((f, i) => {
-      const who = `${f.label} ${bots[i] ? 'bot ' : 'keys'}`;
-      const state = match.alive[i] ? (f.eliminated ? 'OUT' : 'in ') : 'OUT';
-      const power = `×${f.power.toFixed(2)}${f.powerLevel > 0 ? ` (${f.powerLevel})` : ''}`;
+    const lines = [`round ${s.round} · first to ${ROUND.target} · last Blobbi standing`, ''];
+    s.fighters.forEach((f, i) => {
+      const who = `${f.id} ${bots[i] ? 'bot ' : 'keys'}`;
+      const state = f.alive ? (f.eliminated ? 'OUT' : 'in ') : 'OUT';
+      const power = `×${powerMultiplier(f.powerLevel).toFixed(2)}${f.powerLevel > 0 ? ` (${f.powerLevel})` : ''}`;
       const bot = bots[i] && !f.eliminated ? `  ${bots[i]!.memory.state.toLowerCase()}` : '';
-      lines.push(`${who}  ${state}  ${'●'.repeat(match.score[i])}${'○'.repeat(Math.max(0, ROUND.target - match.score[i]))}  ${power.padEnd(11)}${bot}`);
+      lines.push(`${who}  ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot}`);
     });
-    lines.push('', message || (playing ? '' : '…'), '', ...CONTROLS);
+    lines.push('', message || (s.phase === 'playing' ? '' : '…'), '', ...CONTROLS);
     if (debug.on) {
-      const state = (f: Fighter, i: number) => {
-        const c = f.combat;
-        const v = f.body.velocity();
-        if (f.eliminated) return `${f.label}  out`;
-        const what = c.tumble >= 0 ? `tumble ${c.tumble.toFixed(2)}` : c.recovering >= 0 ? `recover ${c.recovering.toFixed(2)}` : c.held ? `held by ${fighters[c.holder]?.label ?? '?'}` : isHolding(c) ? `holding ${fighters[c.victim]?.label ?? '?'} ${(c.holdAngle * 57.3).toFixed(0)}°` : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
-        const touch = lastContacts[i] >= 0 ? ` touch ${fighters[lastContacts[i]].label}` : '';
-        return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(16)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} tilt ${((tilts[i] * 180) / Math.PI).toFixed(0)}°${touch}`;
+      const state = (i: number) => {
+        const f = s.fighters[i];
+        if (f.eliminated) return `${f.id}  out`;
+        const c = combatOf(f);
+        const v = f.velocity;
+        const what = c.tumble >= 0 ? `tumble ${c.tumble.toFixed(2)}` : c.recovering >= 0 ? `recover ${c.recovering.toFixed(2)}` : f.heldBy ? `held by ${f.heldBy}` : isHolding(c) ? `holding ${f.holding ?? '?'} ${(c.holdAngle * 57.3).toFixed(0)}°` : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
+        const touch = f.touching ? ` touch ${f.touching}` : '';
+        return `${f.id}  ${views[i].blobbi.animator.state.padEnd(5)} ${what.padEnd(16)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.grounded ? 'ground' : 'air'} tilt ${((f.tilt * 180) / Math.PI).toFixed(0)}°${touch}`;
       };
-      const orbLine = orbs.map((o, i) => `${i}:${o.active ? 'up' : `back in ${o.timer.toFixed(1)}s`}`).join(' · ');
-      lines.push('', ...fighters.map(state), `holds ${holdsConsistent(combatants()) ? 'consistent' : 'INCONSISTENT'} · grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`);
-      lines.push(`orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`, `sweeper ${((sweeper.angle * 180) / Math.PI).toFixed(0)}° · ${SWEEPER.angularSpeed} rad/s · reach ${SWEEPER.reach} m (ring)`);
-      fighters.forEach((f, i) => lines.push(`${f.label} power ${f.powerLevel}: push ×${f.pushAuthority.toFixed(2)} speed ×${f.speedMultiplier.toFixed(2)} · last impact ${f.lastImpact.toFixed(2)} · sweeper ${lastHazard[i] || '-'}`));
+      const orbLine = s.orbs.map((o, i) => `${i}:${o.active ? 'up' : `back in ${o.timer.toFixed(1)}s`}`).join(' · ');
+      lines.push('', ...s.fighters.map((_, i) => state(i)), `holds ${match.holdsConsistent() ? 'consistent' : 'INCONSISTENT'} · grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`);
+      lines.push(`orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`, `sweeper ${((s.sweeper.angle * 180) / Math.PI).toFixed(0)}° · ${SWEEPER.angularSpeed} rad/s · reach ${SWEEPER.reach} m (ring) · tick ${s.tick}`);
+      s.fighters.forEach((f) => lines.push(`${f.id} power ${f.powerLevel}: push ×${pushAuthority(f.powerLevel).toFixed(2)} speed ×${speedMultiplier(f.powerLevel).toFixed(2)} · last impact ${f.lastImpact.toFixed(2)} · sweeper ${lastHazard[f.id] || '-'}`));
     }
     debug.print(lines);
     scene.render();
@@ -362,41 +217,35 @@ async function start() {
   Object.assign(window, {
     rumble: {
       scene,
-      fighters,
-      bots,
-      p1: fighters[0],
-      p2: fighters[1],
       match,
-      orbs,
-      sweeper,
-      keyboard,
-      debug,
-      plugin,
+      views,
+      bots,
       events,
+      get snapshot() {
+        return snapshot;
+      },
       get cameraPose() {
         return cameraPose;
       },
-      /** Scripted checks: drive fighter `i` with this intent (null hands it back), and switch the bots on or off. */
-      script(i: number, intent: Partial<MoveIntent> | null) {
-        scripts[i].script = intent ? { ...IDLE, ...intent } : null;
-      },
-      setBots(on: boolean) {
-        botsOn = on;
-      },
-      /** Whether every hold is a true pair, nobody with two holders. */
-      holdsConsistent: () => holdsConsistent(combatants()),
-      /** Drive frames by hand (a hidden tab gets none); scripted checks step the physics at a fixed 1/60 s. */
+      /** Drive frames by hand (a hidden tab gets none); scripted checks step at a fixed 1/60 s. */
       step(frames = 1, dt = 1 / 60) {
         for (let i = 0; i < frames; i++) frame(dt);
       },
       key(code: string, down: boolean) {
         window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));
       },
-      /** A press: down and up. */
       press(code: string) {
         window.dispatchEvent(new KeyboardEvent('keydown', { code }));
         window.dispatchEvent(new KeyboardEvent('keyup', { code }));
       },
+      /** Scripted checks: drive fighter `i` with this intent (null hands it back), and switch the bots on or off. */
+      script(i: number, intent: Partial<MoveIntent> | null) {
+        inputs[i].script = intent ? { x: 0, z: 0, run: false, jump: false, punch: false, grab: false, ...intent } : null;
+      },
+      setBots(on: boolean) {
+        botsOn = on;
+      },
+      holdsConsistent: () => match.holdsConsistent(),
       newMatch,
     },
   });

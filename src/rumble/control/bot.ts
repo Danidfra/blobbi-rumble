@@ -22,7 +22,10 @@ import { onFloor, rimDistance } from '../arena/layout';
 import { canAct, grabbable, isDown, isHolding, isStunned, type CombatState, type Planar } from '../combat/combat';
 import { powerCap } from '../pickups/power';
 import { COMBAT, BOT, SWEEPER } from '../tuning';
-import type { IntentSource, MoveIntent } from './input';
+import type { IntentSource } from './input';
+import type { PlayerIntent as MoveIntent } from '../sim/intent';
+import type { MatchSnapshot } from '../sim/snapshot';
+import { combatOf } from '../sim/read';
 
 export type BotState = 'SEEK_ORB' | 'SEEK_FIGHTER' | 'ATTACK' | 'CARRY' | 'RECOVER';
 
@@ -41,6 +44,22 @@ export interface BotWorld {
   orbs: readonly { x: number; z: number; active: boolean }[];
   sweeperAngle: number;
   grounded: boolean;
+}
+
+/**
+ * The world as a bot sees it, from a match snapshot: what anyone watching
+ * the screen could know. `self` is the bot's own player id.
+ */
+export function botWorldFrom(s: MatchSnapshot, self: string): BotWorld {
+  const fighters = s.fighters.map((f) => ({
+    at: { x: f.position.x, z: f.position.z },
+    facing: { x: Math.sin(f.yaw), z: Math.cos(f.yaw) },
+    active: !f.eliminated,
+    combat: combatOf(f),
+    powerLevel: f.powerLevel,
+  }));
+  const i = s.players.indexOf(self);
+  return { self: i, fighters, orbs: s.orbs, sweeperAngle: s.sweeper.angle, grounded: s.fighters[i].grounded };
 }
 
 export interface BotMemory {

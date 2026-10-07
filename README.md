@@ -40,7 +40,24 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 
 ```
 npm run dev          # http://127.0.0.1:5177/rumble.html
+npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60)
 ```
+
+THE AUTHORITATIVE MATCH (`src/rumble/sim/`) is the whole game with no
+renderer, DOM, keyboard or clock: `createRumbleMatch({ havok, players })`,
+`setInput(id, intent)`, `step(dt)` (returns the events it decided),
+`snapshot()` (plain data), `restart()`. It owns the fighters' Havok bodies
+in a physics world of its own on a Babylon `NullEngine` scene that is never
+drawn, and decides movement, collisions, punch and grab targets, hits,
+throws, orb pickups, sweeper hits, tumbles, eliminations, rounds, scores
+and the match's winner. Intents (`sim/intent.ts`: a ground-plane
+direction, run, and jump / punch / grab requests) are all it takes from a
+player; the keyboard and the test bots are producers of them. Fighters are
+named by stable match-local ids. The browser client (`main.ts` and
+`view/`) steps the match once per frame and draws the snapshot: the visual
+Blobbis, arena, orbs, sweeper, camera, HUD and F3 wireframes. The same
+match runs in Node (`sim/havokNode.ts`, `headless.ts`) about 500 times
+faster than real time.
 
 A local party fight: four Blobbis from the package on one arena over a
 void, the SAME normalized gameplay capsule owned by Havok for every one of
@@ -150,36 +167,50 @@ The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 
 ```
 src/rumble/
+  sim/                the authoritative match, no renderer, DOM or input device:
+    match.ts            RumbleMatch: setInput, step(dt), snapshot(), restart(); the step's order of play
+    fighter.ts          one fighter's gameplay: body, facing, combat, fall, power, elimination
+    intent.ts           the transport-neutral player intent
+    snapshot.ts         the plain-data snapshot and the match's events
+    physics.ts          Havok on a never-drawn NullEngine scene, stepped explicitly
+    arenaBody.ts        the floor's collision
+    sweeperBody.ts      the sweeper's animated bar and post
+    read.ts             reading a snapshot back into combat predicates
+    havokNode.ts        Havok's wasm from the package file, for Node
+  headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place
-  physics/            Havok on the scene; the gameplay capsule (upright, grounded by a ground-layer raycast, teleport, friction); capsule contact (pure)
   roster.ts           who plays: labels, identities, keys or bot; ?players=, ?bots=all
+  physics/            the gameplay capsule (upright, grounded by footprint raycasts, teleport, park, friction); capsule contact (pure); Havok's browser loader
   control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure); the intent-source seam
-  control/bot.ts      the local test bot: world view to an intent (pure), and its intent source
+  control/bot.ts      the local test bot: snapshot to an intent (pure), and its intent source
   control/mover.ts    intent to a bounded velocity change, applied as an impulse; a bounded spring while contested (pure)
-  control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
+  control/facing.ts   the facing follows the velocity (pure)
+  control/animationBridge.ts  body state to the kit animator's input (pure)
   combat/impact.ts    one impact-strength path and the hit / tumble rule (pure)
   combat/combat.ts    punch, stun, grab, hold, throw, tumble, recovery: pure state and geometry
   combat/melee.ts     whom a punch or grab takes among several; who holds whom (pure)
-  combat/fighter.ts   one player, the same class for all: body, intent source, combat, fall, elimination, and the visual Blobbi
   pickups/orbs.ts     the orbs: where, taken by whom, when back (pure)
   pickups/power.ts    a level's impact multiplier, capped (pure)
-  pickups/orbView.ts  how the orbs look: spheres, discs, a burst when taken
   rounds.ts           elimination, last Blobbi standing, rounds, the match (pure)
-  camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
   arena/layout.ts     the floor's shape: slabs, rim, spawns (pure)
-  arena/arena.ts      the floor built: slabs, rim lips, the sweeper's circle
   arena/sweeper.ts    the sweeper: its angle, whom its bar strikes, the blow (pure)
-  arena/sweeperView.ts the bar and post in the scene, moved by Havok
   respawn.ts          fallen / wait (pure)
-  debug.ts            PhysicsViewer toggle and the HUD
-  main.ts             the game
+  view/               presentation only, drawn from snapshots and events:
+    fighterView.ts      the visual Blobbi, its feedback, reach and power rings, name tag
+    arenaView.ts        slabs, rim lips, the sweeper's circle
+    sweeperView.ts      the bar and post
+    orbView.ts          spheres, discs, a burst when taken
+    camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
+    debug.ts            F3 collider wireframes and the HUD
+  main.ts             the browser client: intents in, step, draw
 ```
 
-`window.rumble` exposes the scene, the fighters and bots, the match, an
-event log, `step(n)` to drive frames by hand, `key(code, down)` /
-`press(code)` to inject input, `script(i, intent)` / `setBots(on)` to drive
-any fighter directly, and `holdsConsistent()`, for scripted checks.
+`window.rumble` exposes the scene, the match, the views and bots, the
+event log, the latest `snapshot`, `step(n)` to drive frames by hand,
+`key(code, down)` / `press(code)` to inject input, `script(i, intent)` /
+`setBots(on)` to drive any fighter directly, and `holdsConsistent()`, for
+scripted checks; `match.debugPlace(id, at)` puts a fighter somewhere.
 
 ## History
 

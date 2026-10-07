@@ -9,7 +9,7 @@
  * from `applyCamera`.
  */
 import type { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera';
-import { CAMERA } from './tuning';
+import { CAMERA } from '../tuning';
 
 export interface CameraPose {
   x: number;

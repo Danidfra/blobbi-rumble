@@ -6,6 +6,8 @@
  * `PlayerInput` is one player's view of it, with edge-triggered actions
  * (jump, punch, grab) that fire once per press.
  */
+import { IDLE_INTENT, type PlayerIntent } from '../sim/intent';
+
 export interface KeyBindings {
   forward: readonly string[];
   back: readonly string[];
@@ -39,15 +41,8 @@ export const P2_BINDINGS: KeyBindings = {
   grab: ['KeyL'],
 };
 
-export interface MoveIntent {
-  /** Unit (or zero) direction in the ground plane, world x and z. */
-  x: number;
-  z: number;
-  run: boolean;
-  jump: boolean;
-  punch: boolean;
-  grab: boolean;
-}
+/** What a fighter is asked to do: the match's transport-neutral intent. Keys are one producer of it. */
+export type MoveIntent = PlayerIntent;
 
 export interface Actions {
   jump?: boolean;
@@ -119,12 +114,10 @@ export class PlayerInput implements IntentSource {
   /** The intent since the last read; presses are consumed even while disabled, so none queue up. */
   read(cameraYaw: number): MoveIntent {
     const actions = { jump: this.keyboard.take(this.bindings.jump), punch: this.keyboard.take(this.bindings.punch), grab: this.keyboard.take(this.bindings.grab) };
-    if (!this.enabled) return { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
+    if (!this.enabled) return { ...IDLE_INTENT };
     return moveIntent(this.keyboard.held, cameraYaw, this.bindings, actions);
   }
 }
-
-const IDLE: MoveIntent = { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
 
 /**
  * A dev hook for scripted checks: whatever drives a fighter, with an intent
@@ -143,7 +136,7 @@ export class ScriptableInput implements IntentSource {
   read(cameraYaw: number): MoveIntent {
     const own = this.base.read(cameraYaw);
     if (!this.script) return own;
-    const out = this.enabled ? this.script : IDLE;
+    const out = this.enabled ? this.script : { ...IDLE_INTENT };
     this.script = { ...this.script, jump: false, punch: false, grab: false };
     return out;
   }

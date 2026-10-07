@@ -1,0 +1,76 @@
+/**
+ * DEBUG: a toggle (F3) that shows the gameplay colliders over the visual
+ * Blobbis, and a HUD that prints what the match knows. The colliders live
+ * in the match's own physics world, which is never drawn, so the client
+ * draws wireframes of the same shapes where the snapshot puts them: each
+ * fighter's capsule (turning with it when it tumbles) and the sweeper's bar
+ * and post. Off by default.
+ */
+import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
+import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
+import { Quaternion } from '@babylonjs/core/Maths/math.vector';
+import type { Mesh } from '@babylonjs/core/Meshes/mesh';
+import type { Scene } from '@babylonjs/core/scene';
+import { RUMBLE_BODY } from '../profile';
+import { SWEEPER } from '../tuning';
+import { SWEEPER_POST } from '../sim/sweeperBody';
+import type { MatchSnapshot } from '../sim/snapshot';
+
+export class PhysicsDebug {
+  on = false;
+  private readonly capsules = new Map<string, Mesh>();
+  private readonly bar: Mesh;
+  private readonly post: Mesh;
+  private readonly mat: StandardMaterial;
+
+  constructor(
+    private readonly scene: Scene,
+    private readonly hud: HTMLElement,
+  ) {
+    this.mat = new StandardMaterial('debug-collider-mat', scene);
+    this.mat.wireframe = true;
+    this.mat.emissiveColor = Color3.FromHexString('#2f6bff');
+    this.mat.disableLighting = true;
+    const t = SWEEPER;
+    this.bar = MeshBuilder.CreateBox('debug-sweeper-bar', { width: t.reach * 2, height: t.top, depth: t.halfWidth * 2 }, scene);
+    this.post = MeshBuilder.CreateCylinder('debug-sweeper-post', { diameter: SWEEPER_POST.diameter, height: SWEEPER_POST.height, tessellation: 24 }, scene);
+    this.post.position.set(t.pivot.x, SWEEPER_POST.height / 2, t.pivot.z);
+    this.bar.position.set(t.pivot.x, t.top / 2, t.pivot.z);
+    for (const m of [this.bar, this.post]) {
+      m.material = this.mat;
+      m.isPickable = false;
+      m.setEnabled(false);
+    }
+  }
+
+  toggle() {
+    this.on = !this.on;
+    this.bar.setEnabled(this.on);
+    this.post.setEnabled(this.on);
+    for (const c of this.capsules.values()) c.setEnabled(this.on);
+  }
+
+  /** Move the wireframes to where the snapshot has the bodies. */
+  sync(s: MatchSnapshot) {
+    if (!this.on) return;
+    this.bar.rotation.y = s.sweeper.angle;
+    for (const f of s.fighters) {
+      let mesh = this.capsules.get(f.id);
+      if (!mesh) {
+        mesh = MeshBuilder.CreateCapsule(`debug-${f.id}`, { height: RUMBLE_BODY.capsuleHeight, radius: RUMBLE_BODY.capsuleRadius, tessellation: 12, subdivisions: 2 }, this.scene);
+        mesh.material = this.mat;
+        mesh.isPickable = false;
+        mesh.rotationQuaternion = new Quaternion();
+        this.capsules.set(f.id, mesh);
+      }
+      mesh.setEnabled(!f.eliminated);
+      mesh.position.set(f.position.x, f.position.y, f.position.z);
+      mesh.rotationQuaternion!.set(f.rotation.x, f.rotation.y, f.rotation.z, f.rotation.w);
+    }
+  }
+
+  print(lines: string[]) {
+    this.hud.textContent = lines.join('\n');
+  }
+}

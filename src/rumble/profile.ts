@@ -1,12 +1,16 @@
 /**
  * THE RUMBLE BODY: every number the gameplay physics is tuned with, in one
- * place, the same for every player. It starts from the kit's
- * `BLOBBI_GAMEPLAY_PROFILE` (the normalized capsule, mass and speeds that
- * the renderer declares beside the visual Blobbi and never reads) and adds
- * what a Havok-backed controller needs. Nothing here comes from a seed or a
+ * place, the same for every player. The capsule, mass and speeds are the
+ * kit's `BLOBBI_GAMEPLAY_PROFILE` (the normalized body the renderer declares
+ * beside the visual Blobbi and never reads), copied here so the
+ * authoritative simulation does not depend on the renderer package at all;
+ * a test pins the copy to the kit's values. The rest is what a
+ * Havok-backed controller needs. Nothing here comes from a seed or a
  * morphology: a wide, narrow, tall or horned Blobbi has this body.
  */
-import { BLOBBI_GAMEPLAY_PROFILE } from '@blobbi-kit/3d';
+
+/** The kit's `BLOBBI_GAMEPLAY_PROFILE` (@blobbi-kit/3d 0.1.x), pinned by a test. */
+export const GAMEPLAY_PROFILE = Object.freeze({ capsuleHeight: 1.05, capsuleRadius: 0.4, capsuleCenterY: 0.525, mass: 40, walkSpeed: 1.6, runSpeed: 3.2, jumpSpeed: 4.6 });
 
 export interface RumbleBody {
   capsuleHeight: number;
@@ -37,13 +41,13 @@ export interface RumbleBody {
 }
 
 export const RUMBLE_BODY: Readonly<RumbleBody> = Object.freeze({
-  capsuleHeight: BLOBBI_GAMEPLAY_PROFILE.capsuleHeight,
-  capsuleRadius: BLOBBI_GAMEPLAY_PROFILE.capsuleRadius,
-  capsuleCenterY: BLOBBI_GAMEPLAY_PROFILE.capsuleCenterY,
-  mass: BLOBBI_GAMEPLAY_PROFILE.mass,
-  walkSpeed: BLOBBI_GAMEPLAY_PROFILE.walkSpeed,
-  runSpeed: BLOBBI_GAMEPLAY_PROFILE.runSpeed,
-  jumpSpeed: BLOBBI_GAMEPLAY_PROFILE.jumpSpeed,
+  capsuleHeight: GAMEPLAY_PROFILE.capsuleHeight,
+  capsuleRadius: GAMEPLAY_PROFILE.capsuleRadius,
+  capsuleCenterY: GAMEPLAY_PROFILE.capsuleCenterY,
+  mass: GAMEPLAY_PROFILE.mass,
+  walkSpeed: GAMEPLAY_PROFILE.walkSpeed,
+  runSpeed: GAMEPLAY_PROFILE.runSpeed,
+  jumpSpeed: GAMEPLAY_PROFILE.jumpSpeed,
   acceleration: 28,
   braking: 22,
   airControl: 0.3,

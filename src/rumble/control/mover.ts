@@ -8,7 +8,7 @@
  * therefore push the player around, and the player can push back with the
  * same bounded authority, which is what makes two capsules shove each other.
  */
-import type { MoveIntent } from './input';
+import type { PlayerIntent as MoveIntent } from '../sim/intent';
 
 /** What steering reads of an intent: the direction, the run flag and the jump request. */
 export type SteerIntent = Pick<MoveIntent, 'x' | 'z' | 'run' | 'jump'>;
