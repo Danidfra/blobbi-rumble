@@ -176,6 +176,8 @@ function buildPanel() {
 }
 
 let turntable = false;
+/** How far (metres, along the camera's right) the followed Blobbi is kept off centre, so the panel never covers it. */
+const PANEL_OFFSET = 0.5;
 buildPanel();
 setPlayer(PRESETS[1].seed, PRESETS[1].label);
 
@@ -206,7 +208,10 @@ function frame(dt: number) {
       player.blobbi.setGaze(facingCamera > 0 ? pointer.x * 0.9 : 0, -pointer.y * 0.6);
     } else player.blobbi.setGaze(0, 0);
     player.blobbi.update({ dt, speed: st.speed, grounded: st.grounded, verticalVelocity: st.velocity.y, jumped: st.jumped, landed: st.landed, impact: st.impact });
-    env.camera.target.copyFrom(Vector3.Lerp(env.camera.target, new Vector3(st.position.x, st.position.y + 0.55, st.position.z), 1 - Math.exp(-dt * 6)));
+    // Keep the Blobbi a little right of centre, clear of the panel, whichever way the camera orbits.
+    const right = env.camera.getDirection(Vector3.Right());
+    const wanted = new Vector3(st.position.x, st.position.y + 0.55, st.position.z).subtract(right.scale(PANEL_OFFSET));
+    env.camera.target.copyFrom(Vector3.Lerp(env.camera.target, wanted, 1 - Math.exp(-dt * 6)));
   }
   for (const l of lineup) l.blobbi.update({ dt, speed: 0, grounded: true, verticalVelocity: 0 });
   scene.render();

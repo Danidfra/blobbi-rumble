@@ -27,7 +27,7 @@ export function createEnvironment(scene: Scene, canvas: HTMLCanvasElement): Envi
   scene.clearColor = new Color4(0.86, 0.9, 0.97, 1);
   scene.ambientColor = new Color3(0.35, 0.35, 0.4);
 
-  const camera = new ArcRotateCamera('camera', Math.PI / 2 + 0.3, 1.25, 4.2, new Vector3(0, 0.55, 0), scene);
+  const camera = new ArcRotateCamera('camera', Math.PI / 2 - 0.3, 1.3, 3.6, new Vector3(0, 0.55, 0), scene);
   camera.lowerRadiusLimit = 1.2;
   camera.upperRadiusLimit = 14;
   camera.upperBetaLimit = Math.PI / 2 - 0.04;
