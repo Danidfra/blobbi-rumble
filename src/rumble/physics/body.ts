@@ -41,6 +41,8 @@ export interface GameplayBody {
   setAngularVelocity(v: Vector3): void;
   /** 1 under gravity, 0 weightless (a held body). */
   setGravityFactor(factor: number): void;
+  /** The capsule's friction against whatever it touches (the profile's, unless a pushing contest lowers it). */
+  setFriction(friction: number): void;
   /** Put the body back somewhere, upright and at rest. */
   teleport(feet: Vector3): void;
   dispose(): void;
@@ -93,6 +95,9 @@ export function createGameplayBody(scene: Scene, name: string, feetAt: Vector3, 
   return {
     mesh,
     aggregate,
+    setFriction: (friction) => {
+      aggregate.shape.material = { friction, restitution: profile.restitution };
+    },
     body,
     position: () => mesh.position.clone(),
     feet: () => new Vector3(mesh.position.x, mesh.position.y - profile.capsuleCenterY, mesh.position.z),

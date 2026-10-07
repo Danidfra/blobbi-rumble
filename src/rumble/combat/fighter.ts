@@ -20,10 +20,10 @@ import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGener
 import { createBlobbi3D, type AnimatorInput, type Blobbi3D, type ExpressionName } from '@blobbi-kit/3d';
 import { animatorInput, facingYaw, initialBridge, type BridgeState } from '../control/animationBridge';
 import type { MoveIntent, PlayerInput } from '../control/input';
-import { steer } from '../control/mover';
+import { steer, type Contest } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
-import { powerCap, powerMultiplier } from '../pickups/power';
+import { powerCap, powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
 import { initialFallState, updateFall, type FallState } from '../respawn';
 import { COMBAT } from '../tuning';
 import {
@@ -124,6 +124,16 @@ export class Fighter {
   get power(): number {
     return powerMultiplier(this.powerLevel);
   }
+  /** How much harder it pushes, and holds its ground, body against body. */
+  get pushAuthority(): number {
+    return pushAuthority(this.powerLevel);
+  }
+  /** Its walk and run speeds' multiplier. */
+  get speedMultiplier(): number {
+    return speedMultiplier(this.powerLevel);
+  }
+  /** The horizontal velocity the keys asked for this frame, for the debug HUD. */
+  wanted = { x: 0, z: 0 };
 
   /** An orb taken: one level more (the multiplier caps on its own). */
   gainPower() {
@@ -158,18 +168,26 @@ export class Fighter {
     return v.x * f.x + v.z * f.z;
   }
 
-  /** Steer by intent, within the control the combat state allows. Returns what happened, for combat and animation. */
-  update(dt: number, cameraYaw: number): FighterFrame {
+  /**
+   * Steer by intent, within the control the combat state allows. `contest`
+   * is given while this body is against the other fighter's: the steering
+   * then pushes as a bounded spring, with this fighter's push authority.
+   * Returns what happened, for combat and animation.
+   */
+  update(dt: number, cameraYaw: number, contest?: Contest): FighterFrame {
     const intent = this.input.read(cameraYaw);
     const control = controlFactor(this.combat);
     const carrying = isHolding(this.combat);
     const grounded = this.body.grounded();
     const v = this.body.velocity();
     // Reduced control: the same steering with that much of its authority; carrying slows; neither may jump.
-    let p = this.profile;
+    // Power: a little more walk and run speed (never the jump, never the air share).
+    let p = { ...this.profile, walkSpeed: this.profile.walkSpeed * this.speedMultiplier, runSpeed: this.profile.runSpeed * this.speedMultiplier };
     if (control < 1) p = { ...p, acceleration: p.acceleration * control, braking: p.braking * control };
     if (carrying) p = { ...p, walkSpeed: p.walkSpeed * COMBAT.carrySpeed, runSpeed: p.runSpeed * COMBAT.carrySpeed };
-    const s = steer(v.x, v.z, { ...intent, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p);
+    const wanted = intent.run ? p.runSpeed : p.walkSpeed;
+    this.wanted = { x: intent.x * wanted, z: intent.z * wanted };
+    const s = steer(v.x, v.z, { ...intent, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
     const b = this.body.body;
     if (s.dvx !== 0 || s.dvz !== 0) b.applyImpulse(new Vector3(s.dvx * this.profile.mass, 0, s.dvz * this.profile.mass), this.body.position());
     let jumped = false;

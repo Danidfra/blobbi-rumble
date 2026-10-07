@@ -22,15 +22,46 @@ export interface Steering {
   jumpTo: number | null;
 }
 
-export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boolean, dt: number, p: RumbleBody): Steering {
+/**
+ * A pushing contest: while the body is against the other fighter's, the
+ * steering is a bounded spring with this gain (1/s), and its force and
+ * bound are both scaled by the fighter's push authority. Absent, steering
+ * is the stiff grip above.
+ */
+export interface Contest {
+  gain: number;
+  /** The gain while not steering (braking against the push). */
+  brakeGain: number;
+  authority: number;
+  /** The unit direction to the other body, in the plane. */
+  toward: { x: number; z: number };
+  /**
+   * A shoving match: both are pushing into each other. Then the wanted
+   * speed into the other body is capped at the walk speed, for a sustained
+   * shove is a leg push whatever gait the keys ask for; a run only tells in
+   * the moment of impact, and when pushing someone from behind.
+   */
+  shoving: boolean;
+}
+
+export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boolean, dt: number, p: RumbleBody, contest?: Contest): Steering {
   const wanted = intent.run ? p.runSpeed : p.walkSpeed;
   const moving = intent.x !== 0 || intent.z !== 0;
-  const tx = intent.x * wanted;
-  const tz = intent.z * wanted;
-  const rate = moving ? p.acceleration * (grounded ? 1 : p.airControl) : grounded ? p.braking : 0;
+  let tx = intent.x * wanted;
+  let tz = intent.z * wanted;
+  if (contest?.shoving) {
+    const along = tx * contest.toward.x + tz * contest.toward.z;
+    if (along > p.walkSpeed) {
+      tx -= (along - p.walkSpeed) * contest.toward.x;
+      tz -= (along - p.walkSpeed) * contest.toward.z;
+    }
+  }
+  const rate = (moving ? p.acceleration * (grounded ? 1 : p.airControl) : grounded ? p.braking : 0) * (contest?.authority ?? 1);
   const maxDelta = rate * dt;
-  let dvx = tx - vx;
-  let dvz = tz - vz;
+  // Contested: a spring toward the wanted velocity, not the whole error at once.
+  const grip = contest ? Math.min(1, (moving ? contest.gain : contest.brakeGain) * contest.authority * dt) : 1;
+  let dvx = (tx - vx) * grip;
+  let dvz = (tz - vz) * grip;
   const len = Math.hypot(dvx, dvz);
   if (len > maxDelta && len > 0) {
     dvx *= maxDelta / len;

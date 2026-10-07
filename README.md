@@ -82,9 +82,18 @@ it returns after a few seconds where no one is standing. Each orb is one
 power level; the level's multiplier (`POWER`, +0.08 per orb, capped at
 ×1.48) is the player-power factor of the impact path, so punches and
 throws hit harder, and a standing punch crosses the tumble threshold on
-its own from the third orb. Power changes nothing else (not speed, reach,
-hold, mass or recovery) and resets every round. The HUD shows each
-player's multiplier; a powered Blobbi has a glowing ring at its feet.
+its own from the third orb. Power is also physical authority: while the
+two capsules touch, steering becomes a bounded spring toward the wanted
+velocity (`PUSH` in `tuning.ts`), scaled by the fighter's push authority
+(+5% per orb, capped at ×1.30), and the capsules' ground friction steps
+aside for the contest, so a stronger fighter gains ground slowly in a
+sustained shove (about 0.25 m/s at the cap, nothing at equal power) while
+in a shoving match the wanted speed into the other body is capped at a
+walk, so running adds nothing but the impact. Power gives a very small
+walk and run speed bonus (+1% per orb, capped at +6%), never the jump or
+the air share, and touches nothing else (not reach, hold, mass or
+recovery). It resets every round. The HUD shows each player's multiplier;
+a powered Blobbi has a glowing ring at its feet.
 
 The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 
@@ -92,9 +101,9 @@ The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
 src/rumble/
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place
-  physics/            Havok on the scene; the gameplay capsule (upright, grounded by a ground-layer raycast, teleport)
+  physics/            Havok on the scene; the gameplay capsule (upright, grounded by a ground-layer raycast, teleport, friction); capsule contact (pure)
   control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure)
-  control/mover.ts    intent to a bounded velocity change, applied as an impulse (pure)
+  control/mover.ts    intent to a bounded velocity change, applied as an impulse; a bounded spring while contested (pure)
   control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
   combat/impact.ts    one impact-strength path and the hit / tumble rule (pure)
   combat/combat.ts    punch, stun, grab, hold, throw, tumble, recovery: pure state and geometry

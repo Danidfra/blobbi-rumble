@@ -28,10 +28,11 @@ import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput } from './control/input
 import { PhysicsDebug } from './debug';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from './pickups/orbs';
 import { OrbView } from './pickups/orbView';
+import { capsulesTouch } from './physics/contact';
 import { enableHavok } from './physics/world';
 import { RUMBLE_BODY } from './profile';
 import { createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
-import { CAMERA, COMBAT, ORBS, ROUND } from './tuning';
+import { CAMERA, COMBAT, ORBS, PUSH, ROUND } from './tuning';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -62,6 +63,11 @@ async function start() {
   const match = createMatch();
   let cameraPose: CameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
   let message = '';
+  let wasTouching = false;
+  let lastIntents: [{ x: number; z: number }, { x: number; z: number }] = [
+    { x: 0, z: 0 },
+    { x: 0, z: 0 },
+  ];
 
   window.addEventListener('keydown', (e) => {
     if (e.code === 'F3') {
@@ -122,7 +128,20 @@ async function start() {
     const playing = match.phase === 'playing';
     for (const f of fighters) f.input.enabled = playing;
     for (const f of fighters) tickCombat(f.combat, dt);
-    const frames = fighters.map((f) => f.update(dt, cameraYaw));
+    // Body against body: a pushing contest, each steering with its own push authority.
+    const touching = capsulesTouch(p1.body.position(), p2.body.position(), PUSH.contactMargin);
+    if (touching !== wasTouching) {
+      wasTouching = touching;
+      for (const f of fighters) f.body.setFriction(touching ? PUSH.contactFriction : RUMBLE_BODY.friction);
+    }
+    // A shoving match is both pushing into each other (read from the last frame's intents: one frame late, never wrong by much).
+    const a = p1.body.position();
+    const b = p2.body.position();
+    const span = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    const toward = { x: (b.x - a.x) / span, z: (b.z - a.z) / span };
+    const shoving = lastIntents[0].x * toward.x + lastIntents[0].z * toward.z > 0.3 && -(lastIntents[1].x * toward.x + lastIntents[1].z * toward.z) > 0.3;
+    const frames = fighters.map((f, i) => f.update(dt, cameraYaw, touching ? { gain: PUSH.gain, brakeGain: PUSH.brakeGain, authority: f.pushAuthority, toward: i === 0 ? toward : { x: -toward.x, z: -toward.z }, shoving } : undefined));
+    lastIntents = [frames[0].intent, frames[1].intent];
     if (playing) {
       interact(p1, p2, frames[0].intent, dt);
       interact(p2, p1, frames[1].intent, dt);
@@ -181,6 +200,11 @@ async function start() {
         return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(13)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} tilt ${((tilts[fighters.indexOf(f)] * 180) / Math.PI).toFixed(0)}°`;
       };
       const orbLine = orbs.map((o, i) => `${i}:${o.active ? 'up' : `back in ${o.timer.toFixed(1)}s`}`).join(' · ');
+      const powerLine = (f: Fighter) => {
+        const v = f.body.velocity();
+        return `${f.label} power ${f.powerLevel}: impact ×${f.power.toFixed(2)} push ×${f.pushAuthority.toFixed(2)} speed ×${f.speedMultiplier.toFixed(2)} · wants ${Math.hypot(f.wanted.x, f.wanted.z).toFixed(2)} has ${Math.hypot(v.x, v.z).toFixed(2)} m/s`;
+      };
+      lines.push(powerLine(p1), powerLine(p2), `bodies ${touching ? (shoving ? 'TOUCHING: shoving match' : 'TOUCHING: pushing contest') : 'apart'}`);
       lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`, `orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`, `last impact on P1 ${p1.lastImpact.toFixed(2)} · on P2 ${p2.lastImpact.toFixed(2)} · tumble at ${COMBAT.tumbleThreshold}`);
     }
     debug.print(lines);

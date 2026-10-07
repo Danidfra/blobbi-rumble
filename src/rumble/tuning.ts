@@ -88,7 +88,38 @@ export const ROUND = Object.freeze({
  * else: not speed, reach, hold, mass or recovery.
  */
 export const POWER = Object.freeze({
+  /** Combat: the impact multiplier of a punch or a throw. */
   multipliers: [1.0, 1.08, 1.16, 1.24, 1.32, 1.4, 1.48] as readonly number[],
+  /** Push authority: how much harder a fighter's steering pushes, and holds its ground, while its capsule is against the other's. */
+  push: [1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3] as readonly number[],
+  /** Movement: the walk and run speeds. Never the jump, never the air share. */
+  speed: [1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06] as readonly number[],
+});
+
+/**
+ * A PUSHING CONTEST. Alone, steering closes the whole velocity error every
+ * frame, within its budget: a stiff grip on the wanted velocity that makes
+ * two touching fighters cancel each other whatever their power. While the
+ * capsules touch, steering is instead a bounded spring toward the wanted
+ * velocity, with this gain (1/s), and both the spring and its bound are
+ * scaled by push authority: the contest settles where the two pushes
+ * balance, so a stronger fighter gains ground slowly instead of winning
+ * outright, and equals still stand their ground.
+ */
+export const PUSH = Object.freeze({
+  /** The capsules count as touching within this of each other's surface, metres. */
+  contactMargin: 0.06,
+  /** The contested steering gain, 1/s: how hard a fighter leans on the velocity it wants while pushing or pushed. */
+  gain: 14,
+  /** The grip of a fighter that is not steering (braking) while pushed, 1/s: stiffer, so a passive body is shoved about as it was. */
+  brakeGain: 28,
+  /**
+   * The capsules' ground friction while they touch. The profile's friction
+   * (a static threshold of ~9 m/s² for the pair) would swallow any authority
+   * margin and make every contest a stalemate; while touching, the steering
+   * springs are the contest and friction steps aside. Restored when apart.
+   */
+  contactFriction: 0.02,
 });
 
 /**
