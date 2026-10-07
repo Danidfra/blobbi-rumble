@@ -1,7 +1,8 @@
 /**
- * THE PLAYGROUND CONSUMES THE PACKAGE. These tests import `@blobbi-kit/3d`
- * by its package name (resolved through its `exports` to its built `dist/`),
- * never a source path, and exercise the surface the playground uses.
+ * THE PLAYGROUND CONSUMES THE PUBLISHED PACKAGE. These tests import
+ * `@blobbi-kit/3d` by its package name (resolved through its `exports` to
+ * the installed `dist/`), never a source path, and exercise the surface the
+ * playground uses.
  */
 import { describe, expect, it } from 'vitest';
 import { BLOBBI_GAMEPLAY_PROFILE, EMOTIONS, MOTION_STATES, buildBodySurface, buildBodyVertexData, canonicalBlobbiSeed, createBlobbiIdentity, resolveBlobbiIdentity, UNIT } from '@blobbi-kit/3d';
@@ -10,8 +11,9 @@ import { seedFromLabel } from './playground/seeds';
 describe('@blobbi-kit/3d, as a package', () => {
   it('resolves through the package exports, not a local copy', async () => {
     const resolved = import.meta.resolve('@blobbi-kit/3d');
-    expect(resolved).toMatch(/blobbi-kit\/packages\/blobbi-3d\/dist\/index\.js$/);
+    expect(resolved).toMatch(/node_modules\/@blobbi-kit\/3d\/dist\/index\.js$/);
     expect(resolved).not.toMatch(/\/src\//);
+    expect(resolved).not.toMatch(/blobbi-kit\/packages\//);
   });
 
   it('creates the lab\'s named seeds as the same individuals the 2D lab shows', () => {

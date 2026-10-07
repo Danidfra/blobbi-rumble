@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { BLOBBI_GAMEPLAY_PROFILE, createBlobbiIdentity } from '@blobbi-kit/3d';
 import { seedFromLabel } from '../playground/seeds';
 import { RUMBLE_BODY } from './profile';
-import { moveIntent } from './control/input';
+import { moveIntent, P1_BINDINGS, P2_BINDINGS } from './control/input';
 import { steer } from './control/mover';
 import { animatorInput, facingYaw, initialBridge } from './control/animationBridge';
 import { initialFallState, updateFall } from './respawn';
@@ -29,18 +29,35 @@ describe('the rumble body', () => {
 
 describe('input to intent', () => {
   it('is camera-relative and normalized', () => {
-    const fwd = moveIntent(new Set(['KeyW']), 0);
+    const fwd = moveIntent(new Set(['KeyW']), 0, P1_BINDINGS);
     expect(fwd.z).toBeCloseTo(1);
     expect(fwd.x).toBeCloseTo(0);
-    const diag = moveIntent(new Set(['KeyW', 'KeyD']), 0);
+    const diag = moveIntent(new Set(['KeyW', 'KeyD']), 0, P1_BINDINGS);
     expect(Math.hypot(diag.x, diag.z)).toBeCloseTo(1);
     // With the camera turned a quarter turn, "forward" turns with it.
-    const turned = moveIntent(new Set(['ArrowUp']), Math.PI / 2);
+    const turned = moveIntent(new Set(['ArrowUp']), Math.PI / 2, P2_BINDINGS);
     expect(turned.x).toBeCloseTo(1);
     expect(Math.abs(turned.z)).toBeLessThan(1e-9);
-    expect(moveIntent(new Set(['KeyW', 'KeyS']), 0)).toMatchObject({ x: 0, z: 0 });
-    expect(moveIntent(new Set(['ShiftLeft']), 0).run).toBe(true);
-    expect(moveIntent(new Set(), 0, true).jump).toBe(true);
+    expect(moveIntent(new Set(['KeyW', 'KeyS']), 0, P1_BINDINGS)).toMatchObject({ x: 0, z: 0 });
+    expect(moveIntent(new Set(['ShiftLeft']), 0, P1_BINDINGS).run).toBe(true);
+    expect(moveIntent(new Set(), 0, P1_BINDINGS, { jump: true, punch: true }).jump).toBe(true);
+    expect(moveIntent(new Set(), 0, P1_BINDINGS, { punch: true }).punch).toBe(true);
+  });
+
+  it('keeps the two players apart: one\'s keys never move the other', () => {
+    const held = new Set(['KeyW', 'ShiftLeft', 'ArrowLeft']);
+    const p1 = moveIntent(held, 0, P1_BINDINGS);
+    const p2 = moveIntent(held, 0, P2_BINDINGS);
+    expect(p1.z).toBeCloseTo(1);
+    expect(p1.x).toBeCloseTo(0);
+    expect(p1.run).toBe(true);
+    expect(p2.x).toBeCloseTo(-1);
+    expect(p2.z).toBeCloseTo(0);
+    expect(p2.run).toBe(false);
+    // No key is bound to both players.
+    const codes = (b: typeof P1_BINDINGS) => new Set(Object.values(b).flat());
+    const both = [...codes(P1_BINDINGS)].filter((c) => codes(P2_BINDINGS).has(c));
+    expect(both).toEqual([]);
   });
 });
 

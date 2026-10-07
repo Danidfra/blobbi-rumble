@@ -9,6 +9,9 @@
  * same bounded authority, which is what makes two capsules shove each other.
  */
 import type { MoveIntent } from './input';
+
+/** What steering reads of an intent: the direction, the run flag and the jump request. */
+export type SteerIntent = Pick<MoveIntent, 'x' | 'z' | 'run' | 'jump'>;
 import type { RumbleBody } from '../profile';
 
 export interface Steering {
@@ -19,7 +22,7 @@ export interface Steering {
   jumpTo: number | null;
 }
 
-export function steer(vx: number, vz: number, intent: MoveIntent, grounded: boolean, dt: number, p: RumbleBody): Steering {
+export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boolean, dt: number, p: RumbleBody): Steering {
   const wanted = intent.run ? p.runSpeed : p.walkSpeed;
   const moving = intent.x !== 0 || intent.z !== 0;
   const tx = intent.x * wanted;

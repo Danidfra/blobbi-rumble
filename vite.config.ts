@@ -6,16 +6,15 @@ import { defineConfig } from 'vite';
 /**
  * THE ONE RELATIONSHIP THIS REPOSITORY HAS WITH THE RENDERER.
  *
- * Every Blobbi the playground shows is built by `@blobbi-kit/3d`, consumed
- * as a PACKAGE: a `file:` dependency on the kit checkout, resolved through
- * its published `exports` to its built `dist/`. There is no copy of the
- * renderer here. Build the kit (`npm run build` in blobbi-kit) and this
- * page shows the result.
+ * Every Blobbi shown here is built by `@blobbi-kit/3d`, consumed as the
+ * PUBLISHED package from npm, resolved through its `exports` to its `dist/`.
+ * There is no copy of the renderer here.
  *
- * The linked package lives outside this directory and brings its own
- * dependencies from the kit's tree, so: the kit directory is allowed to be
- * served, and Babylon is deduped to this project's single copy (two copies
- * of Babylon would not recognise each other's scenes).
+ * To work against an unpublished kit instead, `npm link` the kit's
+ * `packages/blobbi-3d` (or point the dependency at it with `file:`): the
+ * linked package then lives outside this directory, so the kit directory is
+ * allowed to be served, and Babylon is deduped to this project's single copy
+ * (two copies of Babylon would not recognise each other's scenes).
  */
 const KIT_3D = resolve(__dirname, 'node_modules/@blobbi-kit/3d');
 const KIT_DIR = existsSync(KIT_3D) ? resolve(realpathSync(KIT_3D), '..', '..') : resolve(__dirname, '..', 'blobbi-kit');

@@ -1,33 +1,33 @@
 /**
- * BLOBBI RUMBLE, MILESTONE 1: the Havok physics sandbox.
+ * BLOBBI RUMBLE, MILESTONE 2: two local players, punch, grab and throw,
+ * ring-outs and a first-to-three match.
  *
- * One elevated platform over a void. Two visually different Blobbis from
- * `@blobbi-kit/3d`, each carried by the SAME normalized gameplay capsule
- * owned by Havok. A is the player (WASD / arrows, Shift to run, Space to
- * jump); B is a dummy with mass that collides, can be pushed, and falls.
- * Falling bodies respawn. F3 shows the colliders and the physics HUD.
+ * One elevated platform over a void. Two visibly different Blobbis from
+ * `@blobbi-kit/3d`, each a `Fighter`: the SAME body, controller and
+ * combat, with its own keys. Falling off the arena gives the other player
+ * the point; both at once is a draw. F3 shows colliders and reach, R
+ * restarts a finished match.
  *
  *   physics body ──► position / velocity / ground contact ──► visual Blobbi
  *
  * Nothing visual feeds back into the physics, and the kit package knows
- * nothing of Havok.
+ * nothing of any of this.
  */
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import '@babylonjs/core/Materials/standardMaterial';
-import { createBlobbi3D, type Blobbi3D } from '@blobbi-kit/3d';
 import { createEnvironment } from '../playground/environment';
 import { seedFromLabel } from '../playground/seeds';
 import { createArena } from './arena';
-import { animatorInput, facingYaw, initialBridge } from './control/animationBridge';
-import { KeyboardInput } from './control/input';
-import { PlayerController } from './control/playerController';
+import { applyCamera, followCamera, wantedCamera, type CameraPose } from './camera';
+import { endGrab, holdBreaks, holdPull, isHolding, landPunch, release, tickCombat, tryGrab } from './combat/combat';
+import { Fighter } from './combat/fighter';
+import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput } from './control/input';
 import { PhysicsDebug } from './debug';
-import { createGameplayBody, type GameplayBody } from './physics/body';
 import { enableHavok } from './physics/world';
 import { RUMBLE_BODY } from './profile';
-import { initialFallState, updateFall } from './respawn';
+import { createMatch, matchWinner, restartMatch, ringOut, tickMatch } from './rounds';
+import { CAMERA, COMBAT, ROUND } from './tuning';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const hud = document.getElementById('hud') as HTMLElement;
@@ -36,81 +36,118 @@ const scene = new Scene(engine);
 const env = createEnvironment(scene, canvas, { props: false });
 env.camera.lowerBetaLimit = 0.3;
 env.camera.upperBetaLimit = Math.PI / 2 - 0.1;
-env.camera.radius = 9;
-env.camera.beta = 1.05;
+env.camera.lowerRadiusLimit = CAMERA.minRadius;
+env.camera.upperRadiusLimit = CAMERA.maxRadius;
+env.camera.alpha = CAMERA.alpha;
+env.camera.beta = CAMERA.beta;
 
-interface Fighter {
-  label: string;
-  blobbi: Blobbi3D;
-  body: GameplayBody;
-  spawn: Vector3;
-  yaw: number;
-  bridge: ReturnType<typeof initialBridge>;
-  fall: ReturnType<typeof initialFallState>;
-}
+const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'F3 colliders & reach · R restart a finished match'];
 
 async function start() {
   const plugin = await enableHavok(scene, RUMBLE_BODY.gravity);
   const arena = createArena(scene, env.shadows);
   const debug = new PhysicsDebug(scene, hud);
-
-  const fighter = (label: string, seedLabel: string, spawn: Vector3): Fighter => {
-    const blobbi = createBlobbi3D(seedFromLabel(seedLabel), scene, { name: label, shadows: env.shadows });
-    const body = createGameplayBody(scene, `${label}-body`, spawn);
-    debug.track(body.body);
-    return { label, blobbi, body, spawn: spawn.clone(), yaw: 0, bridge: initialBridge(), fall: initialFallState() };
-  };
+  const keyboard = new Keyboard([P1_BINDINGS, P2_BINDINGS]);
   // Two visibly different individuals (a yellow one with ears, a pink one with horns and antennae), one gameplay body each.
-  const a = fighter('A', 'abc123', arena.spawns.a);
-  const b = fighter('B', 'blobbi-1', arena.spawns.b);
-  a.yaw = Math.PI / 2;
-  b.yaw = -Math.PI / 2;
-  b.blobbi.setExpression('surprised', 0);
+  const p1 = new Fighter('P1', scene, seedFromLabel('abc123'), arena.spawns.a, Math.PI / 2, new PlayerInput(keyboard, P1_BINDINGS), env.shadows);
+  const p2 = new Fighter('P2', scene, seedFromLabel('blobbi-1'), arena.spawns.b, -Math.PI / 2, new PlayerInput(keyboard, P2_BINDINGS), env.shadows);
+  const fighters: [Fighter, Fighter] = [p1, p2];
+  for (const f of fighters) debug.track(f.body.body);
+  const match = createMatch();
+  let cameraPose: CameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
+  let message = '';
 
-  const input = new KeyboardInput();
-  const controller = new PlayerController(a.body, input);
   window.addEventListener('keydown', (e) => {
     if (e.code === 'F3') {
       debug.toggle();
+      for (const f of fighters) f.showDebug(debug.on);
       e.preventDefault();
     }
+    if (e.code === 'KeyR' && match.phase === 'matchOver') newMatch();
   });
 
-  const follow = (f: Fighter, dt: number, grounded: boolean, jumped: boolean) => {
-    const v = f.body.velocity();
-    f.yaw = facingYaw(v.x, v.z, f.yaw, dt);
-    const feet = f.body.feet();
-    f.blobbi.rig.root.position.copyFrom(feet);
-    f.blobbi.rig.root.rotation.y = f.yaw;
-    f.blobbi.update(animatorInput({ vx: v.x, vy: v.y, vz: v.z, grounded }, jumped, f.bridge, dt));
-    if (updateFall(f.fall, feet.y, dt)) {
-      f.body.teleport(f.spawn);
-      f.bridge = initialBridge();
+  const resetRound = () => {
+    for (const f of fighters) f.reset();
+    cameraPose = wantedCamera(p1.body.feet(), p2.body.feet());
+  };
+  const newMatch = () => {
+    restartMatch(match);
+    resetRound();
+    message = '';
+  };
+
+  /** One fighter's attack and hold on the other, this frame. */
+  const interact = (me: Fighter, other: Fighter, intent: { punch: boolean; grab: boolean }, dt: number) => {
+    // A landed punch: knockback along the facing, a short stun; a hold on the victim breaks.
+    const knock = landPunch(me.combat, me.at(), me.facing(), other.combat, other.at());
+    if (knock) {
+      if (isHolding(other.combat)) endGrab(other.combat, me.combat);
+      other.knock(knock);
+    }
+    if (intent.grab) {
+      if (isHolding(me.combat)) other.knock(release(me.combat, other.combat, me.facing(), me.velocity()));
+      else tryGrab(me.combat, me.at(), me.facing(), other.combat, other.at());
+    }
+    if (isHolding(me.combat)) {
+      if (holdBreaks(me.combat, me.at(), other.at())) endGrab(me.combat, other.combat);
+      else {
+        const pull = holdPull(me.at(), me.facing(), me.velocity(), other.at(), other.velocity(), dt);
+        other.knock(pull.victim);
+        me.knock(pull.grabber);
+      }
     }
   };
 
   const frame = (dt: number) => {
     const look = env.camera.target.subtract(env.camera.position);
     const cameraYaw = Math.atan2(look.x, look.z);
-    const frame = controller.update(dt, cameraYaw);
-    follow(a, dt, frame.grounded, frame.jumped);
-    follow(b, dt, b.body.grounded(), false);
-    // The camera keeps the player in view and the dummy in frame.
-    const target = a.body.feet();
-    target.y += 0.5;
-    env.camera.target.copyFrom(Vector3.Lerp(env.camera.target, target, 1 - Math.exp(-dt * 5)));
-    const v = frame.velocity;
-    debug.print([
-      'BLOBBI RUMBLE · M1 physics sandbox',
-      'WASD/arrows move · Shift run · Space jump · F3 colliders',
+    const playing = match.phase === 'playing';
+    for (const f of fighters) f.input.enabled = playing;
+    for (const f of fighters) tickCombat(f.combat, dt);
+    const frames = fighters.map((f) => f.update(dt, cameraYaw));
+    if (playing) {
+      interact(p1, p2, frames[0].intent, dt);
+      interact(p2, p1, frames[1].intent, dt);
+    }
+    fighters.forEach((f, i) => f.follow(dt, frames[i]));
+
+    // Ring-out: who crossed the fall line this frame. A fall breaks any hold.
+    const fell: [boolean, boolean] = [p1.checkFall(dt), p2.checkFall(dt)];
+    if (fell[0] || fell[1]) {
+      endGrab(p1.combat, p2.combat);
+      endGrab(p2.combat, p1.combat);
+    }
+    if (ringOut(match, fell)) {
+      message = match.lastWinner === null ? 'DOUBLE RING-OUT · no point' : `${fighters[match.lastWinner].label} SCORES`;
+    }
+    if (tickMatch(match, dt)) {
+      resetRound();
+      message = '';
+    }
+    if (match.phase === 'matchOver') message = `${fighters[matchWinner(match)!].label} WINS · press R to play again`;
+
+    cameraPose = followCamera(cameraPose, wantedCamera(p1.body.feet(), p2.body.feet()), dt);
+    applyCamera(env.camera, cameraPose);
+
+    const lines = [
+      `P1  ${match.score[0]} - ${match.score[1]}  P2     round ${match.round} · first to ${ROUND.target}`,
+      message || (playing ? '' : '…'),
       '',
-      `A  ${a.blobbi.animator.state.padEnd(5)}  v ${Math.hypot(v.x, v.z).toFixed(2)} m/s  vy ${v.y.toFixed(2)}  ${frame.grounded ? 'ground' : 'air'}`,
-      `B  ${b.blobbi.animator.state.padEnd(5)}  v ${Math.hypot(b.body.velocity().x, b.body.velocity().z).toFixed(2)} m/s  ${b.body.grounded() ? 'ground' : 'air'}`,
-      `Falls: A ${a.fall.falls} | B ${b.fall.falls}`,
-      debug.on ? `colliders ON  A ${a.body.position().asArray().map((n) => n.toFixed(2)).join(' ')}` : 'colliders off',
-    ]);
+      ...CONTROLS,
+    ];
+    if (debug.on) {
+      const state = (f: Fighter) => {
+        const c = f.combat;
+        const v = f.body.velocity();
+        const what = c.held ? 'held' : isHolding(c) ? 'holding' : c.stun > 0 ? `stun ${c.stun.toFixed(2)}` : c.punchTime >= 0 ? 'punch' : 'free';
+        return `${f.label}  ${f.blobbi.animator.state.padEnd(5)} ${what.padEnd(10)} v ${Math.hypot(v.x, v.z).toFixed(2)} vy ${v.y.toFixed(2)} ${f.body.grounded() ? 'ground' : 'air'} cd ${c.punchCooldown.toFixed(2)}`;
+      };
+      lines.push('', state(p1), state(p2), `grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${cameraPose.radius.toFixed(1)}`);
+    }
+    debug.print(lines);
     scene.render();
   };
+
   let last = performance.now();
   engine.runRenderLoop(() => {
     const now = performance.now();
@@ -122,12 +159,16 @@ async function start() {
   Object.assign(window, {
     rumble: {
       scene,
-      a,
-      b,
+      p1,
+      p2,
+      match,
       arena,
-      input,
+      keyboard,
       debug,
       plugin,
+      get cameraPose() {
+        return cameraPose;
+      },
       /** Drive frames by hand (a hidden tab gets none); scripted checks step the physics at a fixed 1/60 s. */
       step(frames = 1) {
         for (let i = 0; i < frames; i++) frame(1 / 60);
@@ -135,6 +176,12 @@ async function start() {
       key(code: string, down: boolean) {
         window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));
       },
+      /** A press: down and up. */
+      press(code: string) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { code }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { code }));
+      },
+      newMatch,
     },
   });
 }

@@ -20,65 +20,75 @@ playground and judge.
 ## Run it
 
 ```
-git clone … blobbi-kit        # next to this repository, then build it:
-cd blobbi-kit && npm install && npm run build
-cd ../blobbi-3d
 npm install
 npm run dev          # http://127.0.0.1:5177/
 npm run check        # typecheck, tests, build
 ```
 
-`@blobbi-kit/3d` is a `file:` dependency on the kit checkout, resolved through
-the package's `exports` to its built `dist/` (see `vite.config.ts`): change the
-renderer in blobbi-kit, build it, and this page shows the result. There is no
-copy of the renderer here; `src/consumer.test.ts` fails if the import ever
-resolves to anything but the kit's built package.
+`@blobbi-kit/3d` is the published package from npm (0.1.0), resolved through
+its `exports` to its `dist/`. There is no copy of the renderer here;
+`src/consumer.test.ts` fails if the import ever resolves to a source path. To
+work against an unpublished kit, `npm link` its `packages/blobbi-3d` (see the
+note in `vite.config.ts`).
 
 Playground: WASD / arrows to walk, Shift to run, Space to jump; drag to orbit,
 wheel to zoom. The panel picks a seed (the canonical Blobbi, the 2D lab's named
 seeds, real nostr-pet dev seeds, or any pasted 64-digit seed), an expression,
 sleeping, a pinned motion state, and a lineup of eight presets to compare.
 
-## Blobbi Rumble, milestone 1: the Havok physics sandbox
+## Blobbi Rumble
 
 ```
 npm run dev          # http://127.0.0.1:5177/rumble.html
 ```
 
-One flat platform over a void. Two visibly different Blobbis from the
-package, each carried by the SAME normalized gameplay capsule owned by
-Havok (`src/rumble/profile.ts`, built from the kit's
-`BLOBBI_GAMEPLAY_PROFILE` and nothing of any identity). A is the player:
-WASD / arrows to move, Shift to run, Space to jump. B is a dummy with mass
-that collides, can be pushed, and falls. A body below the arena respawns at
-its spawn after a short wait; the HUD counts falls. F3 shows the colliders.
+The smallest playable local fight: two Blobbis from the package on one flat
+platform over a void, the SAME normalized gameplay capsule owned by Havok
+for both (`src/rumble/profile.ts`, built from the kit's
+`BLOBBI_GAMEPLAY_PROFILE` and nothing of any identity). Walk, run, jump,
+shove, punch, grab, drag and throw; whoever stays on the arena scores, first
+to three wins, R restarts, F3 shows colliders and reach.
+
+| | P1 | P2 |
+| --- | --- | --- |
+| move | WASD | arrows |
+| run | left Shift | right Shift |
+| jump | Space | Enter |
+| punch | F | K |
+| grab / throw | G | L |
 
 ```
 physics body (Havok capsule) ──► position / velocity / ground contact ──► visual Blobbi
 ```
 
-The visual Blobbi follows its body every frame (its root at the capsule's
-feet, its facing along its velocity, its animator fed from the body's state)
-and never feeds back into the physics. The kit package knows nothing of
-Havok; everything game-side is `src/rumble/`:
+The visual Blobbi follows its body every frame (root at the capsule's feet,
+facing along its velocity, animator fed from the body's state) and never
+feeds back. Punches, holds and throws are bounded velocity changes on the
+bodies; a hit or a throw leaves the victim with little steering authority
+for a moment so the momentum is not cancelled. The kit package knows
+nothing of Havok; everything game-side is `src/rumble/`:
 
 ```
 src/rumble/
-  profile.ts              the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
-  physics/world.ts        Havok, enabled on the scene
-  physics/body.ts         the gameplay capsule: upright (no inertia), grounded by a ground-layer raycast, teleport for respawns
-  control/input.ts        keys to a camera-relative intent (pure)
-  control/mover.ts        intent to a bounded velocity change, applied as an impulse (pure)
+  profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
+  tuning.ts           combat, rounds and camera numbers, in one place
+  physics/            Havok on the scene; the gameplay capsule (upright, grounded by a ground-layer raycast, teleport)
+  control/input.ts    one keyboard, two bindings; keys to a camera-relative intent (pure)
+  control/mover.ts    intent to a bounded velocity change, applied as an impulse (pure)
   control/animationBridge.ts  body state to the kit animator's input; facing from velocity (pure)
-  control/playerController.ts
-  arena.ts                the platform, static, on the ground layer
-  respawn.ts              fallen / wait / respawn (pure)
-  debug.ts                PhysicsViewer toggle and the HUD
-  main.ts                 the sandbox
+  combat/combat.ts    punch, stun, grab, hold, throw: pure state and geometry
+  combat/fighter.ts   one player, the same class for both: body, input, combat, fall, and the visual Blobbi
+  rounds.ts           ring-out, rounds, the match (pure)
+  camera.ts           one shared camera: midpoint, bounded distance, smooth follow (pure)
+  arena.ts            the platform, static, on the ground layer
+  respawn.ts          fallen / wait (pure)
+  debug.ts            PhysicsViewer toggle and the HUD
+  main.ts             the game
 ```
 
-`window.rumble` exposes the scene, both fighters, `step(n)` to drive frames
-by hand and `key(code, down)` to inject input, for scripted checks.
+`window.rumble` exposes the scene, both fighters, the match, `step(n)` to
+drive frames by hand and `key(code, down)` / `press(code)` to inject input,
+for scripted checks.
 
 ## History
 
