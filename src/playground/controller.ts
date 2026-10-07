@@ -10,7 +10,7 @@
  * that the character, not the physics, is what gets judged.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { BLOBBI_GAMEPLAY_PROFILE } from '../blobbi/renderer/gameplay';
+import { BLOBBI_GAMEPLAY_PROFILE } from '@blobbi-kit/3d';
 
 export interface ControllerState {
   position: Vector3;

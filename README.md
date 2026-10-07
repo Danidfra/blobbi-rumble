@@ -1,15 +1,18 @@
 # blobbi-3d
 
-A procedural 3D Blobbi for the browser: the same seed-derived identity as the
-2D procedural Blobbi (blobbi-kit, visual generation V3, algorithm 1), rendered
-as a reusable Babylon.js game character.
+The playground for the procedural 3D Blobbi. The renderer itself is
+[`@blobbi-kit/3d`](../blobbi-kit/packages/blobbi-3d), a package of blobbi-kit;
+this repository consumes it and holds only what is not the renderer: a scene,
+a stand-in character controller, presets, and the panel.
 
 ```
-blobbi-kit identity / genome  ──►  @blobbi-kit/renderer   (2D, SVG)
-blobbi-kit identity / genome  ──►  blobbi-3d              (3D, Babylon.js)   ← this
+blobbi-kit identity / genome  ──►  @blobbi-kit/renderer     (2D, SVG)
+blobbi-kit identity / genome  ──►  @blobbi-kit/3d           (3D, Babylon.js)
+                                        ▲
+blobbi-3d (this)  ── a page that asks the package for Blobbis and shows them
 ```
 
-The question this repository answers: **can a procedural 3D Blobbi be
+The question this repository answered: **can a procedural 3D Blobbi be
 recognisably the same character as the 2D one, with an architecture that is
 reusable for party games, farming games and social spaces?** Open the
 playground and judge.
@@ -17,17 +20,35 @@ playground and judge.
 ## Run it
 
 ```
+git clone … blobbi-kit        # next to this repository, then build it:
+cd blobbi-kit && npm install && npm run build
+cd ../blobbi-3d
 npm install
 npm run dev          # http://127.0.0.1:5177/
 npm run check        # typecheck, tests, build
 ```
+
+`@blobbi-kit/3d` is a `file:` dependency on the kit checkout, resolved through
+the package's `exports` to its built `dist/` (see `vite.config.ts`): change the
+renderer in blobbi-kit, build it, and this page shows the result. There is no
+copy of the renderer here; `src/consumer.test.ts` fails if the import ever
+resolves to anything but the kit's built package.
 
 Playground: WASD / arrows to walk, Shift to run, Space to jump; drag to orbit,
 wheel to zoom. The panel picks a seed (the canonical Blobbi, the 2D lab's named
 seeds, real nostr-pet dev seeds, or any pasted 64-digit seed), an expression,
 sleeping, a pinned motion state, and a lineup of eight presets to compare.
 
-## What was inspected, and what it means for 3D
+## History
+
+The renderer was grown here first (`src/blobbi/`, commits up to `aaffaa7`,
+Visual V0) with its own port of the kit's identity, genome and morphology, then
+extracted into the kit as `@blobbi-kit/3d`, which consumes the kit's canonical
+engine (`@blobbi-kit/renderer/procedural`) instead of a port. The extraction was
+proven by building the same seeds with both implementations in the real engine
+and comparing every mesh's vertices and the painted skin, which matched exactly.
+
+## What was inspected, and what it means for 3D (kept from Visual V0)
 
 Repositories read (none modified): `blobbi-kit` (`packages/blobbi-core/src/blobbi-v3-identity.ts`,
 `packages/blobbi-renderer/src/procedural/*`, `artwork/v3/*`), `blobbi-procedural` (the
@@ -64,18 +85,14 @@ viewer's left") are not reproduced, because in 3D the camera does that.
 
 ## Architecture
 
+The renderer's layers live in the kit (`packages/blobbi-3d/src`): identity (the
+kit's own), geometry (the body surface and parts in metres), markings (the skin
+painter), face, materials, rig, animation, renderer (`createBlobbi3D` and the
+gameplay profile). This repository is `src/playground/` only.
+
 ```
-src/blobbi/                     the reusable renderer (future @blobbi-kit/3d)
-  identity/     seed, rng, colours, genome, identity   port of the kit, no 3D, fixture-pinned
-  morphology/   genes → bounded root-unit numbers      port of the kit, no 3D
-  geometry/     plan (the measured artwork), silhouette, body surface, parts (limbs, tuft, traits), units
-  markings/     the skin painter (canvas 2D, no Babylon)
-  face/         expressions (port) and the 3D face (eyes, lids, brows, mouth)
-  materials/    the palette as materials
-  rig/          named pivots and plain-number poses
-  animation/    motion states → poses (idle, walk, run, jump, fall, land; party-game states reserved)
-  renderer/     createBlobbi3D(identity, scene) and the gameplay profile
-src/playground/                 one scene, one controllable Blobbi, a panel; no Blobbi logic here
+src/playground/      one scene, one controllable Blobbi, presets, the panel; no Blobbi logic
+src/consumer.test.ts the playground consumes the package, by name, built
 ```
 
 `createBlobbi3D(identityOrSeed, scene, options)` returns a handle with the
@@ -135,7 +152,8 @@ reserved names: a ragdoll is for the physics engine to pose.
 
 ## Tests
 
-`npm test` (vitest, 102 tests): the RNG, genome, identity, palette and adult
+`npm test` here runs the consumer and playground tests; the renderer's own
+tests (102 at Visual V0): the RNG, genome, identity, palette and adult
 morphology against fixtures produced by blobbi-kit's own engine; determinism
 (same seed → same identity, genome, morphology, vertex data); bounds and
 clamping; stated-field precedence and `inferred`; expression blending and
@@ -150,9 +168,7 @@ tip tangent turned by the kit's curl; rings centred on and perpendicular to
 the centre line with no roll; determinism), all built with Babylon's
 `NullEngine`; the animator's state choices and poses.
 
-The fixture (`src/blobbi/identity/__fixtures__/kit-fixtures.json`) was generated by
-bundling the kit's `procedural/` source with esbuild and running it in node.
-Regenerate it the same way when the kit's algorithm version changes.
+They run in the kit (`npm test` in blobbi-kit) on Babylon's `NullEngine`.
 
 ## Limitations
 

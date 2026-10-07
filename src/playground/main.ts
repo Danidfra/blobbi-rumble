@@ -1,18 +1,15 @@
 /**
  * THE PLAYGROUND: one scene, one controllable Blobbi, a lineup of presets,
- * and a small panel. Everything that makes a Blobbi lives in `src/blobbi/`;
+ * and a small panel. Everything that makes a Blobbi is `@blobbi-kit/3d`;
  * this file only decides which Blobbi to ask for and wires the controls.
  */
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import '@babylonjs/core/Materials/standardMaterial';
-import { createBlobbi3D, createCanonicalBlobbi3D, type Blobbi3D } from '../blobbi/renderer/createBlobbi3D';
-import { EMOTIONS } from '../blobbi/face/expressions';
-import { MOTION_STATES, type MotionState } from '../blobbi/animation/animator';
-import { canonicalBlobbiSeed, seedFromLabel } from '../blobbi/identity/seed';
-import { createBlobbiIdentity } from '../blobbi/identity/identity';
-import { canonicalGenome } from '../blobbi/identity/genome';
+import { EMOTIONS, MOTION_STATES, canonicalBlobbiSeed, createBlobbi3D, createBlobbiIdentity, createCanonicalBlobbi3D, type Blobbi3D, type MotionState } from '@blobbi-kit/3d';
+import { seedFromLabel } from './seeds';
+import { installEquivalenceProbe } from './equivalence';
 import { createEnvironment } from './environment';
 import { CharacterController } from './controller';
 import { PRESETS } from './presets';
@@ -229,6 +226,7 @@ engine.runRenderLoop(() => {
   frame(dt);
 });
 window.addEventListener('resize', () => engine.resize());
+installEquivalenceProbe(scene);
 
 // Expose for inspection from the console.
 Object.assign(window, {
@@ -245,7 +243,6 @@ Object.assign(window, {
     },
     controller,
     createBlobbiIdentity,
-    canonicalGenome,
     /** Advance the playground by hand (a hidden tab gets no animation frames; tests and screenshots step it). */
     step(frames = 1, dt = 1 / 60) {
       for (let i = 0; i < frames; i++) frame(dt);

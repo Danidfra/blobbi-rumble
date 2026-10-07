@@ -4,7 +4,7 @@
  * there; the hex entries are real dev seeds from nostr-pet. The canonical
  * Blobbi (every gene at zero, the authored purple) is the comparison point.
  */
-import { seedFromLabel } from '../blobbi/identity/seed';
+import { seedFromLabel } from './seeds';
 
 export interface Preset {
   label: string;
