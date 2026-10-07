@@ -1,0 +1,27 @@
+:root {
+  color-scheme: light;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #dbe6f5; }
+#scene { width: 100vw; height: 100vh; display: block; outline: none; touch-action: none; }
+#panel {
+  position: fixed; top: 12px; left: 12px; width: 300px; max-height: calc(100vh - 24px); overflow: auto;
+  background: rgba(255,255,255,0.86); backdrop-filter: blur(10px); border-radius: 14px; padding: 12px 14px;
+  box-shadow: 0 8px 30px rgba(40,50,80,0.18); font-size: 13px; color: #2b2b3a;
+}
+#panel h1 { font-size: 15px; margin: 0 0 6px; }
+#panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #6b6f80; margin: 12px 0 6px; }
+#panel .presets { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+#panel button { font: inherit; padding: 5px 8px; border-radius: 8px; border: 1px solid #c9cedb; background: #fff; cursor: pointer; text-align: left; }
+#panel button:hover { background: #f1f4fb; }
+#panel button.active { background: #7c5cff; color: #fff; border-color: #7c5cff; }
+#panel .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+#panel .row label { width: 92px; color: #555a6c; }
+#panel select, #panel input[type=text] { font: inherit; flex: 1; padding: 4px 6px; border-radius: 6px; border: 1px solid #c9cedb; min-width: 0; }
+#panel input[type=text] { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+#panel .hint { color: #6b6f80; font-size: 12px; line-height: 1.4; }
+#panel .identity { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap; background: #f4f5fa; border-radius: 8px; padding: 6px 8px; margin-top: 6px; line-height: 1.45; }
+#panel .swatches { display: flex; gap: 4px; margin: 4px 0; }
+#panel .swatch { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,0.15); }
+#panel .check { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
