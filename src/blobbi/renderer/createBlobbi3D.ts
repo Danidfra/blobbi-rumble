@@ -70,10 +70,19 @@ export interface Blobbi3D {
   setGaze(x: number, y: number): void;
   /** Advance runtime state: animation pose, expression easing, blinks. */
   update(input: AnimatorInput): void;
+  /** Blink now (the Blobbi also blinks on its own). */
+  blink(): void;
   dispose(): void;
 }
 
-const BLINK_DURATION = 0.14;
+/** A blink: quick to close, a moment shut, slower to open. Seconds. */
+const BLINK_DURATION = 0.22;
+function blinkClosure(u: number): number {
+  const ease = (t: number) => t * t * (3 - 2 * t);
+  if (u < 0.35) return ease(u / 0.35);
+  if (u < 0.45) return 1;
+  return 1 - ease((u - 0.45) / 0.55);
+}
 
 export function createBlobbi3D(input: BlobbiIdentityInput | string, scene: Scene, options: Blobbi3DOptions = {}): Blobbi3D {
   const { identity, inferred } = resolveBlobbiIdentity(input);
@@ -174,7 +183,7 @@ function buildBlobbi3D(identity: BlobbiIdentity, genome: BlobbiGenome, inferred:
     if (blinkT >= 0) {
       blinkT += dt;
       const u = blinkT / BLINK_DURATION;
-      blink = u < 1 ? Math.sin(u * Math.PI) : 0;
+      blink = u < 1 ? blinkClosure(u) : 0;
       if (u >= 1) blinkT = -1;
     }
     face.apply(facePose, gaze, sleeping, blink);
@@ -203,6 +212,9 @@ function buildBlobbi3D(identity: BlobbiIdentity, genome: BlobbiGenome, inferred:
     setSleeping: (value) => {
       sleeping = value;
       repaint();
+    },
+    blink: () => {
+      if (blinkT < 0) blinkT = 0;
     },
     setGaze: (x, y) => {
       gaze.x = Math.max(-1, Math.min(1, x));

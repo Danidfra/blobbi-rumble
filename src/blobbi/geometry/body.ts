@@ -113,44 +113,55 @@ export function buildBodySurface(params: BodyParams): BodySurface {
     return lerp(d.back, d.front, t);
   };
 
-  const pointAt = (phi: number, v: number, offset = 0): SurfacePoint => {
+  /** The surface's position (no offset) at a body angle and height fraction, root units for x and z and metres for y. */
+  const bare = (phi: number, v: number): [number, number, number] => {
     const vv = clamp(v, 0, 1);
     const hw = halfWidthAt(vv);
     const dr = depthRadius(phi, vv);
-    const s = Math.sin(phi);
-    const c = Math.cos(phi);
-    // Viewer's right (positive phi) is world -X.
-    const xu = VIEWER_X * hw * s + leanAt(params.lean, vv) * VIEWER_X;
-    const zu = dr * c;
-    // An approximate outward normal: the ellipse's gradient, then tipped by the slope of the silhouette.
-    let nx = hw > 1e-6 ? (VIEWER_X * s) / hw : 0;
-    let nz = dr > 1e-6 ? c / dr : 0;
-    const dv = 0.01;
-    const hwUp = halfWidthAt(Math.min(1, vv + dv));
-    const hwDown = halfWidthAt(Math.max(0, vv - dv));
-    const slope = ((hwUp - hwDown) / (2 * dv)) / heightUnits;
-    let ny = -slope * Math.hypot(nx, nz) * (hw > 1e-6 ? hw : 1);
+    const xu = VIEWER_X * hw * Math.sin(phi) + leanAt(params.lean, vv) * VIEWER_X;
+    const zu = dr * Math.cos(phi);
+    return [xu * UNIT, yOfV(vv), zu * UNIT];
+  };
+
+  const pointAt = (phi: number, v: number, offset = 0): SurfacePoint => {
+    const vv = clamp(v, 0, 1);
+    const [x, y, z] = bare(phi, vv);
+    // The true outward normal: the cross product of the surface's two tangents, by finite differences.
+    let nx: number;
+    let ny: number;
+    let nz: number;
     if (vv >= 0.999) {
       nx = 0;
-      nz = 0;
       ny = 1;
+      nz = 0;
     } else if (vv <= 0.001) {
       nx = 0;
-      nz = 0;
       ny = -1;
+      nz = 0;
+    } else {
+      const dv = 0.004;
+      const dp = 0.02;
+      const up = bare(phi, Math.min(1, vv + dv));
+      const down = bare(phi, Math.max(0, vv - dv));
+      const fwd = bare(phi + dp, vv);
+      const back = bare(phi - dp, vv);
+      const tv = [up[0] - down[0], up[1] - down[1], up[2] - down[2]];
+      const tp = [fwd[0] - back[0], fwd[1] - back[1], fwd[2] - back[2]];
+      nx = tv[1] * tp[2] - tv[2] * tp[1];
+      ny = tv[2] * tp[0] - tv[0] * tp[2];
+      nz = tv[0] * tp[1] - tv[1] * tp[0];
+      // Outward: away from the axis.
+      if (nx * x + nz * z < 0) {
+        nx = -nx;
+        ny = -ny;
+        nz = -nz;
+      }
     }
     const len = Math.hypot(nx, ny, nz) || 1;
     nx /= len;
     ny /= len;
     nz /= len;
-    return {
-      x: xu * UNIT + nx * offset,
-      y: yOfV(vv) + ny * offset,
-      z: zu * UNIT + nz * offset,
-      nx,
-      ny,
-      nz,
-    };
+    return { x: x + nx * offset, y: y + ny * offset, z: z + nz * offset, nx, ny, nz };
   };
 
   const phiOfFrontX = (viewerX: number, v: number) => {
