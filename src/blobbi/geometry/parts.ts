@@ -123,8 +123,8 @@ export function rootFlare(t: number, skinT: number): number {
   return 1 + 0.35 * fade * fade;
 }
 
-/** How far along the centre line (metres) the root blend runs: the sink plus a share of the root's radius. */
-const conformRun = (sink: number, rootRadius: number) => sink + rootRadius * 0.9;
+/** The arc length (metres) past which a ring is free whatever its depth: a few sinks, plus a little of the root's radius. */
+const conformRun = (sink: number, rootRadius: number) => sink * 2.5 + rootRadius * 0.25;
 
 /**
  * A trait grown out of the body: a sweep whose root conforms to the skin
@@ -389,61 +389,82 @@ function buildEars(scene: Scene, parent: TransformNode, surface: BodySurface, e:
     const dir = turnToward(turnToward(UP, outward, e.tilt), FORWARD.scale(-1), EAR.profileLean);
     // The ear's plane faces between forward and outward; the leaf is thin across it.
     const planeNormal = FORWARD.add(outward.scale(0.8)).normalize();
-    // The leaf's in-plane outward axis.
-    const across = Vector3.Cross(dir, planeNormal).normalize();
-    if (Vector3.Dot(across, outward) < 0) across.scaleInPlace(-1);
-    const sink = SINK * 0.9 * UNIT;
-    const base = normal.scale(-sink);
+    // The ear's own frame: +Y is its direction, +Z faces the plane normal. The visible parts are built in it,
+    // exactly as they were; only the outer's ROOT is grown through the conforming sweep, in the pivot's frame.
+    const leafFrame = new TransformNode(`${name}-ear-${side}-frame`, scene);
+    leafFrame.parent = pivot;
+    leafFrame.rotationQuaternion = rotationFacing(planeNormal, dir);
+    const toPivot = (local: Vector3) => local.rotateByQuaternionToRef(leafFrame.rotationQuaternion!, new Vector3());
+    const sink = SINK * 0.9;
+    const base = normal.scale(-sink * UNIT);
     const meshes: Mesh[] = [];
     const sweeps: Sweep[] = [];
     let tip: Vector3;
     if (e.kind === 'round') {
-      const height = e.size * 1.02 * UNIT;
-      const wide = e.size * 0.56 * UNIT;
-      // A soft oval: an ellipse's profile from a flat-ish root to a rounded top.
-      const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => base.add(dir.scale((i / STALK_SAMPLES) * (height + sink))));
-      const profile = (t: number) => {
-        const u = 0.18 + 0.82 * t;
-        return wide * Math.sqrt(Math.max(0, 1 - (2 * u - 1) ** 2));
-      };
-      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink, profile(0), { path, radiusAt: profile, flatten: { axis: planeNormal, scale: 0.54 }, closeTip: true });
-      meshes.push(outer.mesh);
-      sweeps.push(outer.sweep);
-      const inner = blob(scene, pivot, `${name}-ear-${side}-inner`, materials.cheek, dir.scale(height * 0.6).add(planeNormal.scale(e.size * 0.26 * UNIT)), e.size * 0.3, e.size * 1.02 * 0.27, e.size * 0.1, 14);
-      inner.rotationQuaternion = rotationFacing(planeNormal, dir);
-      inner.visibility = 0.85;
-      meshes.push(inner);
-      tip = dir.scale(height);
-    } else {
-      const height = e.size * 1.28 * UNIT;
-      const flop = e.flop * e.size * UNIT;
-      // A soft leaf: a cubic from the sunk root, up, bowing in a little, its tip flopping outward and down.
-      const tipPoint = dir.scale(height).add(across.scale(flop * 0.7)).add(UP.scale(-flop * 0.42));
-      const c1 = dir.scale(height * 0.32);
-      const c2 = dir.scale(height * 0.72).subtract(across.scale(flop * 0.12));
+      const height = e.size * 1.02 + sink;
+      // The outer: the oval it always was (radii 0.56 × size across, height / 2 up, 0.3 × size thick, centred
+      // 0.56 of the height up from the sunk root), swept along its own axis so its root conforms to the skin.
+      const centreY = -sink + height * 0.56;
+      const ry = height * 0.5;
+      const top = centreY + ry;
       const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => {
         const t = i / STALK_SAMPLES;
+        return Vector3.Lerp(base, dir.scale(top * UNIT), t);
+      });
+      const yAt = (t: number) => lerp(-sink, top, t);
+      const profile = (t: number) => e.size * 0.56 * Math.sqrt(Math.max(0, 1 - ((yAt(t) - centreY) / ry) ** 2)) * UNIT;
+      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink * UNIT, Math.max(profile(0), e.size * 0.2 * UNIT), {
+        path,
+        radiusAt: (t) => Math.max(profile(t), t < 0.1 ? e.size * 0.2 * UNIT : 0),
+        flatten: { axis: planeNormal, scale: 0.3 / 0.56 },
+        closeTip: true,
+      });
+      meshes.push(outer.mesh);
+      sweeps.push(outer.sweep);
+      const inner = blob(scene, leafFrame, `${name}-ear-${side}-inner`, materials.cheek, new Vector3(0, (-sink + height * 0.6) * UNIT, e.size * 0.26 * UNIT), e.size * 0.3, height * 0.27, e.size * 0.1, 14);
+      inner.visibility = 0.85;
+      meshes.push(inner);
+      tip = dir.scale((height - sink) * UNIT);
+    } else {
+      const height = e.size * 1.28;
+      // Which way of the leaf's own X axis is outward.
+      const localOut = Math.sign(Vector3.Dot(Vector3.Cross(dir, planeNormal), outward)) || 1;
+      const flopX = localOut * e.flop * e.size * 0.7;
+      const flopY = -e.flop * e.size * 0.42;
+      // The leaf's centre line, in its own frame, as it always was.
+      const localBase = new Vector3(0, -sink * UNIT, 0);
+      const c1 = new Vector3(0, height * 0.32 * UNIT, 0);
+      const c2 = new Vector3(-localOut * e.flop * e.size * 0.12 * UNIT, height * 0.72 * UNIT, 0);
+      const tipLocal = new Vector3(flopX * UNIT, (height + flopY) * UNIT, 0);
+      const cubic = (p0: Vector3, t: number) => {
         const u = 1 - t;
-        return base
+        return p0
           .scale(u * u * u)
           .add(c1.scale(3 * u * u * t))
           .add(c2.scale(3 * u * t * t))
-          .add(tipPoint.scale(t * t * t));
+          .add(tipLocal.scale(t * t * t));
+      };
+      const localPath = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => cubic(localBase, i / STALK_SAMPLES));
+      const half = (e.size * 1.16) / 2;
+      const tipR = e.size * 0.14;
+      // The outer: the same leaf (its profile, its flatness across the plane), in the pivot's frame so its root
+      // can be grown out of the skin; the root starts under the mount, the rest is the leaf's own curve.
+      const pivotPath = localPath.map((p, i) => (i === 0 ? base : toPivot(p)));
+      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink * UNIT, half * UNIT, {
+        path: pivotPath,
+        radiusAt: (t) => lerp(half, tipR, smoothstep(t) * 0.85 + t * 0.15) * UNIT,
+        flatten: { axis: planeNormal, scale: 0.42 },
       });
-      const half = (e.size * 1.16) / 2 * UNIT;
-      const tipR = e.size * 0.14 * UNIT;
-      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink, half, { path, radiusAt: (t) => lerp(half, tipR, t * t * (3 - 2 * t) * 0.85 + t * 0.15), flatten: { axis: planeNormal, scale: 0.42 } });
       meshes.push(outer.mesh);
       sweeps.push(outer.sweep);
-      const cap = blob(scene, pivot, `${name}-ear-${side}-tip`, materials.limb, tipPoint, e.size * 0.14, e.size * 0.14, e.size * 0.14 * 0.42, 10);
-      cap.rotationQuaternion = rotationFacing(planeNormal, dir);
-      meshes.push(cap);
-      // The pink inside lies on the leaf's front face, well above the root: it rides the leaf, never the skin.
-      const innerPath = path.slice(3).map((p) => p.scale(0.78).add(planeNormal.scale(half * 0.5)));
-      const inner = stalk(scene, pivot, `${name}-ear-${side}-inner`, materials.cheek, innerPath, (t) => lerp(half * 0.5, tipR * 0.6, t) / UNIT);
+      const cap = blob(scene, leafFrame, `${name}-ear-${side}-tip`, materials.limb, tipLocal, tipR, tipR, tipR * 0.42, 10);
+      // The pink inside lies on the leaf's front face: offset past the leaf's own thickness.
+      const innerPath = localPath.slice(3).map((p) => p.scale(0.78).add(new Vector3(0, 0, half * 0.5 * UNIT)));
+      const inner = stalk(scene, leafFrame, `${name}-ear-${side}-inner`, materials.cheek, innerPath, (t) => lerp(half * 0.5, tipR * 0.6, t));
+      inner.scaling.z = 0.3;
       inner.visibility = 0.85;
-      meshes.push(inner);
-      tip = tipPoint;
+      meshes.push(cap, inner);
+      tip = toPivot(tipLocal);
     }
     out.push({ pivot, meshes, root, tip: root.add(tip), sweeps });
   }

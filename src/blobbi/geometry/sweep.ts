@@ -9,12 +9,15 @@
  * takes the previous tangent to the new one), so a curved horn's rings
  * follow its bend without rolling or twisting.
  *
- * The root is an AREA on a curved body, not a point. For the first rings
- * every vertex asks the body where its skin is, along the mount's normal,
- * and is placed a fixed depth UNDER that skin; over a short run the rings
- * blend from that conforming placement to the free sweep. So the whole
- * perimeter of the root is inside the body whatever the body's curvature,
- * the wall crosses the skin once on every side, and nothing floats.
+ * The root is an AREA on a curved body, not a point. The root ring is laid
+ * a fixed depth UNDER the skin, each vertex under its own patch of skin
+ * (found along the mount's normal through it). Above it, every vertex that
+ * is still near the skin (within a few sinks of it, by its own depth) is
+ * blended toward that same sunk placement, and a vertex clear of the skin
+ * is left exactly where the free sweep puts it. So the whole perimeter of
+ * the root is inside the body whatever the body's curvature, the wall
+ * crosses the skin once on every side, nothing floats, and the trait's
+ * visible shape above the root is its own, untouched.
  *
  * Pure geometry in the part's own frame (metres, relative to its pivot);
  * the conform callback is where the body comes in.
@@ -28,9 +31,12 @@ export interface SweepConform {
   skinUnder(point: Vector3): { depth: number; skin: Vector3; normal: Vector3 } | null;
   /** How far under the skin the root ring lies, metres. */
   sink: number;
-  /** The run (metres along the centre line) over which the root blends into the free sweep. */
+  /** Beyond this arc length from the root (metres) a ring is always free, whatever its depth. */
   run: number;
 }
+
+/** A vertex this far outside the skin (in sinks) is free; between the root depth and this it blends. */
+const CLEAR_SINKS = 1.5;
 
 export interface SweepOptions {
   /** The centre line, pivot frame, metres, from root to tip. */
@@ -123,7 +129,11 @@ export function buildSweep(options: SweepOptions): Sweep {
       }
       // Where this vertex would be if it were simply `sink` under its own patch of skin.
       const sunk = under.skin.subtract(under.normal.scale(conform.sink));
-      ring.push(Vector3.Lerp(sunk, free, w));
+      // The root ring is sunk outright. Above it a vertex follows its own depth: at the root depth it is sunk,
+      // clear of the skin it is free, in between it blends; and past the run it is free whatever its depth.
+      const byDepth = smoothstep((under.depth + conform.sink) / ((CLEAR_SINKS + 1) * conform.sink));
+      const f = i === 0 ? 0 : Math.max(w, byDepth);
+      ring.push(Vector3.Lerp(sunk, free, f));
     }
     rings.push(ring);
   }
