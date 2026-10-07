@@ -74,6 +74,16 @@ export interface BodySurface {
   /** The crown's half-width and half-depth in root units. */
   crownHalfWidth: number;
   crownHalfDepth: number;
+  /** Whether a point (body frame, metres) lies outside the skin. */
+  isOutside(point: { x: number; y: number; z: number }): boolean;
+  /**
+   * Where the skin is, along a line through `point` in direction `dir`
+   * (unit, pointing out of the body): the crossing within `reach` metres
+   * either way, the skin's normal there, and `depth`, how far `point` is
+   * OUTSIDE the skin along `dir` (negative inside). Null when the line does
+   * not cross the skin within reach.
+   */
+  skinAlong(point: { x: number; y: number; z: number }, dir: { x: number; y: number; z: number }, reach?: number): { depth: number; point: SurfacePoint } | null;
 }
 
 const ROWS = 56;
@@ -206,6 +216,35 @@ export function buildBodySurface(params: BodyParams): BodySurface {
     return { x: p.x + (nx / len) * offset, y: p.y + (ny / len) * offset, z: p.z + (nz / len) * offset, nx: nx / len, ny: ny / len, nz: nz / len };
   };
 
+  /** The ring's centre x at a height (the crown's lean), metres. */
+  const centreXAt = (v: number) => leanAt(params.lean, clamp(v, 0, 1)) * VIEWER_X * UNIT;
+  const isOutside = (p: { x: number; y: number; z: number }): boolean => {
+    const v = (p.y - baseY) / (topY - baseY);
+    if (v >= 1 || v <= 0) return true;
+    const cx = centreXAt(v);
+    const phi = Math.atan2(VIEWER_X * (p.x - cx), p.z);
+    const q = pointAt(phi, v, 0);
+    return Math.hypot(p.x - cx, p.z) > Math.hypot(q.x - cx, q.z);
+  };
+  const skinAlong = (p: { x: number; y: number; z: number }, dir: { x: number; y: number; z: number }, reach = 0.15) => {
+    const at = (s: number) => ({ x: p.x + dir.x * s, y: p.y + dir.y * s, z: p.z + dir.z * s });
+    let lo = -reach;
+    let hi = reach;
+    if (isOutside(at(lo)) || !isOutside(at(hi))) return null;
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) / 2;
+      if (isOutside(at(mid))) hi = mid;
+      else lo = mid;
+    }
+    const s = (lo + hi) / 2;
+    const q = at(s);
+    const v = clamp((q.y - baseY) / (topY - baseY), 0.001, 0.999);
+    const cx = centreXAt(v);
+    const phi = Math.atan2(VIEWER_X * (q.x - cx), q.z);
+    const skin = pointAt(phi, v, 0);
+    return { depth: -s, point: { ...skin, x: q.x, y: q.y, z: q.z } };
+  };
+
   const uvOf = (thetaDeg: number, sideSign: -1 | 1, yFractionFromCrown: number) => ({
     u: 0.5 + (sideSign * thetaDeg) / 360,
     v: 1 - clamp(yFractionFromCrown, 0, 1),
@@ -241,6 +280,8 @@ export function buildBodySurface(params: BodyParams): BodySurface {
     uvScaleAt,
     crownHalfWidth,
     crownHalfDepth,
+    isOutside,
+    skinAlong,
   };
 }
 

@@ -35,6 +35,7 @@ import type { Material } from '@babylonjs/core/Materials/material';
 import type { BodySurface, SurfacePoint } from './body';
 import { clamp, lerp, rad, smoothstep } from './math';
 import { rotationFacing } from './orient';
+import { buildSweep, kitQuadratic, type Sweep, type SweepOptions } from './sweep';
 import { ARMS, FEET, TUFT } from './plan';
 import { UNIT, VIEWER_X, worldX } from './units';
 import { HORN_ANCHORS, topHornLat, type AntennaMorphology, type BlobbiMorphology, type EarMorphology, type HornMorphology, type TailMorphology } from '../morphology/morphology';
@@ -52,6 +53,8 @@ export interface Pivoted {
   /** Where the part is rooted (the pivot) and where its tip reaches, in the body's frame, metres. For inspection and tests. */
   root: Vector3;
   tip: Vector3;
+  /** The swept geometry the part is made of (pivot frame), for inspection and tests. */
+  sweeps?: Sweep[];
 }
 
 export interface BlobbiParts {
@@ -118,6 +121,37 @@ const STALK_SAMPLES = 18;
 export function rootFlare(t: number, skinT: number): number {
   const fade = smoothstep(1 - t / Math.max(1e-6, skinT * 2.4));
   return 1 + 0.35 * fade * fade;
+}
+
+/** How far along the centre line (metres) the root blend runs: the sink plus a share of the root's radius. */
+const conformRun = (sink: number, rootRadius: number) => sink + rootRadius * 0.9;
+
+/**
+ * A trait grown out of the body: a sweep whose root conforms to the skin
+ * under it. `mount` is where it is rooted; every root vertex is placed
+ * `sink` under the skin found along the mount's normal through it.
+ */
+function grown(scene: Scene, pivot: TransformNode, name: string, material: Material, surface: BodySurface, mount: SurfacePoint, sink: number, rootRadius: number, options: Omit<SweepOptions, 'conform'>): { mesh: Mesh; sweep: Sweep } {
+  const root = v3(mount);
+  const normal = n3(mount);
+  const sweep = buildSweep({
+    ...options,
+    conform: {
+      sink,
+      run: conformRun(sink, rootRadius),
+      skinUnder: (local) => {
+        const hit = surface.skinAlong(root.add(local), normal, 0.2);
+        if (!hit) return null;
+        return { depth: hit.depth, skin: new Vector3(hit.point.x, hit.point.y, hit.point.z).subtract(root), normal: new Vector3(hit.point.nx, hit.point.ny, hit.point.nz) };
+      },
+    },
+  });
+  const mesh = new Mesh(name, scene);
+  mesh.parent = pivot;
+  mesh.material = material;
+  mesh.isPickable = false;
+  sweep.vertexData.applyToMesh(mesh, false);
+  return { mesh, sweep };
 }
 
 /** A tube along a sampled centre line (metres, relative to the pivot) with a radius profile in root units. */
@@ -223,7 +257,7 @@ const ANTENNA_TAPER = 0.58;
  * roots it, leaves the skin along the crown's normal and swings to its own
  * direction (up, tilted `tilt` degrees away from the centre line, swept
  * `sweep` degrees back), bowing outward by its curvature. The stalk is the
- * limb colour, flares into the skin, and carries an accent-coloured ball.
+ * limb colour, grows out of the skin, and carries an accent-coloured ball.
  */
 function buildAntenna(scene: Scene, parent: TransformNode, surface: BodySurface, a: AntennaMorphology, materials: BlobbiMaterials, name: string): Pivoted {
   const lateral = a.side * a.position * surface.crownHalfWidth;
@@ -233,56 +267,54 @@ function buildAntenna(scene: Scene, parent: TransformNode, surface: BodySurface,
   const normal = n3(mount);
   const pivot = pivotAt(scene, parent, name, root);
   const tilt = rad(a.tilt);
-  const sweep = rad(a.sweep);
-  const dir = new Vector3(VIEWER_X * a.side * Math.sin(tilt), Math.cos(tilt) * Math.cos(sweep), -Math.sin(sweep)).normalize();
+  const sweepBack = rad(a.sweep);
+  const dir = new Vector3(VIEWER_X * a.side * Math.sin(tilt), Math.cos(tilt) * Math.cos(sweepBack), -Math.sin(sweepBack)).normalize();
   const bend = new Vector3(VIEWER_X * a.side * Math.cos(tilt), Math.sin(tilt), -0.7).normalize().scale(a.curvature * a.length * UNIT);
   const length = a.length * UNIT;
   const sink = SINK * UNIT;
   const path = emergingLine(Vector3.Zero(), normal, dir, length, sink, bend);
-  const skinT = sink / (length + sink);
-  const half = a.thickness / 2;
-  const meshes = [stalk(scene, pivot, `${name}-stalk`, materials.limb, path, (t) => lerp(half, half * ANTENNA_TAPER, t) * rootFlare(t, skinT))];
+  const half = (a.thickness / 2) * UNIT;
+  const { mesh, sweep } = grown(scene, pivot, `${name}-stalk`, materials.limb, surface, mount, sink, half, { path, radiusAt: (t) => lerp(half, half * ANTENNA_TAPER, t) });
   const tip = path[path.length - 1];
-  meshes.push(blob(scene, pivot, `${name}-tip`, materials.accent, tip, a.tipRadius, a.tipRadius, a.tipRadius, 18));
-  return { pivot, meshes, root, tip: root.add(tip) };
+  const meshes = [mesh, blob(scene, pivot, `${name}-tip`, materials.accent, tip, a.tipRadius, a.tipRadius, a.tipRadius, 18)];
+  return { pivot, meshes, root, tip: root.add(tip), sweeps: [sweep] };
 }
 
 // ─── Horns ───────────────────────────────────────────────────────────────────
 
 /**
- * A horn: the shape it had before the mounting pass, kept as it was. A
- * straight taper from a slightly flared base (1.1 of the half-width) to a
- * tip radius of 0.55 × roundness × half-width, along a quadratic centre
- * line whose control point leans into the curl and whose tip is carried a
- * little further the same way, closed by a dome of the tip's radius.
+ * A horn, with the proportions it has always had here: a straight taper
+ * from 1.1 of the half-width at the root to a tip of 0.55 × roundness ×
+ * half-width, closed by a dome of the tip's radius.
  *
- * What is NEW is only where it stands and which way it leaves: the base is
- * sunk `SINK` into the skin along the mount's true normal, `dir` comes from
- * the kit's rule for the kind (see `buildHorns`), and `curlToward` is the
- * direction a positive curl bends the tip toward, in the mount's frame.
+ * Its CURVE is the kit's: the centre line leaves the root along `dir` and
+ * by the tip has turned through `curvature` degrees toward `curlToward`, as
+ * a quadratic whose second half runs along the turned tangent. The rings
+ * are swept along that curve in a parallel-transported frame, so the horn
+ * genuinely bends. A stubby horn takes less of the curl (the kit's
+ * `bendable`), as it cannot bend far without folding.
+ *
+ * The root is sunk `SINK` under the skin along the mount's normal and every
+ * root vertex conforms to the skin under it (`grown`).
  */
-function hornOn(scene: Scene, parent: TransformNode, h: HornMorphology, materials: BlobbiMaterials, name: string, mount: SurfacePoint, dir: Vector3, curlToward: Vector3, longer: number): Pivoted {
+function hornOn(scene: Scene, parent: TransformNode, h: HornMorphology, materials: BlobbiMaterials, surface: BodySurface, name: string, mount: SurfacePoint, dir: Vector3, curlToward: Vector3, longer: number): Pivoted {
   const root = v3(mount);
   const normal = n3(mount);
   const pivot = pivotAt(scene, parent, name, root);
   const sink = SINK * UNIT;
-  const length = (h.length * longer + SINK) * UNIT;
-  const half = h.width / 2;
+  const fullLength = h.length * longer;
+  const length = (fullLength + SINK) * UNIT;
+  const half = (h.width / 2) * UNIT;
   const tipR = half * h.roundness * 0.55;
-  const curl = rad(clamp(h.curvature, -50, 50));
+  const bendable = Math.min(1, Math.max(0.3, fullLength / (1.25 * h.width)));
+  const curl = clamp(h.curvature, -50, 50) * bendable;
+  const tipDir = turnToward(dir, curlToward, curl);
   const base = normal.scale(-sink);
-  const control = base.add(dir.scale(length * 0.5)).add(curlToward.scale(Math.sin(curl) * length * 0.45));
-  const tip = base.add(dir.scale(length)).add(curlToward.scale(Math.sin(curl) * length * 0.5));
-  const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => {
-    const t = i / STALK_SAMPLES;
-    const u = 1 - t;
-    return base.scale(u * u).add(control.scale(2 * u * t)).add(tip.scale(t * t));
-  });
-  const skinT = sink / length;
-  const meshes = [stalk(scene, pivot, `${name}-cone`, materials.horn, path, (t) => lerp(half * 1.1, tipR, t) * lerp(1, rootFlare(t, skinT), 0.5))];
-  meshes.push(blob(scene, pivot, `${name}-dome`, materials.horn, tip, tipR, tipR, tipR, 14));
-  const outward = tip.subtract(control).normalize();
-  return { pivot, meshes, root, tip: root.add(tip).add(outward.scale(tipR * UNIT)) };
+  const path = kitQuadratic(base, dir, tipDir, length, STALK_SAMPLES);
+  const { mesh, sweep } = grown(scene, pivot, `${name}-cone`, materials.horn, surface, mount, sink, half * 1.1, { path, radiusAt: (t) => lerp(half * 1.1, tipR, t) });
+  const tip = path[path.length - 1];
+  const meshes = [mesh, blob(scene, pivot, `${name}-dome`, materials.horn, tip, tipR / UNIT, tipR / UNIT, tipR / UNIT, 14)];
+  return { pivot, meshes, root, tip: root.add(tip).add(sweep.tangents[sweep.tangents.length - 1].scale(tipR)), sweeps: [sweep] };
 }
 
 /**
@@ -303,7 +335,7 @@ function buildHorns(scene: Scene, parent: TransformNode, surface: BodySurface, h
     const mount = surface.pointAt(0, 1 - (HORN_ANCHORS.foreheadHeight + h.position * HORN_ANCHORS.foreheadSpread), 0);
     const n = n3(mount);
     const dir = turnToward(n.add(UP.scale(0.95)).normalize(), UP, tilt * 0.6);
-    return [hornOn(scene, parent, h, materials, `${name}-horn`, mount, dir, UP, 1)];
+    return [hornOn(scene, parent, h, materials, surface, `${name}-horn`, mount, dir, UP, 1)];
   }
   const out: Pivoted[] = [];
   for (const side of [-1, 1] as const) {
@@ -315,13 +347,13 @@ function buildHorns(scene: Scene, parent: TransformNode, surface: BodySurface, h
       const outward = outwardAt(side, n);
       const upright = n.scale(0.6).add(UP.scale(0.4)).normalize();
       const dir = turnToward(upright, outward, tilt * 0.7);
-      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, outward.scale(-1), longer));
+      out.push(hornOn(scene, parent, h, materials, surface, `${name}-horn-${side}`, mount, dir, outward.scale(-1), longer));
     } else {
       const mount = surface.pointAt((side * Math.PI) / 2, 1 - (HORN_ANCHORS.sideHeight + h.position * HORN_ANCHORS.sideSpread), 0);
       const n = n3(mount);
       const lift = 0.62 + tilt / 45;
       const dir = n.add(UP.scale(lift)).normalize();
-      out.push(hornOn(scene, parent, h, materials, `${name}-horn-${side}`, mount, dir, UP, longer));
+      out.push(hornOn(scene, parent, h, materials, surface, `${name}-horn-${side}`, mount, dir, UP, longer));
     }
   }
   return out;
@@ -340,46 +372,55 @@ const EAR = { theta: 104, profileLean: 16 } as const;
 /**
  * Ears are flat leaves standing on the head's upper flank, leaning out by
  * the tilt and a little back, showing their pink inside to the front and
- * the near side. `round` is a soft oval; `pointed` is a wide soft cone
+ * the near side. `round` is a soft oval; `pointed` is a wide soft leaf
  * whose tip flops outward and down. Both are thin across the ear's plane,
- * which faces between forward and outward.
+ * which faces between forward and outward, and both grow out of the skin
+ * through a conforming root (`grown`).
  */
 function buildEars(scene: Scene, parent: TransformNode, surface: BodySurface, e: EarMorphology, materials: BlobbiMaterials, name: string): Pivoted[] {
   const out: Pivoted[] = [];
   for (const side of [-1, 1] as const) {
     const mount = surface.pointAt(side * rad(EAR.theta), 1 - e.position, 0);
     const root = v3(mount);
+    const normal = n3(mount);
     const pivot = pivotAt(scene, parent, `${name}-ear-${side}`, root);
     const outward = new Vector3(VIEWER_X * side, 0, 0);
     // Up, leaned outward by the tilt, and a little back.
     const dir = turnToward(turnToward(UP, outward, e.tilt), FORWARD.scale(-1), EAR.profileLean);
     // The ear's plane faces between forward and outward; the leaf is thin across it.
     const planeNormal = FORWARD.add(outward.scale(0.8)).normalize();
-    const leafFrame = new TransformNode(`${name}-ear-${side}-frame`, scene);
-    leafFrame.parent = pivot;
-    leafFrame.rotationQuaternion = rotationFacing(planeNormal, dir);
-    const sink = SINK * 0.9;
+    // The leaf's in-plane outward axis.
+    const across = Vector3.Cross(dir, planeNormal).normalize();
+    if (Vector3.Dot(across, outward) < 0) across.scaleInPlace(-1);
+    const sink = SINK * 0.9 * UNIT;
+    const base = normal.scale(-sink);
     const meshes: Mesh[] = [];
+    const sweeps: Sweep[] = [];
     let tip: Vector3;
     if (e.kind === 'round') {
-      const height = e.size * 1.02 + sink;
-      // In the leaf's frame +Y is the ear's direction and +Z faces the plane normal.
-      const centreY = -sink + height * 0.56;
-      const outer = blob(scene, leafFrame, `${name}-ear-${side}-outer`, materials.limb, new Vector3(0, centreY * UNIT, 0), e.size * 0.56, height * 0.5, e.size * 0.3, 18);
-      const inner = blob(scene, leafFrame, `${name}-ear-${side}-inner`, materials.cheek, new Vector3(0, (-sink + height * 0.6) * UNIT, e.size * 0.26 * UNIT), e.size * 0.3, height * 0.27, e.size * 0.1, 14);
+      const height = e.size * 1.02 * UNIT;
+      const wide = e.size * 0.56 * UNIT;
+      // A soft oval: an ellipse's profile from a flat-ish root to a rounded top.
+      const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => base.add(dir.scale((i / STALK_SAMPLES) * (height + sink))));
+      const profile = (t: number) => {
+        const u = 0.18 + 0.82 * t;
+        return wide * Math.sqrt(Math.max(0, 1 - (2 * u - 1) ** 2));
+      };
+      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink, profile(0), { path, radiusAt: profile, flatten: { axis: planeNormal, scale: 0.54 }, closeTip: true });
+      meshes.push(outer.mesh);
+      sweeps.push(outer.sweep);
+      const inner = blob(scene, pivot, `${name}-ear-${side}-inner`, materials.cheek, dir.scale(height * 0.6).add(planeNormal.scale(e.size * 0.26 * UNIT)), e.size * 0.3, e.size * 1.02 * 0.27, e.size * 0.1, 14);
+      inner.rotationQuaternion = rotationFacing(planeNormal, dir);
       inner.visibility = 0.85;
-      meshes.push(outer, inner);
-      tip = dir.scale((height - sink) * UNIT);
+      meshes.push(inner);
+      tip = dir.scale(height);
     } else {
-      const height = e.size * 1.28;
-      // Which way of the leaf's own X axis is outward.
-      const localOut = Math.sign(Vector3.Dot(Vector3.Cross(dir, planeNormal), outward)) || 1;
-      const flopX = localOut * e.flop * e.size * 0.7;
-      const flopY = -e.flop * e.size * 0.42;
-      const base = new Vector3(0, -sink * UNIT, 0);
-      const c1 = new Vector3(0, height * 0.32 * UNIT, 0);
-      const c2 = new Vector3(-localOut * e.flop * e.size * 0.12 * UNIT, height * 0.72 * UNIT, 0);
-      const tipLocal = new Vector3(flopX * UNIT, (height + flopY) * UNIT, 0);
+      const height = e.size * 1.28 * UNIT;
+      const flop = e.flop * e.size * UNIT;
+      // A soft leaf: a cubic from the sunk root, up, bowing in a little, its tip flopping outward and down.
+      const tipPoint = dir.scale(height).add(across.scale(flop * 0.7)).add(UP.scale(-flop * 0.42));
+      const c1 = dir.scale(height * 0.32);
+      const c2 = dir.scale(height * 0.72).subtract(across.scale(flop * 0.12));
       const path = Array.from({ length: STALK_SAMPLES + 1 }, (_, i) => {
         const t = i / STALK_SAMPLES;
         const u = 1 - t;
@@ -387,24 +428,24 @@ function buildEars(scene: Scene, parent: TransformNode, surface: BodySurface, e:
           .scale(u * u * u)
           .add(c1.scale(3 * u * u * t))
           .add(c2.scale(3 * u * t * t))
-          .add(tipLocal.scale(t * t * t));
+          .add(tipPoint.scale(t * t * t));
       });
-      const half = (e.size * 1.16) / 2;
-      const tipR = e.size * 0.14;
-      const skinT = sink / (height + sink);
-      const leaf = stalk(scene, leafFrame, `${name}-ear-${side}-outer`, materials.limb, path, (t) => lerp(half, tipR, smoothstep(t) * 0.85 + t * 0.15) * rootFlare(t, skinT));
-      // A leaf, not a cone: thin across the ear's plane.
-      leaf.scaling.z = 0.42;
-      const cap = blob(scene, leafFrame, `${name}-ear-${side}-tip`, materials.limb, tipLocal, tipR, tipR, tipR * 0.42, 10);
-      // The pink inside lies on the leaf's front face: offset past the leaf's own thickness.
-      const innerPath = path.slice(3).map((p) => p.scale(0.78).add(new Vector3(0, 0, half * 0.5 * UNIT)));
-      const inner = stalk(scene, leafFrame, `${name}-ear-${side}-inner`, materials.cheek, innerPath, (t) => lerp(half * 0.5, tipR * 0.6, t));
-      inner.scaling.z = 0.3;
+      const half = (e.size * 1.16) / 2 * UNIT;
+      const tipR = e.size * 0.14 * UNIT;
+      const outer = grown(scene, pivot, `${name}-ear-${side}-outer`, materials.limb, surface, mount, sink, half, { path, radiusAt: (t) => lerp(half, tipR, t * t * (3 - 2 * t) * 0.85 + t * 0.15), flatten: { axis: planeNormal, scale: 0.42 } });
+      meshes.push(outer.mesh);
+      sweeps.push(outer.sweep);
+      const cap = blob(scene, pivot, `${name}-ear-${side}-tip`, materials.limb, tipPoint, e.size * 0.14, e.size * 0.14, e.size * 0.14 * 0.42, 10);
+      cap.rotationQuaternion = rotationFacing(planeNormal, dir);
+      meshes.push(cap);
+      // The pink inside lies on the leaf's front face, well above the root: it rides the leaf, never the skin.
+      const innerPath = path.slice(3).map((p) => p.scale(0.78).add(planeNormal.scale(half * 0.5)));
+      const inner = stalk(scene, pivot, `${name}-ear-${side}-inner`, materials.cheek, innerPath, (t) => lerp(half * 0.5, tipR * 0.6, t) / UNIT);
       inner.visibility = 0.85;
-      meshes.push(leaf, cap, inner);
-      tip = new Vector3(flopX, height + flopY, 0).scale(UNIT).rotateByQuaternionToRef(leafFrame.rotationQuaternion, new Vector3());
+      meshes.push(inner);
+      tip = tipPoint;
     }
-    out.push({ pivot, meshes, root, tip: root.add(tip) });
+    out.push({ pivot, meshes, root, tip: root.add(tip), sweeps });
   }
   return out;
 }
