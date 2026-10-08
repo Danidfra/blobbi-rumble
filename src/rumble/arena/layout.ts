@@ -76,23 +76,45 @@ export function arenaExtent(a = ARENA): { halfWidth: number; halfDepth: number }
 
 const inRect = (r: Rect, p: Planar, inset: number) => Math.abs(p.x - r.x) <= r.halfWidth - inset && Math.abs(p.z - r.z) <= r.halfDepth - inset;
 
-/** Whether a point is on the floor, at least `inset` from every rim. */
+/**
+ * Whether a point is on the floor, at least `inset` from the void. The
+ * floor is the UNION of the slabs: a positive inset is measured to the
+ * outer rim (`rimDistance`), never to the seam where a wing meets the
+ * centre, which is floor on both sides. A negative inset (a footprint)
+ * widens each slab.
+ */
 export function onFloor(p: Planar, inset = 0, a = ARENA): boolean {
-  return floorSlabs(a).some((r) => inRect(r, p, inset));
+  const slabs = floorSlabs(a);
+  if (inset <= 0) return slabs.some((r) => inRect(r, p, inset));
+  return slabs.some((r) => inRect(r, p, 0)) && rimDistance(p, a) >= inset;
 }
 
-/** The nearest rim's distance from a point on the floor (0 off the floor): exact within a slab, a lower bound right at the joins. */
+const segmentDistance = (p: Planar, [a, b]: [Planar, Planar]) => {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const len2 = dx * dx + dz * dz || 1;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2));
+  return Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t));
+};
+
+const rimCache = new WeakMap<object, [Planar, Planar][]>();
+const rimOf = (a: typeof ARENA) => {
+  let r = rimCache.get(a);
+  if (!r) rimCache.set(a, (r = rimSegments(a)));
+  return r;
+};
+
+/**
+ * How far a point on the floor is from the void (0 off the floor), exactly:
+ * the distance to the nearest outer rim segment. Before M7D this grew an
+ * inset per slab, which measured the seams between the centre and the
+ * wings as rims and made the crossing look like a cliff edge.
+ */
 export function rimDistance(p: Planar, a = ARENA): number {
-  if (!onFloor(p, 0, a)) return 0;
-  // Grow an inset until the point falls off: the inset at which it does is the distance.
-  let lo = 0;
-  let hi = arenaExtent(a).halfWidth;
-  for (let i = 0; i < 24; i++) {
-    const mid = (lo + hi) / 2;
-    if (onFloor(p, mid, a)) lo = mid;
-    else hi = mid;
-  }
-  return lo;
+  if (!floorSlabs(a).some((r) => inRect(r, p, 0))) return 0;
+  let d = Infinity;
+  for (const seg of rimOf(a)) d = Math.min(d, segmentDistance(p, seg));
+  return d;
 }
 
 /** The outer rim as segments (from, to), for drawing: every slab edge not shared with another slab. */

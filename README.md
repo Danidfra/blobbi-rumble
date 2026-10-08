@@ -107,7 +107,9 @@ colliders, reach and everyone's state.
 P1 and P2 share the keyboard; P3 and P4 are LOCAL TEST BOTS
 (`control/bot.ts`), not an AI: a few states (seek an orb, seek a fighter,
 attack, carry to the void and throw, recover), a look-ahead that turns away
-from the rim, a jump when the sweeper's leading face is about to arrive,
+from the outer rim (the floor is the union of the slabs: the seams where
+the wings meet the centre are floor, and `rimDistance` measures to the real
+void) and steers round the sweeper's post, a jump when the sweeper's leading face is about to arrive,
 and a seeded sequence instead of dice. They answer with the same intent a
 keyboard gives, so their fighters have exactly a person's body, combat and
 power. `?players=2|3|4` plays fewer, `?bots=all` hands P1 and P2 to bots too.

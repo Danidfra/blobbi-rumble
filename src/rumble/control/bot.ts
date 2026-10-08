@@ -21,6 +21,7 @@
 import { onFloor, rimDistance } from '../arena/layout';
 import { canAct, grabbable, isDown, isHolding, isStunned, type CombatState, type Planar } from '../combat/combat';
 import { powerCap } from '../pickups/power';
+import { RUMBLE_BODY } from '../profile';
 import { COMBAT, BOT, SWEEPER } from '../tuning';
 import type { IntentSource } from './input';
 import type { PlayerIntent as MoveIntent } from '../sim/intent';
@@ -181,16 +182,48 @@ export function bestOrb(w: BotWorld, t = BOT): { orb: number; cost: number } {
   return { orb, cost };
 }
 
+/** Whether the way from `at` along `d` for `ahead` metres passes the sweeper's post with room for a capsule: the post is solid and stands on the right wing's main corridor. */
+export function clearOfPost(at: Planar, d: Planar, ahead: number, t = SWEEPER): boolean {
+  const px = t.pivot.x - at.x;
+  const pz = t.pivot.z - at.z;
+  const along = Math.max(0, Math.min(ahead, px * d.x + pz * d.z));
+  return Math.hypot(px - d.x * along, pz - d.z * along) >= t.postRadius + RUMBLE_BODY.capsuleRadius + 0.1;
+}
+
 /**
- * Turn a wanted direction away from the void: if the floor is not there a
- * little ahead, the nearest turn of it (30°, then 60°, either way) that
- * keeps to the floor, so it edges along a rim toward its goal instead of
- * flipping between the goal and the middle; and only if none does, the
- * middle.
+ * Beside the post (within a step of touching it) and heading into it: the
+ * tangent round it on the side nearer `dir`, a little outward; null when
+ * the post is not in the way.
+ */
+export function aroundPost(at: Planar, dir: Planar, t = SWEEPER): Planar | null {
+  const px = t.pivot.x - at.x;
+  const pz = t.pivot.z - at.z;
+  const d = Math.hypot(px, pz);
+  const touching = t.postRadius + RUMBLE_BODY.capsuleRadius;
+  if (d > touching + 0.45 || d < 1e-6) return null;
+  if ((px * dir.x + pz * dir.z) / d <= 0.2) return null;
+  const a = { x: -pz / d, z: px / d };
+  const b = { x: pz / d, z: -px / d };
+  const side = a.x * dir.x + a.z * dir.z >= b.x * dir.x + b.z * dir.z ? a : b;
+  return unit(side.x - (px / d) * 0.3, side.z - (pz / d) * 0.3);
+}
+
+/**
+ * Turn a wanted direction away from the void and the post: if the floor is
+ * not there a little ahead (with `safeInset` to spare from the outer rim;
+ * the seams between the centre and the wings are floor), or the way runs
+ * into the sweeper's post, the nearest turn of it (30°, then 60°, either
+ * way) that is clear, so it edges along a rim or round the post toward its
+ * goal instead of flipping between the goal and the middle; and only if
+ * none is, the middle.
  */
 export function safeDirection(at: Planar, dir: Planar, ahead: number, t = BOT): Planar {
   if (dir.x === 0 && dir.z === 0) return dir;
-  const safe = (d: Planar) => onFloor({ x: at.x + d.x * ahead, z: at.z + d.z * ahead }, t.safeInset);
+  const floor = (d: Planar) => onFloor({ x: at.x + d.x * ahead, z: at.z + d.z * ahead }, t.safeInset);
+  const safe = (d: Planar) => floor(d) && clearOfPost(at, d, ahead);
+  // Up against the post and heading into it: slide round its side, the side nearer the goal.
+  const around = aroundPost(at, dir);
+  if (around && floor(around)) return around;
   if (safe(dir)) return dir;
   for (const a of [0.52, -0.52, 1.05, -1.05]) {
     const c = Math.cos(a);

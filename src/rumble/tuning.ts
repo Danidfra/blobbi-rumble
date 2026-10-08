@@ -161,8 +161,9 @@ export const ORBS = Object.freeze({
  * punch. Metres, radians, seconds.
  */
 export const SWEEPER = Object.freeze({
-  /** The pivot, on the floor of the right wing. */
+  /** The pivot, on the floor of the right wing, and the post standing on it (a solid cylinder this wide). */
   pivot: { x: 5.75, z: 0 },
+  postRadius: 0.25,
   /** The bar reaches this far from the pivot on both sides. */
   reach: 2.0,
   /** Half of the bar's width across, and its height: it stands from the floor to `top`, low enough for a jump to clear. */

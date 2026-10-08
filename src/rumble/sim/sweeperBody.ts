@@ -18,7 +18,7 @@ import { SWEEPER } from '../tuning';
 import type { SweeperState } from '../arena/sweeper';
 
 /** The post's size, metres: a cylinder at the pivot. */
-export const SWEEPER_POST = Object.freeze({ diameter: 0.5, height: 0.9 });
+export const SWEEPER_POST = Object.freeze({ diameter: SWEEPER.postRadius * 2, height: 0.9 });
 
 export class SweeperBody {
   readonly bar: Mesh;

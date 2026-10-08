@@ -9,7 +9,7 @@ import { onFloor } from '../arena/layout';
 import { createCombatState, startTumble } from '../combat/combat';
 import { createOrbs } from '../pickups/orbs';
 import { BOT, SWEEPER } from '../tuning';
-import { bestOrb, BotInput, createBotMemory, nearestFighter, nextRandom, safeDirection, sweeperArrival, think, voidDirection, type BotFighter, type BotWorld } from './bot';
+import { aroundPost, bestOrb, BotInput, clearOfPost, createBotMemory, nearestFighter, nextRandom, safeDirection, sweeperArrival, think, voidDirection, type BotFighter, type BotWorld } from './bot';
 
 const east = { x: 1, z: 0 };
 const west = { x: -1, z: 0 };
@@ -219,5 +219,36 @@ describe('the test bot', () => {
     expect(a.memory).toEqual(b.memory);
     b.reset(3);
     expect(a.memory.rng).not.toBe(b.memory.rng);
+  });
+
+  it('looks ahead across the seams onto the wings and back, as onto any floor; real rims still turn it', () => {
+    // Walking from the centre onto either wing, and back: straight on.
+    for (const [at, dir] of [
+      [{ x: 3.2, z: 0.5 }, east],
+      [{ x: -3.2, z: -0.5 }, west],
+      [{ x: 4.5, z: 1 }, west],
+      [{ x: -4.5, z: 2 }, east],
+    ] as const) expect(safeDirection(at, dir, BOT.lookAhead)).toEqual(dir);
+    // Off the wing's far end, the front edge, the centre's side beyond the wing: turned away.
+    expect(safeDirection({ x: 6.8, z: 0 }, east, BOT.lookAhead)).not.toEqual(east);
+    expect(safeDirection({ x: 5.5, z: 2.4 }, { x: 0, z: 1 }, BOT.lookAhead).z).toBeLessThan(1);
+    expect(safeDirection({ x: 3.6, z: 3.5 }, east, BOT.lookAhead)).not.toEqual(east);
+  });
+
+  it('steers round the sweeper\'s post instead of into it, on the side nearer its goal', () => {
+    const p = SWEEPER.pivot;
+    // Walking along the right wing's middle toward the centre, the post dead ahead.
+    expect(clearOfPost({ x: p.x + 1.2, z: p.z }, west, BOT.lookAhead)).toBe(false);
+    const turned = safeDirection({ x: p.x + 1.2, z: p.z + 0.05 }, west, BOT.lookAhead);
+    expect(turned).not.toEqual(west);
+    expect(clearOfPost({ x: p.x + 1.2, z: p.z + 0.05 }, turned, BOT.lookAhead)).toBe(true);
+    // Pressed against it: slide round, still making way toward the goal.
+    const slide = aroundPost({ x: p.x + 0.66, z: p.z - 0.05 }, west)!;
+    expect(slide).not.toBeNull();
+    expect(slide.x).toBeLessThan(0.5);
+    expect(Math.abs(slide.z)).toBeGreaterThan(0.6);
+    // Moving away from it, or far from it: the post is not in the way.
+    expect(aroundPost({ x: p.x + 0.66, z: p.z }, east)).toBeNull();
+    expect(aroundPost({ x: 0, z: 0 }, east)).toBeNull();
   });
 });
