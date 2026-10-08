@@ -1,15 +1,20 @@
 /**
- * `npm run server`: the authoritative Rumble server on ws://127.0.0.1:8787.
+ * `npm run server`: the authoritative Rumble server on ws://127.0.0.1:8787,
+ * for development beside `npm run dev` (HOST=0.0.0.0 for LAN play). For a
+ * hosted game (page and WebSocket on one origin) use `npm run serve`.
  * Environment: PORT (8787), HOST (127.0.0.1), TICK_HZ (60), SNAPSHOT_HZ (20),
  * and, DEV ONLY, LAG_MS / JITTER_MS (added one-way delay on every message,
  * each way). Prints the loop's health every 10 seconds.
  */
+import { networkInterfaces } from 'node:os';
 import { loadHavokNode } from '../sim/havokNode';
 import { startRumbleServer } from './server';
 
 const env = (k: string, d: number) => (process.env[k] === undefined ? d : Number(process.env[k]));
+const stamp = () => new Date().toISOString().slice(11, 19);
 const havok = await loadHavokNode();
 const server = await startRumbleServer({
+  log: (line) => console.log(`[${stamp()}] ${line}`),
   havok,
   port: env('PORT', 8787),
   host: process.env.HOST ?? '127.0.0.1',
@@ -22,6 +27,9 @@ const lag = env('LAG_MS', 0);
 const jitter = env('JITTER_MS', 0);
 console.log(`Blobbi Rumble server on ws://${process.env.HOST ?? '127.0.0.1'}:${server.port} · ${server.host.tickHz} Hz simulation · ${server.host.snapshotHz} Hz state${lag || jitter ? ` · DEV LAG ${lag} ms + up to ${jitter} ms each way` : ''}`);
 console.log(`play: http://127.0.0.1:5177/rumble.html?network=1  (npm run dev)`);
+if ((process.env.HOST ?? '127.0.0.1') !== '127.0.0.1')
+  for (const [name, addrs] of Object.entries(networkInterfaces()))
+    for (const a of addrs ?? []) if (a.family === 'IPv4' && !a.internal) console.log(`  LAN (${name}): http://${a.address}:5177/rumble.html?network=1  (npm run dev -- --host 0.0.0.0)`);
 
 const every = 10;
 setInterval(() => {

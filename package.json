@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "check": "npm run typecheck && npm run test && npm run build",
     "headless": "vite build --ssr src/rumble/headless-cli.ts --outDir .headless --emptyOutDir --logLevel warn && node .headless/headless-cli.js",
-    "server": "vite build --ssr src/rumble/net/server-cli.ts --outDir .server --emptyOutDir --logLevel warn && node .server/server-cli.js"
+    "server": "vite build --ssr src/rumble/net/server-cli.ts --outDir .server --emptyOutDir --logLevel warn && node .server/server-cli.js",
+    "serve": "vite build --logLevel warn && vite build --ssr src/rumble/net/serve-cli.ts --outDir .serve --emptyOutDir --logLevel warn && node .serve/serve-cli.js"
   },
   "dependencies": {
     "@babylonjs/core": "^9.29.0",

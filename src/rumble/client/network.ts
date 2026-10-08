@@ -25,6 +25,9 @@
  */
 import { canAct, type CombatState } from '../combat/combat';
 import { Keyboard, PlayerInput, type KeyBindings, type MoveIntent } from '../control/input';
+import { resolveServerUrl } from '../net/endpoint';
+import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
+import { createOverlay } from './overlay';
 import { inputMessage, isNewer, type ClientMessage, type Control, type ServerMessage, type StateMessage } from '../net/protocol';
 import { ROSTER } from '../roster';
 import { combatOf } from '../sim/read';
@@ -44,7 +47,7 @@ const NET_BINDINGS: KeyBindings = {
   punch: ['KeyF', 'KeyK'],
   grab: ['KeyG', 'KeyL'],
 };
-const CONTROLS = ['YOU  WASD/arrows move · Shift run · Space/Enter jump', '     F/K punch · G/L grab/throw · grabbed? alternate left/right', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · F4 network numbers', 'the next match starts by itself'];
+const CONTROLS = ['F3 colliders & reach · F4 network numbers · H controls card', 'the next match starts by itself'];
 /** Movement is resent at least this often, ms, so the server knows the keys are still held (it lets go after a second of silence). */
 const KEEPALIVE_MS = 200;
 const PUNCH_TIME = COMBAT.punchActive + COMBAT.punchRecovery;
@@ -74,17 +77,23 @@ class Window {
 
 export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const q = new URLSearchParams(location.search);
-  const url = q.get('server') ?? `ws://${location.hostname}:8787`;
+  const url = resolveServerUrl(location, location.search, { dev: import.meta.env.DEV, configured: import.meta.env.VITE_RUMBLE_SERVER as string | undefined });
   const useInterp = q.get('interp') !== '0';
   const usePredict = q.get('predict') !== '0';
   const keyboard = new Keyboard([NET_BINDINGS]);
   const input = new PlayerInput(keyboard, NET_BINDINGS);
   // Dev: ?delay=ms overrides the interpolation delay, to measure it.
   const delay = q.has('delay') ? Number(q.get('delay')) / 1000 : NET_VIEW.delay;
-  const buffer = new SnapshotBuffer({ ...NET_VIEW, delay });
+  const newBuffer = () => new SnapshotBuffer({ ...NET_VIEW, delay });
+  let buffer = newBuffer();
   const predictor = new LocalPredictor();
   let ws: WebSocket | null = null;
+  let conn = initialConnection(url);
+  let connectingSince = 0;
   let status = 'connecting';
+  const overlay = createOverlay(() => {
+    if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
+  });
   let you: string | null = null;
   let players: string[] = [];
   let tickHz = 60;
@@ -125,23 +134,41 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
 
   const connect = () => {
     status = `connecting to ${url}`;
+    conn = onRetry(conn);
+    connectingSince = performance.now() / 1000;
     you = null;
     newest = null;
     seq = 0;
     predictor.reset();
-    const socket = new WebSocket(url);
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(url);
+    } catch {
+      // A malformed address: treated as an unreachable server (the retry shows it).
+      conn = onClose(conn, 1006, '', performance.now() / 1000);
+      return;
+    }
     ws = socket;
-    socket.onopen = () => (status = 'connected');
     socket.onmessage = (e) => {
+      if (ws !== socket) return;
       const text = String(e.data);
       stats.bytes += text.length;
       const now = performance.now() / 1000;
-      const m = JSON.parse(text) as ServerMessage;
+      let m: ServerMessage;
+      try {
+        m = JSON.parse(text) as ServerMessage;
+      } catch {
+        return;
+      }
       if (m.t === 'welcome') {
         you = m.you;
         players = m.players;
         tickHz = m.tickHz;
         predictor.reset();
+        // A new connection: a new view of the match (the server may even have restarted, ticks from zero).
+        buffer = newBuffer();
+        stats.lastArrival = now;
+        conn = onWelcome(conn, m.you, now);
         status = `connected · ${m.tickHz} Hz match, ${m.snapshotHz} Hz state`;
       } else if (m.t === 'state') {
         // Late or repeated states are dropped: the newest tick wins.
@@ -168,11 +195,24 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         rtt = performance.now() - m.ct;
       }
     };
-    socket.onclose = () => {
-      status = 'disconnected · retrying';
+    socket.onclose = (e) => {
+      if (ws !== socket) return;
+      ws = null;
+      // Offline: nothing is predicted from a state that will not be answered, nothing is sent, nothing held.
+      conn = onClose(conn, e.code, e.reason, performance.now() / 1000);
+      status = conn.phase;
       you = null;
-      setTimeout(connect, 2000);
+      predictor.reset();
+      keyboard.held.clear();
+      reconnects += conn.phase === 'lost' ? 1 : 0;
     };
+  };
+  let reconnects = 0;
+  /** Once a frame: retry when it is time, give up on a connection attempt that hangs, and notice a server gone silent. */
+  const watchConnection = (now: number) => {
+    if ((conn.phase === 'lost' || conn.phase === 'failed' || conn.phase === 'full') && now >= conn.retryAt) connect();
+    else if (conn.phase === 'connecting' && ws && ws.readyState === WebSocket.CONNECTING && now - connectingSince > CONNECTION.silence * 2) ws.close();
+    else if ((conn.phase === 'playing' || conn.phase === 'watching') && ws && now - stats.lastArrival > CONNECTION.silence) ws.close(4000, 'no data');
   };
   connect();
   setInterval(() => send({ t: 'ping', id: ++pingId, ct: performance.now() }), 1000);
@@ -244,7 +284,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         suppressSince = now;
       }
     }
-    if (you && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
+    watchConnection(now);
+    overlay.show(conn, now, rtt);
+    if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
     if (you) predictor.frame(dt, seq, { ...move, jump: intent.jump, punch: false, grab: false });
 
@@ -287,14 +329,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       s,
       dt,
       {
-        status: [`NETWORK · ${status}`, you ? `you are ${you}` : `watching: all ${players.length} fighters are taken`, `rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`, ''],
+        status: [`NETWORK · ${statusLine(conn, rtt)}`, ''],
         driver: (i) => (s.players[i] === you ? 'YOU' : control[s.players[i]] === 'human' ? 'human' : 'bot'),
         matchOverHint: 'the next match starts soon',
         controls: CONTROLS,
         strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
         footer: showNet
           ? [
-              `NET  view ${useInterp ? `interpolated, ${(delay * 1000).toFixed(0)} ms behind` : 'newest state (no interpolation)'} · states ahead ${sample?.ahead ?? '-'} (mean ${aheadW.mean.toFixed(1)})${sample?.extrapolated ? ` · EXTRAPOLATING ${(sample.late * 1000).toFixed(0)} ms` : ''}`,
+              `NET  ${status} · ${url} · ${conn.attempts ? `attempt ${conn.attempts}` : 'up'} · reconnects ${reconnects} · rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`,
+              `     view ${useInterp ? `interpolated, ${(delay * 1000).toFixed(0)} ms behind` : 'newest state (no interpolation)'} · states ahead ${sample?.ahead ?? '-'} (mean ${aheadW.mean.toFixed(1)})${sample?.extrapolated ? ` · EXTRAPOLATING ${(sample.late * 1000).toFixed(0)} ms` : ''}`,
               `     state gaps ${gaps.mean.toFixed(0)} ± ${gaps.sd.toFixed(0)} ms (max ${gaps.max.toFixed(0)}) · extrapolated ${stats.extrapolatedFrames} / frozen ${stats.frozenFrames} of ${stats.frames} frames · tick ${state.tick}`,
               `     prediction ${usePredict ? (predictor.predicting ? 'ON' : 'server has you') : 'off'} · inputs ${ack ?? '-'}/${seq} acked, ${m.pending} frames pending · error ${(m.lastError * 100).toFixed(1)} cm (mean ${(errors.mean * 100).toFixed(1)}, max ${(errors.max * 100).toFixed(1)}) · kept ${m.kept} smoothed ${m.smoothed} snapped ${m.snapped} (resumed ${m.resumed}, ${m.resumeSnaps} by snap) · offset ${(m.offset * 100).toFixed(1)} cm`,
             ]
@@ -317,6 +360,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       mode: 'network',
       get you() {
         return you;
+      },
+      get connection() {
+        return conn;
+      },
+      /** The connection's socket, for scripted checks of a lost connection. */
+      dropConnection() {
+        ws?.close(4001, 'test');
       },
       get state() {
         return state;

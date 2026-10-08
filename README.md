@@ -42,8 +42,16 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 npm run dev          # http://127.0.0.1:5177/rumble.html            local: the match runs in the page
 npm run server       # ws://127.0.0.1:8787                          the authoritative server (one match)
                      # http://127.0.0.1:5177/rumble.html?network=1  a network client (open several)
+npm run serve        # http://<this machine>:8080/                    hosted: built game + WebSocket on one port (LAN / behind HTTPS)
 npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60)
 ```
+
+PLAYING WITH OTHER MACHINES (M7D): see [HOSTING.md](HOSTING.md). In short,
+`npm run serve` builds the game and runs one Node process that serves it
+and the match's WebSocket (`/ws`) on one port; friends on the LAN open
+`http://<your LAN IP>:8080/`. Over the Internet, put any HTTPS tunnel or
+reverse proxy in front of port 8080 and share its `https://` URL: the page
+then connects to `wss://<same host>/ws` by itself.
 
 NETWORK PLAY (`src/rumble/net/`, M7B): `npm run server` runs one
 authoritative match in Node at a fixed 60 Hz and sends its state to every
@@ -232,10 +240,14 @@ src/rumble/
     protocol.ts         the wire messages, validation of untrusted input, state freshness (pure)
     host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart
     server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag
-    server-cli.ts       `npm run server`
+    server-cli.ts       `npm run server` (dev, beside Vite)
+    static.ts           the built game over HTTP (no traversal, / redirects to the game, /healthz)
+    serve-cli.ts        `npm run serve`: the hosted game, page + /ws on one port
+    endpoint.ts         which WebSocket URL a page uses (?server, VITE_RUMBLE_SERVER, dev :8787, else same origin /ws)
   client/             the browser client: presenter.ts (draws snapshots, diffing them for feedback),
                       local.ts (the match in the page), network.ts (a client of the server),
-                      interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure)
+                      interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure),
+                      connection.ts (connect / lost / retry states and their words, pure), overlay.ts (status pill, banner, controls card)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

@@ -1,5 +1,5 @@
 /**
- * THE RUMBLE SERVER, M7B: one authoritative match (`RumbleHost`) behind a
+ * THE RUMBLE SERVER: one authoritative match (`RumbleHost`) behind a
  * WebSocket endpoint, stepped by the server's own clock at a fixed rate.
  *
  *   clients ──input / ping──► host.receive ··· host.tick() @ 60 Hz ··· every 3rd tick ──state──► every client
@@ -10,27 +10,66 @@
  * at once and the rest of the backlog is dropped (counted), rather than
  * fast-forwarding through seconds of play.
  *
+ * It listens on its own port (development: `npm run server`) or on a path
+ * of an existing HTTP server (`serve-cli.ts`: the built game and the
+ * WebSocket on one origin, behind whatever terminates TLS).
+ *
+ * Exposed beyond localhost, it bounds what a client can cost: at most
+ * `maxConnections` connections (more are refused with "server full"), at
+ * most `maxMessagesPerSecond` messages each (the rest dropped; a sustained
+ * flood is disconnected), frames of at most 4 KB, no per-client send queue
+ * past `maxBufferedBytes` (states are skipped for a slow client, which is
+ * dropped if it falls far behind), and a heartbeat that drops connections
+ * that stopped answering.
+ *
  * DEV ONLY: `lagMs` / `jitterMs` delay every message each way on its own
- * connection (in order), to feel latency locally. They live in the
- * transport, never in the match or the protocol.
+ * connection (in order, a bounded queue), to feel latency locally. They live
+ * in the transport, never in the match or the protocol.
  */
+import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { HavokInstance } from '../sim/physics';
 import { RumbleHost, type ConnectionId } from './host';
+import { parseClientMessage } from './protocol';
+
+export const SERVER_LIMITS = Object.freeze({
+  /** Connections at once: four players and a few spectators. */
+  maxConnections: 16,
+  /** Messages a second per connection kept (a client sends at most ~61: 60 inputs and a ping); the bucket holds a second's worth. */
+  maxMessagesPerSecond: 120,
+  /** Over this many dropped messages in one second, the connection is flooding: disconnected. */
+  floodDisconnect: 600,
+  /** A frame larger than this, bytes, closes the connection (ws enforces it). */
+  maxPayload: 4096,
+  /** States are skipped for a client whose send queue holds more than this, bytes; past `maxBufferedBytes * 8` it is dropped. */
+  maxBufferedBytes: 256 * 1024,
+  /** Ping every this many ms; a connection that did not answer the last one is dropped. */
+  heartbeatMs: 10_000,
+  /** Dev lag only: at most this many messages waiting in a delay queue per direction. */
+  maxDelayed: 1000,
+});
 
 export interface ServerConfig {
   havok: HavokInstance;
+  /** Listen on this port and address (when no `http` server is given). */
   port?: number;
   host?: string;
+  /** Or attach to this HTTP server, on this path (the built game served beside it). */
+  http?: HttpServer;
+  path?: string;
   tickHz?: number;
   snapshotHz?: number;
   /** At most this many steps run in one wake-up; more backlog than that is dropped. */
   maxCatchUp?: number;
+  maxConnections?: number;
+  maxMessagesPerSecond?: number;
   /** Dev only: added one-way delay on every message, each way, and up to this much more at random. */
   lagMs?: number;
   jitterMs?: number;
   /** Don't start the clock (tests step `host.tick()` themselves and call `broadcast()`). */
   manual?: boolean;
+  /** Compact lines about connections and abnormal traffic (never every message). */
+  log?: (line: string) => void;
 }
 
 export interface ServerStats {
@@ -45,6 +84,11 @@ export interface ServerStats {
   bytesIn: number;
   lastStateBytes: number;
   clients: number;
+  /** Since the last reset: connections refused (full), messages that were not protocol, messages dropped by the rate limit, connections dropped (flooding, too slow, silent). */
+  refused: number;
+  malformed: number;
+  rateDropped: number;
+  kicked: number;
 }
 
 export interface RumbleServer {
@@ -57,70 +101,170 @@ export interface RumbleServer {
   close(): Promise<void>;
 }
 
-/** Delivers callbacks after `lag` + up to `jitter` ms, never out of order. Dev-only latency. */
-function delayer(lagMs: number, jitterMs: number) {
+/** Delivers callbacks after `lag` + up to `jitter` ms, never out of order, holding at most `max`. Dev-only latency. */
+function delayer(lagMs: number, jitterMs: number, max: number) {
   let last = 0;
+  let waiting = 0;
   return (fn: () => void) => {
     if (lagMs <= 0 && jitterMs <= 0) return fn();
+    if (waiting >= max) return;
     const at = Math.max(last, performance.now() + lagMs + Math.random() * jitterMs);
     last = at;
-    setTimeout(fn, at - performance.now());
+    waiting++;
+    setTimeout(() => {
+      waiting--;
+      fn();
+    }, at - performance.now());
   };
+}
+
+/** A token bucket: `take()` is true while the rate is respected. */
+function bucket(perSecond: number) {
+  let tokens = perSecond;
+  let at = performance.now();
+  return () => {
+    const now = performance.now();
+    tokens = Math.min(perSecond, tokens + ((now - at) / 1000) * perSecond);
+    at = now;
+    if (tokens < 1) return false;
+    tokens -= 1;
+    return true;
+  };
+}
+
+interface Client {
+  id: ConnectionId;
+  send: (data: string, droppable?: boolean) => void;
+  alive: boolean;
 }
 
 export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const host = new RumbleHost({ havok: config.havok, tickHz: config.tickHz, snapshotHz: config.snapshotHz });
   const maxCatchUp = config.maxCatchUp ?? 5;
+  const maxConnections = config.maxConnections ?? SERVER_LIMITS.maxConnections;
+  const perSecond = config.maxMessagesPerSecond ?? SERVER_LIMITS.maxMessagesPerSecond;
   const lag = config.lagMs ?? 0;
   const jitter = config.jitterMs ?? 0;
-  const stats: ServerStats = { ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, lastStateBytes: 0, clients: 0 };
+  const log = config.log ?? (() => {});
+  const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0 });
+  const stats: ServerStats = { ...fresh(), lastStateBytes: 0, clients: 0 };
   let lateSum = 0;
   let lateCount = 0;
   const resetStats = () => {
-    Object.assign(stats, { ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0 });
+    Object.assign(stats, fresh());
     lateSum = 0;
     lateCount = 0;
   };
-  const clients = new Map<WebSocket, { id: ConnectionId; send: (data: string) => void }>();
+  const clients = new Map<WebSocket, Client>();
   let nextConn = 1;
 
-  const wss = new WebSocketServer({ port: config.port ?? 8787, host: config.host ?? '127.0.0.1', maxPayload: 4096 });
-  wss.on('connection', (ws) => {
+  const wss = config.http
+    ? new WebSocketServer({ server: config.http, path: config.path ?? '/ws', maxPayload: SERVER_LIMITS.maxPayload })
+    : new WebSocketServer({ port: config.port ?? 8787, host: config.host ?? '127.0.0.1', maxPayload: SERVER_LIMITS.maxPayload });
+
+  const kicked = new WeakSet<WebSocket>();
+  const kick = (ws: WebSocket, code: number, why: string) => {
+    if (kicked.has(ws)) return;
+    kicked.add(ws);
+    stats.kicked += 1;
+    log(`conn ${clients.get(ws)?.id ?? '?'} dropped: ${why}`);
+    ws.close(code, why);
+    setTimeout(() => ws.terminate(), 1000).unref?.();
+  };
+
+  wss.on('connection', (ws, req: IncomingMessage) => {
+    const from = `${req.socket.remoteAddress ?? '?'}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
+    if (clients.size >= maxConnections) {
+      // Full: refused cleanly, before it takes a slot or any state.
+      stats.refused += 1;
+      log(`refused ${from}: server full (${clients.size}/${maxConnections})`);
+      ws.close(1013, 'server full');
+      return;
+    }
     const id = nextConn++;
-    const out = delayer(lag, jitter);
-    const inbound = delayer(lag, jitter);
-    const send = (data: string) =>
-      out(() => {
-        if (ws.readyState !== ws.OPEN) return;
-        ws.send(data);
-        stats.bytesOut += data.length;
-      });
-    clients.set(ws, { id, send });
+    const out = delayer(lag, jitter, SERVER_LIMITS.maxDelayed);
+    const inbound = delayer(lag, jitter, SERVER_LIMITS.maxDelayed);
+    const allow = bucket(perSecond);
+    let droppedThisSecond = 0;
+    let droppedSince = performance.now();
+    let warnedMalformed = false;
+    const client: Client = {
+      id,
+      alive: true,
+      send: (data, droppable = false) =>
+        out(() => {
+          if (ws.readyState !== ws.OPEN) return;
+          // A client that cannot keep up: skip states (each supersedes the last); far behind, drop it.
+          if (ws.bufferedAmount > SERVER_LIMITS.maxBufferedBytes * 8) return kick(ws, 1013, 'too slow');
+          if (droppable && ws.bufferedAmount > SERVER_LIMITS.maxBufferedBytes) return;
+          ws.send(data);
+          stats.bytesOut += data.length;
+        }),
+    };
+    clients.set(ws, client);
     stats.clients = clients.size;
-    send(JSON.stringify(host.connect(id)));
+    const welcome = host.connect(id);
+    log(`conn ${id} from ${from}: ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
+    client.send(JSON.stringify(welcome));
+    ws.on('pong', () => (client.alive = true));
     ws.on('message', (data, isBinary) => {
+      // A connection being dropped says nothing more.
+      if (kicked.has(ws)) return;
       const raw = isBinary ? null : data.toString();
       stats.bytesIn += raw?.length ?? 0;
+      if (!allow()) {
+        stats.rateDropped += 1;
+        const now = performance.now();
+        if (now - droppedSince > 1000) {
+          droppedSince = now;
+          droppedThisSecond = 0;
+        }
+        if (++droppedThisSecond > SERVER_LIMITS.floodDisconnect) kick(ws, 1008, 'flooding');
+        return;
+      }
+      if (!parseClientMessage(raw)) {
+        stats.malformed += 1;
+        if (!warnedMalformed) {
+          warnedMalformed = true;
+          log(`conn ${id}: malformed message ignored (further ones counted, not logged)`);
+        }
+        return;
+      }
       inbound(() => {
         if (!clients.has(ws)) return;
         const reply = host.receive(id, raw);
-        if (reply) send(JSON.stringify(reply));
+        if (reply) client.send(JSON.stringify(reply));
       });
     });
     ws.on('close', () => {
       // At once, not after the simulated lag: the slot stops taking this connection's input now.
-      clients.delete(ws);
+      if (!clients.delete(ws)) return;
       stats.clients = clients.size;
+      const slot = host.slot(id);
       host.disconnect(id);
+      log(`conn ${id} left${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
     });
     ws.on('error', () => ws.terminate());
   });
+
+  // Heartbeat: a connection that did not answer the last ping (a vanished laptop, a dead route) is dropped.
+  const heartbeat = setInterval(() => {
+    for (const [ws, c] of clients) {
+      if (!c.alive) {
+        kick(ws, 1001, 'no heartbeat');
+        continue;
+      }
+      c.alive = false;
+      ws.ping();
+    }
+  }, SERVER_LIMITS.heartbeatMs);
+  heartbeat.unref?.();
 
   const broadcast = () => {
     const data = JSON.stringify(host.state());
     stats.statesSent += 1;
     stats.lastStateBytes = data.length;
-    for (const c of clients.values()) c.send(data);
+    for (const c of clients.values()) c.send(data, true);
   };
 
   // The fixed-step loop on the monotonic clock.
@@ -153,27 +297,37 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     timer = setTimeout(loop, Math.max(0, next - performance.now()));
   };
 
+  const ready = (port: number): RumbleServer => {
+    if (running) loop();
+    return {
+      host,
+      port,
+      stats,
+      resetStats,
+      broadcast,
+      close: () =>
+        new Promise<void>((done) => {
+          running = false;
+          if (timer) clearTimeout(timer);
+          clearInterval(heartbeat);
+          for (const ws of clients.keys()) ws.terminate();
+          wss.close(() => {
+            host.dispose();
+            done();
+          });
+        }),
+    };
+  };
+
   return new Promise((resolve) => {
+    if (config.http) {
+      const address = config.http.address();
+      resolve(ready(typeof address === 'object' && address ? address.port : 0));
+      return;
+    }
     wss.on('listening', () => {
-      if (running) loop();
       const address = wss.address();
-      resolve({
-        host,
-        port: typeof address === 'object' && address ? address.port : (config.port ?? 8787),
-        stats,
-        resetStats,
-        broadcast,
-        close: () =>
-          new Promise<void>((done) => {
-            running = false;
-            if (timer) clearTimeout(timer);
-            for (const ws of clients.keys()) ws.terminate();
-            wss.close(() => {
-              host.dispose();
-              done();
-            });
-          }),
-      });
+      resolve(ready(typeof address === 'object' && address ? address.port : (config.port ?? 8787)));
     });
   });
 }
