@@ -11,7 +11,7 @@ import { createRumbleMatch } from '../sim/match';
 import type { MatchEvent, MatchSnapshot } from '../sim/snapshot';
 import { RumblePresenter } from './presenter';
 
-const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match · ?network=1 to play on a server'];
+const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'grabbed? alternate left/right to break free', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match · ?network=1 to play on a server'];
 
 export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const havok = await loadHavok();
@@ -62,6 +62,7 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
       matchOverHint: 'press R to play again',
       controls: CONTROLS,
       holdsConsistent: match.holdsConsistent(),
+      strugglers: roster.flatMap((e, i) => (e.keys ? [{ index: i, keys: i === 0 ? 'A ↔ D' : '← ↔ →' }] : [])),
     });
   };
 

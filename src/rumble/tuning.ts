@@ -74,6 +74,35 @@ export const COMBAT = Object.freeze({
   hitSquash: 0.14,
 });
 
+/**
+ * THE STRUGGLE: a held fighter breaks free by reversing its movement,
+ * stroke after stroke (A D A D, ← → ← →, a stick wiggled), not by holding
+ * a direction or repeating one. A stroke counts when its direction is
+ * roughly opposite the previous stroke's and there is stroke credit, which
+ * refills at one per `minInterval` (holding at most `credit`): useful input
+ * is capped at that rate, smoothly, and faster input buys nothing. With
+ * `strokes` counted reversals the hold breaks: about 0.8 s at the cap,
+ * ~1.2 s at a good human 5 strokes a second. A carrier throwing
+ * quickly is safe; one that walks a struggling body to the far rim is not.
+ */
+export const STRUGGLE = Object.freeze({
+  /** Counted reversals to break free (tested 5, 6, 7: 6 is ~1.2 s at a good 5 strokes a second, ~0.8 s at the cap). */
+  strokes: 6,
+  /** Stroke credit refills at one per this many seconds (the cap on useful input: ~6.7 a second), up to `credit` (a little slack for an uneven rhythm). */
+  minInterval: 0.15,
+  credit: 1.5,
+  /** Movement this strong (of 1) is a stroke; weaker is neutral. */
+  strokeThreshold: 0.5,
+  /** A stroke reverses the last one when their directions' cosine is under this (more than 120° apart). */
+  reverseCos: -0.5,
+  /** Breaking free: the freed body leaves the holder at this speed, m/s, with this lift; the holder recoils this much. */
+  breakAway: 2.4,
+  breakAwayLift: 1.2,
+  holderRecoil: 0.6,
+  /** After breaking free, nobody may grab the fighter for this long, seconds (punches, throws and the sweeper still count). */
+  regrabImmunity: 0.6,
+});
+
 export const ROUND = Object.freeze({
   /** First to this many rounds (last Blobbi standing) wins the match. */
   target: 3,
@@ -245,6 +274,20 @@ export const BOT = Object.freeze({
   safeInset: 0.35,
   /** Closer than this to a rim with nothing to do there: back toward the middle. */
   rimPanic: 0.5,
+  /**
+   * Held: struggle like a person, not a macro. Start this long after being grabbed (a reaction), then reverse
+   * every `strokeTime` seconds (plus up to `strokeJitter`), now and then fumbling a stroke the same way
+   * (`fumble`, a share). About 1.8 s to break free. Carrying: once the held body is clearly wriggling
+   * (struggle past `throwOnStruggle`), hurry: throw as soon as a rim is in throwing range, lined up or not
+   * (`hurriedFacingCos` instead of `throwFacingCos`). Grabbed far from any rim, it can still lose its victim.
+   */
+  struggleReaction: 0.2,
+  struggleReactionJitter: 0.25,
+  strokeTime: 0.17,
+  strokeJitter: 0.09,
+  fumble: 0.12,
+  throwOnStruggle: 0.5,
+  hurriedFacingCos: 0.3,
   /** Jump the sweeper when its leading face will reach the capsule within this window, seconds. */
   jumpWindow: { from: 0.03, to: 0.12 },
 });

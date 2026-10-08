@@ -44,7 +44,7 @@ const NET_BINDINGS: KeyBindings = {
   punch: ['KeyF', 'KeyK'],
   grab: ['KeyG', 'KeyL'],
 };
-const CONTROLS = ['YOU  WASD/arrows move · Shift run · Space/Enter jump', '     F/K punch · G/L grab/throw', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · F4 network numbers', 'the next match starts by itself'];
+const CONTROLS = ['YOU  WASD/arrows move · Shift run · Space/Enter jump', '     F/K punch · G/L grab/throw · grabbed? alternate left/right', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · F4 network numbers', 'the next match starts by itself'];
 /** Movement is resent at least this often, ms, so the server knows the keys are still held (it lets go after a second of silence). */
 const KEEPALIVE_MS = 200;
 const PUNCH_TIME = COMBAT.punchActive + COMBAT.punchRecovery;
@@ -194,7 +194,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const ownFighter = (interp: FighterSnapshot, latest: FighterSnapshot, playing: boolean, now: number): FighterSnapshot => {
     const authority: Body = { x: interp.position.x, y: interp.position.y, z: interp.position.z, vx: interp.velocity.x, vy: interp.velocity.y, vz: interp.velocity.z, yaw: interp.yaw };
     const shown = predictor.show(authority);
-    if (!predictor.predicting) return { ...interp, position: { x: shown.x, y: shown.y, z: shown.z } };
+    // The server has you: drawn from the interpolated authority, but your struggle bar reads its newest word (still the server's).
+    if (!predictor.predicting) return { ...interp, position: { x: shown.x, y: shown.y, z: shown.z }, combat: { ...interp.combat, struggle: interp.heldBy ? latest.combat.struggle : 0 } };
     const body = predictor.body!;
     // The punch's arm: the cosmetic swing while it runs; the server's own swing held back until that punch is over.
     let punchTime = latest.combat.punchTime;
@@ -290,6 +291,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         driver: (i) => (s.players[i] === you ? 'YOU' : control[s.players[i]] === 'human' ? 'human' : 'bot'),
         matchOverHint: 'the next match starts soon',
         controls: CONTROLS,
+        strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
         footer: showNet
           ? [
               `NET  view ${useInterp ? `interpolated, ${(delay * 1000).toFixed(0)} ms behind` : 'newest state (no interpolation)'} · states ahead ${sample?.ahead ?? '-'} (mean ${aheadW.mean.toFixed(1)})${sample?.extrapolated ? ` · EXTRAPOLATING ${(sample.late * 1000).toFixed(0)} ms` : ''}`,

@@ -29,7 +29,8 @@ import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from '../pickups/orbs';
 import { nearestContacts } from '../physics/contact';
 import { RUMBLE_BODY } from '../profile';
 import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch, type MatchState } from '../rounds';
-import { COMBAT, PUSH, ROUND, SWEEPER } from '../tuning';
+import { stepStruggle } from '../combat/struggle';
+import { COMBAT, PUSH, ROUND, STRUGGLE, SWEEPER } from '../tuning';
 import { createArenaBody } from './arenaBody';
 import { FighterSim, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
@@ -203,6 +204,15 @@ export class RumbleMatch {
         this.interact(list, i, intents[i], dt);
       }
     }
+    // The held struggle, after every attack of the step: a throw (or a blow that frees the body) this step wins over an escape.
+    if (playing) {
+      fighters.forEach((f, i) => {
+        const c = f.combat;
+        if (!c.held || c.holder < 0 || f.eliminated) return;
+        const r = stepStruggle(c, intents[i], dt);
+        if (r.escaped) this.breakFree(i);
+      });
+    }
     // Every hold stays a true pair (a holder that tumbled lets go here).
     this.dropped(settleHolds(this.combatants()));
 
@@ -294,7 +304,7 @@ export class RumbleMatch {
           eliminated: f.eliminated,
           score: m.score[i],
           powerLevel: f.powerLevel,
-          combat: { punchTime: c.punchTime, punchCooldown: c.punchCooldown, stun: c.stun, tumble: c.tumble, recovering: c.recovering, holdTime: c.holding, holdAngle: c.holdAngle },
+          combat: { punchTime: c.punchTime, punchCooldown: c.punchCooldown, stun: c.stun, tumble: c.tumble, recovering: c.recovering, holdTime: c.holding, holdAngle: c.holdAngle, struggle: c.struggle, grabImmune: c.grabImmune },
           holding: idOf(c.victim),
           heldBy: idOf(c.holder),
           touching: idOf(this.contacts[i]),
@@ -302,6 +312,7 @@ export class RumbleMatch {
           lastImpact: f.lastImpact,
           hits: f.hits,
           jumps: f.jumps,
+          escapes: f.escapes,
         };
       }),
       phase: m.phase,
@@ -355,6 +366,29 @@ export class RumbleMatch {
     this.dropped(ended);
     for (const h of ended) if (by !== h.holder && by !== h.victim) this.emit({ kind: 'interrupt', who: by >= 0 ? this.ids[by] : null, on: this.ids[j], note: `${this.ids[h.holder]} lost ${this.ids[h.victim]}` });
     this.fighters[j].react(reaction, (COMBAT.hitSpin * reaction.impact) / COMBAT.tumbleThreshold);
+  }
+
+  /**
+   * `i` struggled free: the hold ends on both sides, the freed body leaves
+   * its holder with a small push (and the holder gives a little), and for a
+   * moment nobody may grab it again, so the escape is one.
+   */
+  private breakFree(i: number) {
+    const victim = this.fighters[i];
+    const h = victim.combat.holder;
+    const holder = this.fighters[h];
+    endGrab(holder.combat, victim.combat);
+    holder.letGo(victim);
+    const a = holder.at();
+    const b = victim.at();
+    const d = Math.hypot(b.x - a.x, b.z - a.z);
+    const away = d > 1e-6 ? { x: (b.x - a.x) / d, z: (b.z - a.z) / d } : holder.facing();
+    const t = STRUGGLE;
+    victim.push(away.x * t.breakAway, t.breakAwayLift, away.z * t.breakAway);
+    holder.push(-away.x * t.holderRecoil, 0, -away.z * t.holderRecoil);
+    victim.combat.grabImmune = t.regrabImmunity;
+    victim.escapes += 1;
+    this.emit({ kind: 'escape', who: victim.id, on: holder.id });
   }
 
   /** One fighter's attack and hold this step, against whichever fighter the match decides it takes. */

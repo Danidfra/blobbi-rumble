@@ -47,6 +47,8 @@ export interface HudInfo {
   /** The match-over line's ending. */
   matchOverHint: string;
   controls: string[];
+  /** The fighters people at this screen play, and the keys each one struggles with (shown when it is held). */
+  strugglers?: { index: number; keys: string }[];
   /** Debug only: whether the holds are consistent (known where the match runs). */
   holdsConsistent?: boolean;
 }
@@ -142,7 +144,14 @@ export class RumblePresenter {
       const bot = info.botState?.(i);
       lines.push(`${who} ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot && !f.eliminated ? `  ${bot}` : ''}`);
     });
-    lines.push('', this.message || (s.phase === 'playing' ? '' : '…'), '', ...info.controls);
+    lines.push('', this.message || (s.phase === 'playing' ? '' : '…'));
+    for (const { index, keys } of info.strugglers ?? []) {
+      const f = s.fighters[index];
+      if (!f?.heldBy || f.eliminated) continue;
+      const filled = Math.round(f.combat.struggle * 10);
+      lines.push(`${f.id} GRABBED by ${f.heldBy} · STRUGGLE [${'█'.repeat(filled)}${'-'.repeat(10 - filled)}] alternate ${keys} to break free`);
+    }
+    lines.push('', ...info.controls);
     if (info.footer?.length) lines.push('', ...info.footer);
     if (this.debug.on) lines.push(...this.debugLines(s, info));
     this.debug.print(lines);
@@ -164,6 +173,11 @@ export class RumblePresenter {
       if (f.jumps > was.jumps) jumped.add(f.id);
       if (f.powerLevel > was.powerLevel && !newRound) this.views[i].powered();
       if (f.lastImpact !== was.lastImpact || f.hits > was.hits) this.lastHazard[f.id] = `${f.lastImpact.toFixed(2)}`;
+      if (f.heldBy && f.combat.struggle > (was.combat.struggle ?? 0)) this.views[i].struggled();
+      if (f.escapes > (was.escapes ?? 0)) {
+        this.views[i].struck();
+        this.message = `${f.id} BROKE FREE of ${was.heldBy ?? 'the hold'}`;
+      }
     });
     s.orbs.forEach((o, i) => {
       if (prev.orbs[i].active && !o.active) this.orbView.taken(i);

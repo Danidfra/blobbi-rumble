@@ -29,7 +29,7 @@ const auth = (b: Body, extra: Partial<FighterSnapshot> = {}): FighterSnapshot =>
   eliminated: false,
   score: 0,
   powerLevel: 0,
-  combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0 },
+  combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 },
   holding: null,
   heldBy: null,
   touching: null,
@@ -37,6 +37,7 @@ const auth = (b: Body, extra: Partial<FighterSnapshot> = {}): FighterSnapshot =>
   lastImpact: 0,
   hits: 0,
   jumps: 0,
+  escapes: 0,
   ...extra,
 });
 
@@ -181,14 +182,14 @@ describe('reconciliation', () => {
   it('while the server has the fighter (tumble, stun, held, out, between rounds) nothing is predicted; it is drawn from authority, handed over smoothly', () => {
     const playing = (extra: Partial<FighterSnapshot>) => predictable(auth(at(0), extra), true);
     expect(playing({})).toBe(true);
-    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: 0.1, recovering: -1, holdTime: -1, holdAngle: 0 } })).toBe(false);
-    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: 0.1, holdTime: -1, holdAngle: 0 } })).toBe(false);
-    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0.2, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0 } })).toBe(false);
+    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: 0.1, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 } })).toBe(false);
+    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: 0.1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 } })).toBe(false);
+    expect(playing({ combat: { punchTime: -1, punchCooldown: 0, stun: 0.2, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 } })).toBe(false);
     expect(playing({ heldBy: 'P2' })).toBe(false);
     expect(playing({ eliminated: true })).toBe(false);
     expect(predictable(auth(at(0)), false)).toBe(false);
     // Carrying is still the player's locomotion.
-    expect(playing({ holding: 'P2', combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: 0.3, holdAngle: 0 } })).toBe(true);
+    expect(playing({ holding: 'P2', combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: 0.3, holdAngle: 0, struggle: 0, grabImmune: 0 } })).toBe(true);
 
     const p = new LocalPredictor();
     p.reconcile(auth(at(0)), 0, 1 / 60, -1, 0, true);

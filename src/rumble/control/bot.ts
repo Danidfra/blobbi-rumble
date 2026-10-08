@@ -11,7 +11,9 @@
  *   SEEK_FIGHTER  walk (or run) to the chosen target
  *   ATTACK        in range: punch, or now and then grab
  *   CARRY         holding someone: walk them to the nearest void and throw
- *   RECOVER       down, stunned, held or near the rim: head for the middle
+ *                 (hurried, if they are wriggling free)
+ *   STRUGGLE      held: reverse its movement in a person's rhythm to break free
+ *   RECOVER       down, stunned or near the rim: head for the middle
  *
  * Over every state: a look-ahead that turns away from the void, and a jump
  * when the sweeper's leading face is about to arrive. Its only "chance" is
@@ -28,7 +30,7 @@ import type { PlayerIntent as MoveIntent } from '../sim/intent';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { combatOf } from '../sim/read';
 
-export type BotState = 'SEEK_ORB' | 'SEEK_FIGHTER' | 'ATTACK' | 'CARRY' | 'RECOVER';
+export type BotState = 'SEEK_ORB' | 'SEEK_FIGHTER' | 'ATTACK' | 'CARRY' | 'RECOVER' | 'STRUGGLE';
 
 export interface BotFighter {
   at: Planar;
@@ -37,6 +39,8 @@ export interface BotFighter {
   active: boolean;
   combat: CombatState;
   powerLevel: number;
+  /** Who holds it (a fighter index), or -1. */
+  holder: number;
 }
 
 export interface BotWorld {
@@ -58,6 +62,7 @@ export function botWorldFrom(s: MatchSnapshot, self: string): BotWorld {
     active: !f.eliminated,
     combat: combatOf(f),
     powerLevel: f.powerLevel,
+    holder: f.heldBy === null ? -1 : s.players.indexOf(f.heldBy),
   }));
   const i = s.players.indexOf(self);
   return { self: i, fighters, orbs: s.orbs, sweeperAngle: s.sweeper.angle, grounded: s.fighters[i].grounded };
@@ -78,9 +83,15 @@ export interface BotMemory {
   carry: number;
   /** The seeded sequence. */
   rng: number;
+  /** Held: seconds held so far, the side of the current stroke (±1), and seconds until the next one. */
+  heldFor: number;
+  strokeSide: number;
+  nextStroke: number;
+  /** The side last pushed (0: none). */
+  lastStroke: number;
 }
 
-export const createBotMemory = (seed: number): BotMemory => ({ state: 'SEEK_FIGHTER', stateTime: Infinity, target: -1, retarget: 0, orb: -1, wait: 0, carry: 0, rng: (seed * 2654435761) >>> 0 || 1 });
+export const createBotMemory = (seed: number): BotMemory => ({ state: 'SEEK_FIGHTER', stateTime: Infinity, target: -1, retarget: 0, orb: -1, wait: 0, carry: 0, rng: (seed * 2654435761) >>> 0 || 1, heldFor: 0, strokeSide: 1, nextStroke: 0, lastStroke: 0 });
 
 /** The next number of the sequence, in [0, 1). */
 export function nextRandom(m: BotMemory): number {
@@ -251,8 +262,31 @@ export function think(m: BotMemory, w: BotWorld, dt: number, t = BOT, c = COMBAT
   const jump = w.grounded && !isHolding(me.combat) && canJumpSweeper(w, t);
   const toMiddle = unit(-me.at.x, -me.at.z);
 
-  // Down, stunned or held: whatever control is left goes toward the middle.
-  if (isDown(me.combat) || isStunned(me.combat) || me.combat.held) {
+  // Held: struggle. A moment to react, then strokes side to side in a person's rhythm, now and then fumbled.
+  if (me.combat.held) {
+    enter(m, 'STRUGGLE');
+    m.carry = 0;
+    if (m.heldFor === 0) m.nextStroke = t.struggleReaction + nextRandom(m) * t.struggleReactionJitter;
+    m.heldFor += dt;
+    m.nextStroke -= dt;
+    if (m.heldFor < t.struggleReaction) return NONE;
+    if (m.nextStroke <= 0) {
+      if (nextRandom(m) >= t.fumble) m.strokeSide = -m.strokeSide;
+      m.nextStroke = t.strokeTime + nextRandom(m) * t.strokeJitter;
+      // A fumble repeats the side: lift off for a step so it is a stroke at all (and one that does not count).
+      if (m.strokeSide === m.lastStroke) {
+        m.lastStroke = 0;
+        return NONE;
+      }
+    }
+    m.lastStroke = m.strokeSide;
+    return { ...NONE, x: m.strokeSide };
+  }
+  m.heldFor = 0;
+  m.lastStroke = 0;
+
+  // Down or stunned: whatever control is left goes toward the middle.
+  if (isDown(me.combat) || isStunned(me.combat)) {
     enter(m, 'RECOVER');
     m.carry = 0;
     return { ...NONE, x: toMiddle.x, z: toMiddle.z };
@@ -265,7 +299,10 @@ export function think(m: BotMemory, w: BotWorld, dt: number, t = BOT, c = COMBAT
     const out = voidDirection(me.at);
     const facingOut = me.facing.x * out.x + me.facing.z * out.z;
     const nearRim = rimDistance(me.at) < t.throwRim;
-    const throwIt = m.carry > t.carryMax || (m.carry > t.carryMin && nearRim && facingOut > t.throwFacingCos);
+    const victim = w.fighters.findIndex((f) => f.holder === w.self);
+    const wriggling = victim >= 0 && w.fighters[victim].combat.struggle > t.throwOnStruggle;
+    const lined = facingOut > (wriggling ? t.hurriedFacingCos : t.throwFacingCos);
+    const throwIt = m.carry > t.carryMax || (m.carry > t.carryMin && nearRim && lined);
     if (throwIt) m.wait = t.hesitation;
     // Walk out only while the floor ahead allows; at the rim, turn to face out and let go.
     const step = rimDistance(me.at) > 1.2 ? out : { x: out.x * 0.3, z: out.z * 0.3 };

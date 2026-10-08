@@ -120,6 +120,19 @@ downed body), the nearest, the lower roster index on an exact tie
 (`combat/melee.ts`). A hold names both sides, and a held or holding body
 cannot be grabbed, so a body has one holder at most; a blow on either side
 of a hold (a punch, the sweeper), a tumbling carrier or a ring-out ends it.
+A held fighter can STRUGGLE FREE (`combat/struggle.ts`, `STRUGGLE` in
+`tuning.ts`): reversing its movement, left-right-left-right (A/D, ←/→, or
+any stick wiggle; the server only sees opposite directions, so the camera
+never matters), builds escape progress; holding a direction, or repeating
+one, does nothing, and useful input is capped at about 6.7 reversals a
+second. Six counted reversals break the hold (about 1.2 s at a good pace,
+0.8 s at the cap): both sides are cleared, the freed body is pushed a
+little away, and for 0.6 s it cannot be grabbed again (it can still be
+hit). The struggle runs after every attack of the step, so a throw on the
+same step wins; a quick throw always beats it, a long carry does not. The
+HUD shows your struggle bar while you are held; held Blobbis visibly
+wriggle. Bots struggle with a person's rhythm (about 1.8 s) and, carrying a
+wriggling victim near a rim, hurry the throw.
 An eliminated fighter is parked out of play and hidden until the next round,
 once its fall has crossed the fall line.
 

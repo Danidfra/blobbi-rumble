@@ -40,6 +40,9 @@ export class FighterView {
   private lastExpression: ExpressionName = 'happy';
   private squash = 0;
   private powerFlash = 0;
+  /** The struggle wiggle: a rock of the body to one side, decaying. */
+  private wiggle = 0;
+  private wiggleSide = 1;
   private debugOn = false;
   private hidden = false;
   private readonly rings: Mesh[] = [];
@@ -112,6 +115,12 @@ export class FighterView {
     this.squash = COMBAT.hitSquash;
   }
 
+  /** A struggle stroke counted (the server's progress went up): the held body rocks, the other way each time. */
+  struggled() {
+    this.wiggleSide = -this.wiggleSide;
+    this.wiggle = 1;
+  }
+
   /** An orb taken: the power ring flashes. */
   powered() {
     this.powerFlash = 0.3;
@@ -122,6 +131,7 @@ export class FighterView {
     this.bridge = initialBridge();
     this.squash = 0;
     this.powerFlash = 0;
+    this.wiggle = 0;
     this.blobbi.animator.setState(null);
   }
 
@@ -209,13 +219,16 @@ export class FighterView {
       rig.body.rotation.x -= 0.3;
       expression = 'surprised';
     } else if (c.held) {
-      // Held up: arms out, feet dangling, a little back.
-      parts.leftArm.pivot.rotation.z = 1.1;
-      parts.rightArm.pivot.rotation.z = -1.1;
-      parts.leftFoot.pivot.rotation.x = 0.5;
-      parts.rightFoot.pivot.rotation.x = 0.5;
+      // Held up: arms out, feet dangling, a little back; struggling, it rocks side to side and kicks, more as it nears free.
+      this.wiggle = Math.max(0, this.wiggle - dt * 6);
+      const rock = this.wiggleSide * Math.sin(this.wiggle * Math.PI) * (0.18 + 0.12 * c.struggle);
+      parts.leftArm.pivot.rotation.z = 1.1 + rock;
+      parts.rightArm.pivot.rotation.z = -1.1 + rock;
+      parts.leftFoot.pivot.rotation.x = 0.5 + rock;
+      parts.rightFoot.pivot.rotation.x = 0.5 - rock;
       rig.body.rotation.x -= 0.12;
-      expression = 'sad';
+      rig.body.rotation.z += rock;
+      expression = c.struggle > 0 ? 'upset' : 'sad';
     } else if (isHolding(c)) {
       parts.leftArm.pivot.rotation.x = -1.3;
       parts.rightArm.pivot.rotation.x = -1.3;

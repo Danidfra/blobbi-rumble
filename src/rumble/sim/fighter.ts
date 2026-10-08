@@ -79,6 +79,8 @@ export class FighterSim {
    */
   hits = 0;
   jumps = 0;
+  /** Holds it has struggled free of, over the match. */
+  escapes = 0;
   /** Steps it has rested, upright and still, with no ground under the rays (see `update`). */
   private restingSteps = 0;
   /** Seconds it still counts as supported after being found resting. */

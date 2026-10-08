@@ -17,5 +17,7 @@ export function combatOf(f: FighterSnapshot): CombatState {
   c.holding = f.combat.holdTime;
   c.holdAngle = f.combat.holdAngle;
   c.held = f.heldBy !== null;
+  c.struggle = f.combat.struggle ?? 0;
+  c.grabImmune = f.combat.grabImmune ?? 0;
   return c;
 }

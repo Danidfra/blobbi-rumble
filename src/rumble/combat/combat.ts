@@ -9,7 +9,7 @@
  * named; a facing is a unit vector in that plane; angles are yaws (the
  * direction (sin a, cos a)).
  */
-import { COMBAT } from '../tuning';
+import { COMBAT, STRUGGLE } from '../tuning';
 import { reactionKind, resolveImpact, type ReactionKind } from './impact';
 
 export type Tuning = typeof COMBAT;
@@ -46,9 +46,24 @@ export interface CombatState {
   tumble: number;
   /** Getting back up: seconds into the recovery, or -1. */
   recovering: number;
+  /**
+   * The struggle while held (`combat/struggle.ts`): escape progress 0..1,
+   * the direction of the last struggle stroke and of the last step's
+   * movement (0, 0 for none), and the stroke credit (how many strokes may
+   * count right now: it refills at the capped rate). All of it belongs to
+   * one hold: `endGrab` clears it.
+   */
+  struggle: number;
+  strokeX: number;
+  strokeZ: number;
+  moveX: number;
+  moveZ: number;
+  strokeCredit: number;
+  /** Seconds left in which nobody may grab this fighter (after it broke free). Grabs only: blows land as ever. */
+  grabImmune: number;
 }
 
-export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, holdAngle: 0, held: false, victim: -1, holder: -1, tumble: -1, recovering: -1 });
+export const createCombatState = (): CombatState => ({ punchCooldown: 0, punchTime: -1, punchLanded: false, stun: 0, holding: -1, holdAngle: 0, held: false, victim: -1, holder: -1, tumble: -1, recovering: -1, struggle: 0, strokeX: 0, strokeZ: 0, moveX: 0, moveZ: 0, strokeCredit: STRUGGLE.credit, grabImmune: 0 });
 
 export function resetCombat(s: CombatState) {
   Object.assign(s, createCombatState());
@@ -62,6 +77,7 @@ export function tickCombat(s: CombatState, dt: number, t: Tuning = COMBAT) {
     if (s.punchTime > t.punchActive + t.punchRecovery) s.punchTime = -1;
   }
   s.stun = Math.max(0, s.stun - dt);
+  s.grabImmune = Math.max(0, s.grabImmune - dt);
   if (s.holding >= 0) s.holding += dt;
   if (s.tumble >= 0) {
     s.tumble += dt;
@@ -157,8 +173,8 @@ export function startTumble(s: CombatState) {
   s.holding = -1;
 }
 
-/** Whether a body may be taken hold of at all: upright, not held by anyone, and not holding anyone itself. */
-export const grabbable = (victim: CombatState) => !victim.held && !isHolding(victim) && !isDown(victim);
+/** Whether a body may be taken hold of at all: upright, not held by anyone, not holding anyone itself, and not just broken free. */
+export const grabbable = (victim: CombatState) => !victim.held && !isHolding(victim) && !isDown(victim) && victim.grabImmune <= 0;
 
 /**
  * Start a hold if allowed: the grabber may act, the victim is grabbable and
@@ -183,6 +199,10 @@ export function endGrab(grabber: CombatState, victim: CombatState) {
   grabber.victim = -1;
   victim.held = false;
   victim.holder = -1;
+  // The struggle belongs to this hold: nothing of it carries into the next.
+  victim.struggle = 0;
+  victim.strokeX = victim.strokeZ = victim.moveX = victim.moveZ = 0;
+  victim.strokeCredit = STRUGGLE.credit;
 }
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));

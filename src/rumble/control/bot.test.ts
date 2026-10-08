@@ -13,7 +13,7 @@ import { aroundPost, bestOrb, BotInput, clearOfPost, createBotMemory, nearestFig
 
 const east = { x: 1, z: 0 };
 const west = { x: -1, z: 0 };
-const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, facing, active: true, combat: createCombatState(), powerLevel: 0 });
+const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, facing, active: true, combat: createCombatState(), powerLevel: 0, holder: -1 });
 const world = (fighters: BotFighter[], self = 0, orbs = createOrbs().map((o) => ({ ...o, active: false }))): BotWorld => ({ self, fighters, orbs, sweeperAngle: Math.PI / 2, grounded: true });
 const frames = (m: ReturnType<typeof createBotMemory>, w: BotWorld, n: number) => {
   let out = think(m, w, 1 / 60);

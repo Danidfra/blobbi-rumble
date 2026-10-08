@@ -20,7 +20,7 @@ const fighter = (id: string, x: number, z = 0, extra: Partial<FighterSnapshot> =
   eliminated: false,
   score: 0,
   powerLevel: 0,
-  combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0 },
+  combat: { punchTime: -1, punchCooldown: 0, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 },
   holding: null,
   heldBy: null,
   touching: null,
@@ -28,6 +28,7 @@ const fighter = (id: string, x: number, z = 0, extra: Partial<FighterSnapshot> =
   lastImpact: 0,
   hits: 0,
   jumps: 0,
+  escapes: 0,
   ...extra,
 });
 const snap = (tick: number, fighters: FighterSnapshot[], extra: Partial<MatchSnapshot> = {}): MatchSnapshot => ({
@@ -89,8 +90,8 @@ describe('blending', () => {
   });
 
   it('a timer that runs blends; one that starts, stops or restarts is the earlier state\'s', () => {
-    const a = snap(3, [fighter('A', 0, 0, { combat: { punchTime: 0.05, punchCooldown: 0.5, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0 } })]);
-    const b = snap(6, [fighter('A', 0, 0, { combat: { punchTime: 0.1, punchCooldown: 0.45, stun: 0, tumble: 0.02, recovering: -1, holdTime: -1, holdAngle: 0 } })]);
+    const a = snap(3, [fighter('A', 0, 0, { combat: { punchTime: 0.05, punchCooldown: 0.5, stun: 0, tumble: -1, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 } })]);
+    const b = snap(6, [fighter('A', 0, 0, { combat: { punchTime: 0.1, punchCooldown: 0.45, stun: 0, tumble: 0.02, recovering: -1, holdTime: -1, holdAngle: 0, struggle: 0, grabImmune: 0 } })]);
     const m = interpolate(a, b, 0.5).fighters[0].combat;
     expect(m.punchTime).toBeCloseTo(0.075);
     expect(m.tumble).toBe(-1);

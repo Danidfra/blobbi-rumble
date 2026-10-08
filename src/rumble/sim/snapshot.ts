@@ -41,6 +41,10 @@ export interface FighterSnapshot {
     /** Seconds into the current hold (as the holder), -1 when not holding. */
     holdTime: number;
     holdAngle: number;
+    /** Escape progress while held, 0..1 (the server's: a client shows it, never decides it). */
+    struggle: number;
+    /** Seconds in which it cannot be grabbed again, after breaking free. */
+    grabImmune: number;
   };
   /** Whom it holds, and who holds it. */
   holding: PlayerId | null;
@@ -54,6 +58,8 @@ export interface FighterSnapshot {
   /** Blows, throws and sweeper hits received, and jumps made, over the match: compare two snapshots to see one happen. */
   hits: number;
   jumps: number;
+  /** Holds it has struggled free of, over the match. */
+  escapes: number;
 }
 
 export interface OrbSnapshot {
@@ -92,7 +98,7 @@ export interface MatchEvent {
   tick: number;
   t: number;
   round: number;
-  kind: 'punch' | 'grab' | 'throw' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch';
+  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch';
   /** Who acted (or whom it happened to, for a sweeper hit, a ring-out, a won round); null for nobody (a draw) or the arena. */
   who: PlayerId | null;
   /** Whom it was done to. */
