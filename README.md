@@ -57,8 +57,25 @@ everything else. One-shot requests (jump, punch, grab) wait in the match
 until a step takes them, so no later input can erase them. A client that
 leaves hands its fighter straight back to its bot; a silent one (a frozen
 tab) is let go of after a second. The next match starts by itself five
-seconds after one is won. The client draws the newest state as it comes,
-with no prediction or interpolation yet. Server environment: `PORT`,
+seconds after one is won.
+
+SMOOTHING (M7C, `src/rumble/client/`). Remote fighters, the sweeper and
+everything else are drawn from a buffer of states, 100 ms behind the
+server's estimated clock, blended between the two states around that
+moment (positions, quaternion orientations, facing, running timers;
+discrete state never blends; resets, ring-outs and teleports snap; past
+the newest state at most 50 ms of extrapolation, then a hold). Your own
+fighter is predicted from your keys with the server's own steering and a
+locomotion model fitted to the Havok match, and reconciled on every state:
+acknowledged input is dropped, the rest is replayed from the server's
+account (`ackTicks` says how much of the last acknowledged input the state
+already contains), errors under 5 cm are left alone, larger ones glide
+away at 10/s, over 1.2 m they snap. While the server has you (tumbling,
+recovering, stunned, held, out, between rounds) nothing is predicted. A
+punch swings at once when the server's last word says it can (cosmetic:
+the hit is the server's); a grab shows nothing until the server holds.
+F4 shows the network numbers; dev flags `?interp=0`, `?predict=0`,
+`?delay=ms`. Server environment: `PORT`,
 `HOST`, `TICK_HZ`, `SNAPSHOT_HZ`, and, dev only, `LAG_MS` / `JITTER_MS`
 (added one-way delay each way); client: `?server=ws://host:port`.
 
@@ -202,7 +219,8 @@ src/rumble/
     server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag
     server-cli.ts       `npm run server`
   client/             the browser client: presenter.ts (draws snapshots, diffing them for feedback),
-                      local.ts (the match in the page), network.ts (a client of the server)
+                      local.ts (the match in the page), network.ts (a client of the server),
+                      interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

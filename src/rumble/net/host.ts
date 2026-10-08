@@ -55,6 +55,8 @@ export class RumbleHost {
   private readonly lastSeq = new Map<string, number>();
   private readonly lastInputTick = new Map<string, number>();
   private readonly acked = new Map<string, number>();
+  /** Per slot: the step on which the acknowledged input was first applied. */
+  private readonly ackTick = new Map<string, number>();
   private snapshot: MatchSnapshot;
   private matches = 0;
   private matchOverFor = 0;
@@ -87,6 +89,7 @@ export class RumbleHost {
       this.match.clearInput(free);
       this.lastSeq.set(free, -1);
       this.acked.set(free, -1);
+      this.ackTick.set(free, this.match.tick);
       this.lastInputTick.set(free, this.match.tick);
     }
     return { t: 'welcome', you: free, players: [...this.ids], tickHz: this.tickHz, snapshotHz: this.snapshotHz };
@@ -101,6 +104,7 @@ export class RumbleHost {
     this.match.clearInput(slot);
     this.lastSeq.delete(slot);
     this.acked.delete(slot);
+    this.ackTick.delete(slot);
     this.bots[this.ids.indexOf(slot)].reset(this.snapshot.round + 1000 * this.matches);
   }
 
@@ -137,7 +141,12 @@ export class RumbleHost {
       if (this.holder.get(id) !== null) {
         // A person whose inputs stopped arriving (a stalled tab) does not keep running.
         if (this.match.tick - (this.lastInputTick.get(id) ?? 0) > timeout) this.match.setInput(id, {});
-        this.acked.set(id, this.lastSeq.get(id) ?? -1);
+        const seq = this.lastSeq.get(id) ?? -1;
+        if (seq !== this.acked.get(id)) {
+          this.acked.set(id, seq);
+          // The step about to run is the first to apply it.
+          this.ackTick.set(id, this.match.tick + 1);
+        }
         return;
       }
       const bot = this.bots[i];
@@ -167,11 +176,15 @@ export class RumbleHost {
   state(): StateMessage {
     const control: Record<string, Control> = {};
     const acks: Record<string, number> = {};
+    const ackTicks: Record<string, number> = {};
     for (const id of this.ids) {
       control[id] = this.holder.get(id) === null ? 'bot' : 'human';
-      if (this.holder.get(id) !== null) acks[id] = this.acked.get(id) ?? -1;
+      if (this.holder.get(id) !== null) {
+        acks[id] = this.acked.get(id) ?? -1;
+        ackTicks[id] = this.ackTick.get(id) ?? this.snapshot.tick;
+      }
     }
-    return { t: 'state', tick: this.snapshot.tick, time: this.snapshot.time, snapshot: this.snapshot, control, acks };
+    return { t: 'state', tick: this.snapshot.tick, time: this.snapshot.time, snapshot: this.snapshot, control, acks, ackTicks };
   }
 
   get latest(): MatchSnapshot {

@@ -50,6 +50,12 @@ export interface StepResult {
 
 const UP = Vector3.Up();
 
+/**
+ * What counts as resting with no ground seen: this still (m/s), for this many steps (a jump's apex is still for one step at
+ * most); then it counts as supported for `hold` seconds, unless it falls faster than `fallingVy`.
+ */
+const RESTING = Object.freeze({ maxVy: 0.05, maxSpeed: 0.3, steps: 10, hold: 0.5, fallingVy: -1 });
+
 export class FighterSim {
   readonly body: GameplayBody;
   readonly combat: CombatState = createCombatState();
@@ -73,6 +79,10 @@ export class FighterSim {
    */
   hits = 0;
   jumps = 0;
+  /** Steps it has rested, upright and still, with no ground under the rays (see `update`). */
+  private restingSteps = 0;
+  /** Seconds it still counts as supported after being found resting. */
+  private supported = 0;
 
   constructor(
     readonly id: PlayerId,
@@ -137,8 +147,19 @@ export class FighterSim {
   update(dt: number, intent: PlayerIntent, contest?: Contest): StepResult {
     const control = controlFactor(this.combat);
     const carrying = isHolding(this.combat);
-    const grounded = this.body.grounded();
     const v = this.body.velocity();
+    // The ground rays under the footprint can miss a body that is nevertheless resting on something: wedged on the two
+    // slab edges of the inside corner where a wing meets the centre, centre past both. Read as airborne it could only
+    // push with its air control, too weak to climb out, and hung there for good (M7C). A body that stays upright, unheld,
+    // and still, vertically and nearly so horizontally, for a moment is supported: it stands, walks and jumps.
+    // Once found resting, it stays supported for a moment while it climbs out (its own push moves it, which is no longer
+    // "still"), unless it starts to fall.
+    const probe = this.body.grounded();
+    const still = !probe && this.body.isUpright() && !this.combat.held && Math.abs(v.y) < RESTING.maxVy && Math.hypot(v.x, v.z) < RESTING.maxSpeed;
+    this.restingSteps = still ? this.restingSteps + 1 : 0;
+    if (this.restingSteps >= RESTING.steps) this.supported = RESTING.hold;
+    else this.supported = probe || v.y < RESTING.fallingVy || this.combat.held ? 0 : Math.max(0, this.supported - dt);
+    const grounded = probe || this.supported > 0;
     // Reduced control: the same steering with that much of its authority; carrying slows; neither may jump.
     // Power: a little more walk and run speed (never the jump, never the air share).
     let p = { ...this.profile, walkSpeed: this.profile.walkSpeed * this.speedMultiplier, runSpeed: this.profile.runSpeed * this.speedMultiplier };
@@ -269,6 +290,8 @@ export class FighterSim {
     this.lastImpact = 0;
     this.tilt = 0;
     this.grounded = true;
+    this.restingSteps = 0;
+    this.supported = 0;
   }
 
   dispose() {

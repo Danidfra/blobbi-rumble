@@ -11,12 +11,13 @@
  *
  *   server → client
  *     { t: 'welcome', you, players, tickHz, snapshotHz }    you: the player id it controls, or null (spectating)
- *     { t: 'state', tick, time, snapshot, control, acks }   the authoritative match, ~snapshotHz
+ *     { t: 'state', tick, time, snapshot, control, acks, ackTicks }   the authoritative match, ~snapshotHz
  *     { t: 'pong', id, ct, tick }
  *
  * `control` says who drives each fighter ('human' or 'bot'); `acks` is,
  * per human-driven player, the highest input `seq` the server has applied
- * to the match by `tick` (groundwork for reconciliation). Pure: parsing and
+ * to the match by `tick`, and `ackTicks` the step it was first applied on,
+ * which is what client reconciliation replays from. Pure: parsing and
  * validation are shared by the server and tested without sockets.
  */
 import type { PlayerIntent } from '../sim/intent';
@@ -57,6 +58,8 @@ export interface StateMessage {
   snapshot: MatchSnapshot;
   control: Record<string, Control>;
   acks: Record<string, number>;
+  /** Per human player, the tick on which its acknowledged input was first applied (so a client knows how much of it the state already contains). */
+  ackTicks: Record<string, number>;
 }
 export interface PongMessage {
   t: 'pong';
@@ -112,6 +115,16 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
     return { t: 'ping', id: v.id, ct: v.ct };
   }
   return null;
+}
+
+/**
+ * The one message a client sends about play: its intent, numbered. Built
+ * from the movement held and the one-shot requests made since the last
+ * message, and nothing else: no position, prediction or outcome can ride
+ * along.
+ */
+export function inputMessage(seq: number, move: { x: number; z: number; run: boolean }, actions: { jump: boolean; punch: boolean; grab: boolean }): InputMessage {
+  return { t: 'input', seq, intent: { x: move.x, z: move.z, run: move.run, jump: actions.jump, punch: actions.punch, grab: actions.grab } };
 }
 
 /** Whether a received state is newer than the newest one already shown (by tick): older or repeated states are dropped. */

@@ -39,6 +39,8 @@ export interface PresentedFighter {
 export interface HudInfo {
   /** Lines above the match's (connection, who you are, network numbers). */
   status?: string[];
+  /** Lines appended at the end (network diagnostics). */
+  footer?: string[];
   /** How each fighter is driven, for its HUD line ("keys", "bot", "YOU", …), and the bot's state if it is one. */
   driver: (i: number) => string;
   botState?: (i: number) => string | null;
@@ -105,11 +107,20 @@ export class RumblePresenter {
   }
 
   /** Draw a frame: `s` is the newest snapshot (it may be the same as last frame's), `dt` the frame's seconds. */
-  present(s: MatchSnapshot, dt: number, info: HudInfo) {
+  /**
+   * `own`: the fighter this client predicts, whose jump animation follows
+   * the prediction (`jumped`) rather than the server's counter, which
+   * arrives a round trip later.
+   */
+  present(s: MatchSnapshot, dt: number, info: HudInfo, own?: { id: string; jumped: boolean }) {
     const prev = this.previous;
     const fresh = prev === null || s.tick !== prev.tick;
     const jumped = new Set<string>();
     if (fresh) this.compare(prev, s, jumped);
+    if (own) {
+      jumped.delete(own.id);
+      if (own.jumped) jumped.add(own.id);
+    }
     this.previous = s;
     s.fighters.forEach((f, i) => this.views[i].apply(f, dt, jumped.has(f.id)));
     this.orbView.update(dt, s.orbs);
@@ -132,6 +143,7 @@ export class RumblePresenter {
       lines.push(`${who} ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot && !f.eliminated ? `  ${bot}` : ''}`);
     });
     lines.push('', this.message || (s.phase === 'playing' ? '' : '…'), '', ...info.controls);
+    if (info.footer?.length) lines.push('', ...info.footer);
     if (this.debug.on) lines.push(...this.debugLines(s, info));
     this.debug.print(lines);
     this.scene.render();
