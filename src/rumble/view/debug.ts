@@ -3,8 +3,9 @@
  * Blobbis, and a HUD that prints what the match knows. The colliders live
  * in the match's own physics world, which is never drawn, so the client
  * draws wireframes of the same shapes where the snapshot puts them: each
- * fighter's capsule (turning with it when it tumbles) and the sweeper's bar
- * and post. Off by default.
+ * fighter's capsule (turning with it when it tumbles), the sweeper's bar
+ * and post, and the floor's three slabs (the lawn and its decoration are
+ * only drawn over them). Off by default.
  */
 import { MeshBuilder } from '@babylonjs/core/Meshes/meshBuilder';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
@@ -14,12 +15,15 @@ import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 import { RUMBLE_BODY } from '../profile';
 import { SWEEPER } from '../tuning';
+import { ARENA, floorSlabs } from '../arena/layout';
 import { SWEEPER_POST } from '../sim/sweeperBody';
 import type { MatchSnapshot } from '../sim/snapshot';
 
 export class PhysicsDebug {
   on = false;
   private readonly capsules = new Map<string, Mesh>();
+  /** The floor's colliders, exactly as the match has them: compare with the lawn drawn over them. */
+  private readonly slabs: Mesh[] = [];
   private readonly bar: Mesh;
   private readonly post: Mesh;
   private readonly mat: StandardMaterial;
@@ -37,7 +41,12 @@ export class PhysicsDebug {
     this.post = MeshBuilder.CreateCylinder('debug-sweeper-post', { diameter: SWEEPER_POST.diameter, height: SWEEPER_POST.height, tessellation: 24 }, scene);
     this.post.position.set(t.pivot.x, SWEEPER_POST.height / 2, t.pivot.z);
     this.bar.position.set(t.pivot.x, t.top / 2, t.pivot.z);
-    for (const m of [this.bar, this.post]) {
+    floorSlabs().forEach((r, i) => {
+      const slab = MeshBuilder.CreateBox(`debug-slab-${i}`, { width: r.halfWidth * 2, depth: r.halfDepth * 2, height: ARENA.thickness }, scene);
+      slab.position.set(r.x, -ARENA.thickness / 2, r.z);
+      this.slabs.push(slab);
+    });
+    for (const m of [this.bar, this.post, ...this.slabs]) {
       m.material = this.mat;
       m.isPickable = false;
       m.setEnabled(false);
@@ -48,6 +57,7 @@ export class PhysicsDebug {
     this.on = !this.on;
     this.bar.setEnabled(this.on);
     this.post.setEnabled(this.on);
+    for (const s of this.slabs) s.setEnabled(this.on);
     for (const c of this.capsules.values()) c.setEnabled(this.on);
   }
 

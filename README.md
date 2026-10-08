@@ -257,10 +257,13 @@ src/rumble/
   respawn.ts          fallen / wait (pure)
   view/               presentation only, drawn from snapshots and events:
     fighterView.ts      the visual Blobbi, its feedback, reach and power rings, name tag
-    arenaView.ts        slabs, rim lips, the sweeper's circle
-    sweeperView.ts      the bar and post
+    arenaView.ts        the lawn, rim trim, soil sides, rock undersides, sweeper patch, decoration
+    sweeperView.ts      the garden spinner: candy pole, padded striped bar, spinning flower
     orbView.ts          spheres, discs, a burst when taken
     camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
+    theme.ts            an arena theme: colours only (GARDEN, a floating lawn in a bright sky)
+    world.ts            camera, light rig and shadows, sky dome, clouds, distant islands
+    decor.ts            where decoration may go, deterministic and clear of play (pure)
     debug.ts            F3 collider wireframes and the HUD
   main.ts             picks local or network mode
 ```

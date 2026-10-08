@@ -14,7 +14,6 @@
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { Scene } from '@babylonjs/core/scene';
 import '@babylonjs/core/Materials/standardMaterial';
-import { createEnvironment } from '../../playground/environment';
 import { seedFromLabel } from '../../playground/seeds';
 import { isHolding } from '../combat/combat';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
@@ -23,6 +22,7 @@ import { combatOf } from '../sim/read';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { CAMERA, COMBAT, ORBS, ROUND, SWEEPER } from '../tuning';
 import { createArena } from '../view/arenaView';
+import { createWorld } from '../view/world';
 import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from '../view/camera';
 import { PhysicsDebug } from '../view/debug';
 import { FighterView } from '../view/fighterView';
@@ -74,7 +74,7 @@ export class RumblePresenter {
   ) {
     this.engine = new Engine(canvas, true, { adaptToDeviceRatio: true, stencil: true });
     this.scene = new Scene(this.engine);
-    this.env = createEnvironment(this.scene, canvas, { props: false });
+    this.env = createWorld(this.scene, canvas);
     const cam = this.env.camera;
     cam.lowerBetaLimit = 0.3;
     cam.upperBetaLimit = Math.PI / 2 - 0.1;
