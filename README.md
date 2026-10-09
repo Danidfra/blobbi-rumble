@@ -222,7 +222,24 @@ centre of the box around them, from a distance that grows with the box's
 diagonal within bounds, the target kept over the arena when they spread
 too wide.
 
-The kit package knows nothing of Havok; everything game-side is `src/rumble/`:
+The kit package knows nothing of Havok; everything game-side is `src/rumble/`.
+Generic Nostr code (M8A) is `src/social/`, which imports only nostr-tools
+and itself, so it can move to a shared package later:
+
+```
+src/social/
+  signer.ts     NostrSigner (nostr-tools' Signer + method): NIP-07 detection, timeouts, classified errors, checked signatures
+  auth.ts       NIP-42-style proof of a pubkey to any WebSocket service: challenge book, kind-22242 verification
+  profile.ts    kind-0 parsing into a cleaned, bounded Profile; display-name fallback to a short npub
+  directory.ts  pubkey → Profile: batched lookups, write-relay fallback, cache with age limits
+  pool.ts       nostr-tools' SimplePool behind a hard cap of open relays and an idle close
+  relays.ts     the lookup relays, relay URL checks, NIP-65 write relays (max 3)
+  login.ts      the remembered login: { v, method, pubkey }, never a secret
+  keys.ts       pubkey checks, npub, short npub
+  avatar.ts     a deterministic identicon from a pubkey
+```
+
+The game:
 
 ```
 src/rumble/
@@ -237,9 +254,9 @@ src/rumble/
     read.ts             reading a snapshot back into combat predicates
     havokNode.ts        Havok's wasm from the package file, for Node
   net/                the network boundary (M7B):
-    protocol.ts         the wire messages, validation of untrusted input, state freshness (pure)
-    host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart
-    server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag
+    protocol.ts         the wire messages, validation of untrusted input, state freshness (pure); M8A identity messages
+    host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart; the roster
+    server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag; the identity handshake
     server-cli.ts       `npm run server` (dev, beside Vite)
     static.ts           the built game over HTTP (no traversal, / redirects to the game, /healthz)
     serve-cli.ts        `npm run serve`: the hosted game, page + /ws on one port
@@ -247,7 +264,8 @@ src/rumble/
   client/             the browser client: presenter.ts (draws snapshots, diffing them for feedback),
                       local.ts (the match in the page), network.ts (a client of the server),
                       interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure),
-                      connection.ts (connect / lost / retry states and their words, pure), overlay.ts (status pill, banner, controls card)
+                      connection.ts (connect / lost / retry states and their words, pure), overlay.ts (status pill, banner, controls card),
+                      identity.ts (the optional Nostr identity session), identityView.ts (identity card, welcome card, player list)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

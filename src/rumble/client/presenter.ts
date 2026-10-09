@@ -114,6 +114,12 @@ export class RumblePresenter {
    * the prediction (`jumped`) rather than the server's counter, which
    * arrives a round trip later.
    */
+  /** A fighter's name tag: a person's name, or (null) its slot label again. Presentation only. */
+  setTag(id: string, name: string | null) {
+    const view = this.views.find((v) => v.label === id);
+    view?.setTag(name ?? id, name === null);
+  }
+
   present(s: MatchSnapshot, dt: number, info: HudInfo, own?: { id: string; jumped: boolean }) {
     const prev = this.previous;
     const fresh = prev === null || s.tick !== prev.tick;

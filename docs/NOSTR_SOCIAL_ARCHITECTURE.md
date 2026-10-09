@@ -1,6 +1,8 @@
 # Blobbi Rumble: Nostr social architecture (M8A0 research)
 
-Status: research and plan, 2026-10-08. Nothing here is implemented yet.
+Status: research and plan, 2026-10-08. **M8A (identity) implemented
+2026-10-09**: see "M8A as built" at the end for what changed from this
+plan.
 Starting point: M7D (`4cdd0a2`). Multiplayer has been validated on a real
 LAN and with a real remote Internet player.
 
@@ -765,3 +767,87 @@ https://github.com/fiatjaf/window.nostr.js
 - `~/Developer/armada/NIP.md`
 - `~/Developer/mkstack` (`src/hooks/useLoginActions.ts`,
   `NostrProvider.tsx`)
+
+---
+
+## M8A as built (2026-10-09)
+
+What was implemented, and where it differs from the plan above.
+
+- **Library:** nostr-tools 2.25.2 only (`pure`, `nip19`, `nip42`, `pool`,
+  `utils`, types from `nip07` and `signer`). It adds about 25 KB gzipped
+  to the game bundle.
+- **`src/social/`:** signer, auth, profile, directory, pool, relays,
+  login, keys, avatar. It imports only nostr-tools and itself, and a test
+  enforces that. The Rumble glue is `client/identity.ts` and
+  `client/identityView.ts`, plus the handshake in `net/server.ts` and the
+  roster in `net/host.ts`.
+- **Signer:** `NostrSigner` = nostr-tools' `Signer` + `method`.
+  - NIP-07 only.
+  - Detection polls for 1.5 s, because extensions inject late.
+  - Every call has a 60 s timeout.
+  - Errors are classified as unavailable, denied, timeout, malformed or
+    failed.
+  - Returned keys and events are checked: the event must verify, be by
+    the key the extension gave, and be exactly the template.
+- **NIP-46: deferred to M8A.1.**
+  - nostr-tools' `BunkerSigner` needs a local *client* keypair for the
+    NIP-46 session. A reload without re-pairing means persisting that
+    session key. It isn't the user's key, but M8A's rule was no secret
+    key in storage, so the trade-off is the user's to decide.
+  - The rest is UI and session work, not protocol: a QR code (a new
+    dependency or a small encoder), `auth_url` popups from a click,
+    `switch_relays`, a "check your phone" state, and the NIP-46 relay
+    choice (`wss://relay.nsec.app` + 1).
+  - The interface already fits `BunkerSigner` unchanged.
+- **Auth:** kind 22242 via nostr-tools `makeAuthEvent`, verified with
+  `verifyEvent` on a fresh copy of the event.
+  - Challenge: 32 random bytes, valid 120 s, one use, one per connection,
+    at most 1 per second, at most `2 × maxConnections` outstanding.
+    Consumed or expired challenges are deleted.
+  - `created_at` must be within ±300 s of the server clock. The challenge
+    expiry is what makes a proof short-lived; this window only tolerates
+    players' clock drift.
+  - The proof's address is compared as host[:port]/path without the
+    scheme, because TLS ends at a proxy.
+  - Expected address: `PUBLIC_URL`. Unset, the Host header of that
+    connection (documented as weaker).
+- **Protocol:** all additions are optional.
+  - Client to server: `challenge`, `auth`, `logout`.
+  - Server to client: `challenge`, `auth`, `roster`, and
+    `welcome.features: ['nostr-auth']`.
+  - The roster goes out on change and is never droppable. It holds only
+    `{who: bot | guest | nostr, pubkey}`. State messages are unchanged.
+- **Relays:**
+  - Lookup set: `purplepag.es`, `relay.damus.io`, `relay.ditto.pub`.
+    The plan named relay.primal.net, but it returned no kind 0 or 10002
+    for any lookup during testing.
+  - At most 3 write relays per user, at most 8 open relays, idle ones
+    closed after 30 s.
+  - No relay connection until there is a pubkey to look up, so a guest
+    page with only guests opens none.
+- **Profiles:**
+  - `display_name` (or the legacy `displayName`), then `name`, then a
+    short npub.
+  - Content over 16 KB is not parsed; fields are capped at 48 code points.
+  - Control, bidi, zero-width and line-separator characters are stripped,
+    and piles of combining marks are cut.
+  - Pictures: https only, no credentials, at most 1024 characters, loaded
+    with no referrer, falling back to a deterministic identicon.
+  - Cache: memory + localStorage. 64 entries; fresh for 30 min; a missing
+    profile is retried after 60 s; nothing older than 24 h is kept.
+  - Stored entries are re-cleaned when loaded.
+- **NIP-05:** parsed, not shown. Unverified it would mislead, and
+  verifying means fetching arbitrary domains. Left for later.
+- **UI:**
+  - An identity card under the connection pill.
+  - A first-visit welcome card that never blocks: the player is already
+    in as a guest.
+  - A player list (P1 Daniel · P2 Guest · P3 Bot).
+  - Fighter name tags (canvas text, 14 characters).
+  - A NOSTR line in F4.
+  - Local mode has no identity at all.
+- **Reconnects:** the server forgets the identity with the connection.
+  If the user connected in this page, the client proves it again
+  automatically on the new connection. After a reload it only offers
+  "Continue as …", since signing on page load is not allowed.

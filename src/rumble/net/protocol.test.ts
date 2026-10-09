@@ -56,3 +56,17 @@ describe('the wire protocol', () => {
     expect(isNewer(2, 3)).toBe(false);
   });
 });
+
+describe('identity messages (M8A)', () => {
+  it('reads challenge, logout and auth; only a proof may be long, and never longer than its limit', () => {
+    expect(parseClientMessage('{"t":"challenge"}')).toEqual({ t: 'challenge' });
+    expect(parseClientMessage('{"t":"logout"}')).toEqual({ t: 'logout' });
+    expect(parseClientMessage(JSON.stringify({ t: 'auth', event: { kind: 22242 } }))).toEqual({ t: 'auth', event: { kind: 22242 } });
+    expect(parseClientMessage(JSON.stringify({ t: 'auth', event: 'x' }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'auth', event: [1] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'auth', event: { pad: 'x'.repeat(1500) } }))).not.toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'auth', event: { pad: 'x'.repeat(PROTOCOL.maxAuthMessage) } }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'challenge', pad: 'x'.repeat(PROTOCOL.maxClientMessage) }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'whoami' }))).toBeNull();
+  });
+});

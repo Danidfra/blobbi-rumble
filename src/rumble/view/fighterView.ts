@@ -52,6 +52,7 @@ export class FighterView {
   private readonly tag: Mesh;
   private readonly tagMat: StandardMaterial;
   private readonly tagTex: DynamicTexture;
+  private tagText = '';
 
   constructor(
     readonly id: string,
@@ -84,23 +85,12 @@ export class FighterView {
     this.powerRing.material = this.powerRingMat;
     this.powerRing.isPickable = false;
     this.powerRing.setEnabled(false);
-    this.tag = MeshBuilder.CreatePlane(`${label}-tag`, { width: 0.5, height: 0.25 }, scene);
+    this.tag = MeshBuilder.CreatePlane(`${label}-tag`, { width: 1, height: 0.25 }, scene);
     this.tag.billboardMode = MeshClass.BILLBOARDMODE_ALL;
     this.tag.isPickable = false;
-    this.tagTex = new DynamicTexture(`${label}-tag-tex`, { width: 128, height: 64 }, scene, true);
+    this.tagTex = new DynamicTexture(`${label}-tag-tex`, { width: 256, height: 64 }, scene, true);
     this.tagTex.hasAlpha = true;
-    const ctx = this.tagTex.getContext() as CanvasRenderingContext2D;
-    ctx.clearRect(0, 0, 128, 64);
-    ctx.fillStyle = 'rgba(30,34,52,0.72)';
-    ctx.beginPath();
-    ctx.roundRect(14, 6, 100, 52, 18);
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 36px ui-monospace, Menlo, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, 64, 34);
-    this.tagTex.update();
+    this.setTag(label, true);
     this.tagMat = new StandardMaterial(`${label}-tag-mat`, scene);
     this.tagMat.diffuseTexture = this.tagTex;
     this.tagMat.emissiveColor = Color3.White();
@@ -108,6 +98,29 @@ export class FighterView {
     this.tagMat.useAlphaFromDiffuseTexture = true;
     this.tagMat.backFaceCulling = false;
     this.tag.material = this.tagMat;
+  }
+
+  /**
+   * The name tag's text: the slot label (monospace, as always) or a
+   * person's name. Drawn as canvas text, never markup; redrawn only when it
+   * changes. The caller keeps it short.
+   */
+  setTag(text: string, mono = false) {
+    if (text === this.tagText) return;
+    this.tagText = text;
+    const ctx = this.tagTex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 256, 64);
+    ctx.font = mono ? 'bold 36px ui-monospace, Menlo, monospace' : 'bold 30px ui-sans-serif, system-ui, sans-serif';
+    const w = Math.min(244, Math.max(72, ctx.measureText(text).width + 36));
+    ctx.fillStyle = 'rgba(30,34,52,0.72)';
+    ctx.beginPath();
+    ctx.roundRect(128 - w / 2, 6, w, 52, 18);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 128, 34, 220);
+    this.tagTex.update();
   }
 
   /** A blow or a throw landed on this fighter: the short squash. */

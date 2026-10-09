@@ -14,12 +14,18 @@
  * number above the last one applied, reaches the match, and only as that
  * slot's intent. The host owns time: `tick()` advances the match by exactly
  * one fixed step whatever arrives when.
+ *
+ * Identity (M8A) belongs to the connection, not the slot: the server tells
+ * the host "this connection proved pubkey X" (`setIdentity`), and the
+ * roster reports, per slot, a bot, a guest, or the proven pubkey of the
+ * connection holding it. When the connection goes, so does its identity;
+ * whoever takes the slot next starts as a guest.
  */
 import { BotInput, botWorldFrom } from '../control/bot';
 import { createRumbleMatch, type RumbleMatch } from '../sim/match';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
-import { parseClientMessage, type Control, type PongMessage, type StateMessage, type WelcomeMessage } from './protocol';
+import { parseClientMessage, type Control, type PongMessage, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
 
 export const NET = Object.freeze({
   /** The authoritative simulation rate, steps per second. */
@@ -50,6 +56,8 @@ export class RumbleHost {
   /** Which connection holds each slot (null: the bot drives it). */
   private readonly holder = new Map<string, ConnectionId | null>();
   private readonly slotOf = new Map<ConnectionId, string | null>();
+  /** The pubkey each connection has proven, if any. */
+  private readonly identity = new Map<ConnectionId, string>();
   private readonly bots: BotInput[];
   /** Per slot: the last input sequence applied, the tick it arrived on, and what the latest step had applied. */
   private readonly lastSeq = new Map<string, number>();
@@ -99,6 +107,7 @@ export class RumbleHost {
   disconnect(conn: ConnectionId) {
     const slot = this.slotOf.get(conn) ?? null;
     this.slotOf.delete(conn);
+    this.identity.delete(conn);
     if (!slot || this.holder.get(slot) !== conn) return;
     this.holder.set(slot, null);
     this.match.clearInput(slot);
@@ -123,6 +132,7 @@ export class RumbleHost {
     const msg = parseClientMessage(raw);
     if (!msg) return null;
     if (msg.t === 'ping') return { t: 'pong', id: msg.id, ct: msg.ct, tick: this.match.tick };
+    if (msg.t !== 'input') return null;
     const slot = this.slotOf.get(conn);
     if (!slot || this.holder.get(slot) !== conn) return null;
     if (msg.seq <= (this.lastSeq.get(slot) ?? -1)) return null;
@@ -130,6 +140,35 @@ export class RumbleHost {
     this.lastInputTick.set(slot, this.match.tick);
     this.match.setInput(slot, msg.intent);
     return null;
+  }
+
+  /**
+   * This connection has proven it holds `pubkey` (null: it dropped its
+   * identity). Returns whether the roster changed (a spectator's identity
+   * shows nowhere yet).
+   */
+  setIdentity(conn: ConnectionId, pubkey: string | null): boolean {
+    if (!this.slotOf.has(conn)) return false;
+    const before = this.identity.get(conn) ?? null;
+    if (pubkey) this.identity.set(conn, pubkey);
+    else this.identity.delete(conn);
+    return before !== pubkey && this.slotOf.get(conn) !== null;
+  }
+
+  /** The pubkey a connection has proven, or null. */
+  identityOf(conn: ConnectionId): string | null {
+    return this.identity.get(conn) ?? null;
+  }
+
+  /** Per slot: a bot, a guest, or the pubkey its connection proved. */
+  roster(): RosterMessage {
+    const slots: Record<string, SlotIdentity> = {};
+    for (const id of this.ids) {
+      const conn = this.holder.get(id) ?? null;
+      const pubkey = conn === null ? null : this.identity.get(conn);
+      slots[id] = conn === null ? { who: 'bot' } : pubkey ? { who: 'nostr', pubkey } : { who: 'guest' };
+    }
+    return { t: 'roster', slots };
   }
 
   /** One fixed step of the match: bots decide for their fighters, then the match advances by exactly dt. */

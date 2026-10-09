@@ -19,6 +19,12 @@
  * lands, and on whom, is the server's); a grab shows nothing until the
  * server says it held.
  *
+ * IDENTITY (M8A): optional Nostr identity beside the game connection
+ * (`identity.ts`, `identityView.ts`). The server only vouches "P2 holds
+ * pubkey X"; names and pictures are looked up here, on a few relays, off
+ * the frame loop, and only ever change labels: nothing from a relay touches
+ * the match, the prediction or the interpolation.
+ *
  * Keys: any of WASD / arrows, Shift, Space / Enter, F / K, G / L; F3 debug,
  * F4 network diagnostics. Dev query flags: `?server=ws://host:port`,
  * `?interp=0` (draw the newest state, as M7B did), `?predict=0`.
@@ -36,6 +42,25 @@ import { COMBAT } from '../tuning';
 import { NET_VIEW, SnapshotBuffer, type Sample } from './interp';
 import { LocalPredictor, predictable, supported, type Body } from './predict';
 import { RumblePresenter } from './presenter';
+import { SimplePool } from 'nostr-tools/pool';
+import { ProfileDirectory } from '../../social/directory';
+import { BoundedPool } from '../../social/pool';
+import { clip, displayName } from '../../social/profile';
+import { LOOKUP_RELAYS, relayUrl } from '../../social/relays';
+import { findNip07, nip07Signer } from '../../social/signer';
+import type { SlotIdentity } from '../net/protocol';
+import { IdentitySession } from './identity';
+import { createIdentityView } from './identityView';
+
+/** Storage that may be missing or throw (private windows, blocked site data). */
+const safeStorage = (): Storage | null => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
+const WELCOME_SEEN = 'rumble:welcome-seen';
 
 const NET_BINDINGS: KeyBindings = {
   forward: ['KeyW', 'ArrowUp'],
@@ -122,7 +147,71 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const drawn: { x: number; z: number; t: number }[][] = [];
 
   const send = (m: ClientMessage) => {
-    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m));
+    if (ws?.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(m));
+    return true;
+  };
+
+  // Identity: optional, separate from the game connection; relays only when there is a pubkey to look up.
+  const storage = safeStorage();
+  let roster: Record<string, SlotIdentity> | null = null;
+  let relayPool: BoundedPool | null = null;
+  let directory: ProfileDirectory | null = null;
+  // Dev only: ?relays=ws://a,ws://b replaces the lookup relays (tests run a local relay).
+  const devRelays = import.meta.env.DEV && q.get('relays') ? q.get('relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
+  const profiles = () => {
+    if (!directory) {
+      relayPool = new BoundedPool(new SimplePool({ enablePing: false, enableReconnect: false }));
+      directory = new ProfileDirectory(relayPool, { lookupRelays: devRelays ?? LOOKUP_RELAYS, storage, storageKey: 'rumble:profiles:v1' });
+    }
+    return directory;
+  };
+  const profileOf = (pubkey: string) => directory?.get(pubkey);
+  const wantProfiles = () => {
+    const pks = Object.values(roster ?? {}).flatMap((x) => (x.who === 'nostr' ? [x.pubkey] : []));
+    if (identity.state.pubkey) pks.push(identity.state.pubkey);
+    if (pks.length) profiles().ask(pks);
+  };
+  let welcomeSeen = (() => {
+    try {
+      return storage?.getItem(WELCOME_SEEN) === '1';
+    } catch {
+      return false;
+    }
+  })();
+  const seenWelcome = () => {
+    welcomeSeen = true;
+    try {
+      storage?.setItem(WELCOME_SEEN, '1');
+    } catch {
+      // Not remembered: shown again next visit.
+    }
+  };
+  const identity = new IdentitySession({
+    url,
+    send,
+    findSigner: async () => {
+      const ext = await findNip07(window);
+      return ext ? nip07Signer(ext) : null;
+    },
+    storage,
+    onChange: () => wantProfiles(),
+  });
+  const identityView = createIdentityView({
+    connect: () => {
+      seenWelcome();
+      void identity.connect();
+    },
+    disconnect: () => identity.disconnect(),
+    guest: () => seenWelcome(),
+    dismissError: () => identity.dismissError(),
+  });
+  // Idle relays close; nothing stays open for long.
+  setInterval(() => relayPool?.sweep(), 10_000);
+  /** What a slot is called: a proven person's name, or null (its slot label). */
+  const nameFor = (slot: string): string | null => {
+    const r = roster?.[slot];
+    return r?.who === 'nostr' ? displayName(profileOf(r.pubkey), r.pubkey) : null;
   };
   const sendInput = (move: Pick<MoveIntent, 'x' | 'z' | 'run'>) => {
     seq += 1;
@@ -170,6 +259,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         stats.lastArrival = now;
         conn = onWelcome(conn, m.you, now);
         status = `connected · ${m.tickHz} Hz match, ${m.snapshotHz} Hz state`;
+        roster = null;
+        identity.onWelcome(m.features);
       } else if (m.t === 'state') {
         // Late or repeated states are dropped: the newest tick wins.
         if (!isNewer(m.tick, newest)) {
@@ -193,6 +284,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         }
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
+      } else if (m.t === 'roster') {
+        roster = m.slots;
+        wantProfiles();
+      } else if (m.t === 'challenge') {
+        void identity.onChallenge(m.challenge);
+      } else if (m.t === 'auth') {
+        identity.onAuth(m);
       }
     };
     socket.onclose = (e) => {
@@ -205,6 +303,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       predictor.reset();
       keyboard.held.clear();
       reconnects += conn.phase === 'lost' ? 1 : 0;
+      roster = null;
+      identity.onClose();
     };
   };
   let reconnects = 0;
@@ -286,6 +386,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     }
     watchConnection(now);
     overlay.show(conn, now, rtt);
+    identityView.show({ state: identity.state, profile: (pk) => profileOf(pk), roster, you, welcome: !welcomeSeen && identity.state.phase === 'guest' && (conn.phase === 'playing' || conn.phase === 'watching') });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
     if (you) predictor.frame(dt, seq, { ...move, jump: intent.jump, punch: false, grab: false });
@@ -323,6 +424,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     });
     if (!presenter) presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs);
     const control: Record<string, Control> = state.control;
+    // Name tags: a proven person's name (short), else the slot label. Redrawn only when the text changes.
+    for (const id of s.players) {
+      const n = nameFor(id);
+      presenter.setTag(id, n === null ? null : clip(n, 14));
+    }
     const ack = you ? state.acks[you] : undefined;
     const m = predictor.metrics;
     presenter.present(
@@ -330,7 +436,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       dt,
       {
         status: [`NETWORK · ${statusLine(conn, rtt)}`, ''],
-        driver: (i) => (s.players[i] === you ? 'YOU' : control[s.players[i]] === 'human' ? 'human' : 'bot'),
+        driver: (i) => {
+          const n = nameFor(s.players[i]);
+          const who = n === null ? (control[s.players[i]] === 'human' ? 'human' : 'bot') : clip(n, 16);
+          return s.players[i] === you ? `YOU · ${who}` : who;
+        },
         matchOverHint: 'the next match starts soon',
         controls: CONTROLS,
         strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
@@ -339,6 +449,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
               `NET  ${status} · ${url} · ${conn.attempts ? `attempt ${conn.attempts}` : 'up'} · reconnects ${reconnects} · rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`,
               `     view ${useInterp ? `interpolated, ${(delay * 1000).toFixed(0)} ms behind` : 'newest state (no interpolation)'} · states ahead ${sample?.ahead ?? '-'} (mean ${aheadW.mean.toFixed(1)})${sample?.extrapolated ? ` · EXTRAPOLATING ${(sample.late * 1000).toFixed(0)} ms` : ''}`,
               `     state gaps ${gaps.mean.toFixed(0)} ± ${gaps.sd.toFixed(0)} ms (max ${gaps.max.toFixed(0)}) · extrapolated ${stats.extrapolatedFrames} / frozen ${stats.frozenFrames} of ${stats.frames} frames · tick ${state.tick}`,
+              `NOSTR ${identity.state.phase}${identity.verified ? ` ${identity.verified.slice(0, 8)}…` : ''} · server ${identity.state.serverSupports === null ? '?' : identity.state.serverSupports ? 'offers identity' : 'no identity'} · relays ${relayPool ? `${relayPool.openRelays.length} open (peak ${relayPool.peak}/${relayPool.maxOpen}), ${relayPool.queries} queries` : 'none opened'} · roster ${Object.entries(roster ?? {}).map(([k, v]) => `${k}:${v.who}`).join(' ') || '-'}`,
               `     prediction ${usePredict ? (predictor.predicting ? 'ON' : 'server has you') : 'off'} · inputs ${ack ?? '-'}/${seq} acked, ${m.pending} frames pending · error ${(m.lastError * 100).toFixed(1)} cm (mean ${(errors.mean * 100).toFixed(1)}, max ${(errors.max * 100).toFixed(1)}) · kept ${m.kept} smoothed ${m.smoothed} snapped ${m.snapped} (resumed ${m.resumed}, ${m.resumeSnaps} by snap) · offset ${(m.offset * 100).toFixed(1)} cm`,
             ]
           : [],
@@ -376,6 +487,21 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       },
       get rtt() {
         return rtt;
+      },
+      /** Identity, for scripted checks. */
+      identity: {
+        get state() {
+          return identity.state;
+        },
+        get roster() {
+          return roster;
+        },
+        profile: (pk: string) => profileOf(pk),
+        get relays() {
+          return relayPool ? { open: relayPool.openRelays, peak: relayPool.peak, max: relayPool.maxOpen, queries: relayPool.queries } : null;
+        },
+        connect: () => identity.connect(),
+        disconnect: () => identity.disconnect(),
       },
       get seq() {
         return seq;

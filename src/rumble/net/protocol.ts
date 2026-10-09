@@ -8,11 +8,26 @@
  *     { t: 'input', seq, intent: { x, z, run, jump, punch, grab } }
  *         movement state and the one-shot requests made since the last input
  *     { t: 'ping', id, ct }                           ct: the client's clock, echoed back
+ *     { t: 'challenge' }                              M8A: ask for a Nostr auth challenge
+ *     { t: 'auth', event }                            M8A: a signed kind-22242 answer to it
+ *     { t: 'logout' }                                 M8A: drop this connection's Nostr identity
  *
  *   server → client
  *     { t: 'welcome', you, players, tickHz, snapshotHz }    you: the player id it controls, or null (spectating)
  *     { t: 'state', tick, time, snapshot, control, acks, ackTicks }   the authoritative match, ~snapshotHz
  *     { t: 'pong', id, ct, tick }
+ *     { t: 'challenge', challenge, ttl }              M8A: sign this within ttl seconds
+ *     { t: 'auth', ok, pubkey?, reason? }             M8A: the answer to a proof (or a logout)
+ *     { t: 'roster', slots }                          M8A: per player slot, who drives it: a bot,
+ *                                                     a guest, or a person proven to hold a pubkey
+ *
+ * IDENTITY (M8A) is optional and separate from play: a connection plays as
+ * a guest from its welcome on; proving a Nostr key later only labels the
+ * slot it holds. The roster carries only what the server can vouch for
+ * (a pubkey it saw a fresh signature from): never a name or a picture,
+ * which clients look up themselves. A slot is not a person: the same
+ * pubkey may come back on another slot, and a slot's next holder starts
+ * as a guest.
  *
  * `control` says who drives each fighter ('human' or 'bot'); `acks` is,
  * per human-driven player, the highest input `seq` the server has applied
@@ -26,6 +41,8 @@ import type { MatchSnapshot } from '../sim/snapshot';
 export const PROTOCOL = Object.freeze({
   /** A client message longer than this, in characters, is dropped unread. */
   maxClientMessage: 512,
+  /** An auth message (a signed event) may be this long, characters. */
+  maxAuthMessage: 2048,
   /** The largest input sequence number accepted (it must stay an exact integer). */
   maxSeq: Number.MAX_SAFE_INTEGER,
 });
@@ -42,7 +59,18 @@ export interface PingMessage {
   id: number;
   ct: number;
 }
-export type ClientMessage = InputMessage | PingMessage;
+export interface ChallengeRequest {
+  t: 'challenge';
+}
+export interface AuthMessage {
+  t: 'auth';
+  /** Shape-checked here; the signature and everything else is checked by the server. */
+  event: Record<string, unknown>;
+}
+export interface LogoutMessage {
+  t: 'logout';
+}
+export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage;
 
 export interface WelcomeMessage {
   t: 'welcome';
@@ -50,6 +78,8 @@ export interface WelcomeMessage {
   players: string[];
   tickHz: number;
   snapshotHz: number;
+  /** What this server offers beyond play ('nostr-auth': the M8A identity handshake). Absent on older servers. */
+  features?: string[];
 }
 export interface StateMessage {
   t: 'state';
@@ -67,7 +97,26 @@ export interface PongMessage {
   ct: number;
   tick: number;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage;
+export interface ChallengeMessage {
+  t: 'challenge';
+  challenge: string;
+  /** Seconds it stays good for. */
+  ttl: number;
+}
+export type AuthReason = 'malformed' | 'kind' | 'signature' | 'challenge' | 'server' | 'stale' | 'expired' | 'no-challenge' | 'busy' | 'logged-out';
+export interface AuthReply {
+  t: 'auth';
+  ok: boolean;
+  pubkey?: string;
+  reason?: AuthReason;
+}
+/** Who drives a slot, as far as the server can vouch. */
+export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; pubkey: string };
+export interface RosterMessage {
+  t: 'roster';
+  slots: Record<string, SlotIdentity>;
+}
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -97,7 +146,7 @@ export function parseIntent(v: unknown): PlayerIntent | null {
 
 /** Read one client message from its raw text; null for anything the protocol does not allow (it is then ignored). */
 export function parseClientMessage(raw: unknown): ClientMessage | null {
-  if (typeof raw !== 'string' || raw.length > PROTOCOL.maxClientMessage) return null;
+  if (typeof raw !== 'string' || raw.length > PROTOCOL.maxAuthMessage) return null;
   let v: unknown;
   try {
     v = JSON.parse(raw);
@@ -105,6 +154,11 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
     return null;
   }
   if (!isObject(v)) return null;
+  // Only a proof may be long.
+  if (v.t !== 'auth' && raw.length > PROTOCOL.maxClientMessage) return null;
+  if (v.t === 'challenge') return { t: 'challenge' };
+  if (v.t === 'logout') return { t: 'logout' };
+  if (v.t === 'auth') return isObject(v.event) ? { t: 'auth', event: v.event } : null;
   if (v.t === 'input') {
     if (!Number.isSafeInteger(v.seq) || (v.seq as number) < 0 || (v.seq as number) > PROTOCOL.maxSeq) return null;
     const intent = parseIntent(v.intent);

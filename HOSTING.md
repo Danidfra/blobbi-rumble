@@ -21,7 +21,7 @@ Vite dev server is not meant to be exposed (and rejects unknown host names
 behind tunnels).
 
 Environment: `PORT`, `HOST`, `STATIC_DIR` (dist), `MAX_CONNECTIONS` (16),
-`TICK_HZ` (60), `SNAPSHOT_HZ` (20).
+`TICK_HZ` (60), `SNAPSHOT_HZ` (20), `PUBLIC_URL` (see Nostr identity).
 
 ## Which server a page connects to
 
@@ -56,6 +56,50 @@ back to its bot at once. The page reconnects by itself (1, 2, 4, 8 s) as a
 new connection and takes the first free slot, which may be a different
 one; it says which.
 
+## Nostr identity (optional)
+
+Players may connect a Nostr browser extension (NIP-07: Alby, nos2x, …) to
+show their name and picture instead of P1..P4; everyone else plays as a
+guest, exactly as before. Rumble never asks for a private key.
+
+How it works: the page asks the extension for the public key, the server
+sends a one-use challenge, the extension signs a kind-22242 event naming
+the challenge and the server's address (NIP-42 style), and the server
+verifies it. The server then tells every client "P2 is pubkey X"; each
+browser looks up names and pictures on a few relays itself. The server
+never connects to a relay, and relays being down only means short npubs
+are shown instead of names.
+
+**Set `PUBLIC_URL` when hosting publicly** (e.g.
+`PUBLIC_URL=https://rumble.example npm run serve`): proofs must name that
+address. Unset, the server accepts the Host each connection arrived with,
+which is fine on a LAN or behind a tunnel that keeps the Host header, but
+weaker (a malicious server could relay a proof made for it). If players
+see "The proof named a different address", set `PUBLIC_URL` to the
+address they open.
+
+### Testing it with two browsers
+
+1. `npm run serve` (or `npm run server` + `npm run dev`), open the game in
+   **Browser A**, which has a NIP-07 extension (Alby or nos2x) with a test
+   key that has a profile, and in **Browser B** (a private window, no
+   extension).
+2. A and B both show a small welcome card. In B click **Continue as
+   guest**. In A click **Connect Nostr**; approve the extension's prompts
+   (the public key, then a signature of kind 22242).
+3. A's card says **Connected as <name>** with its npub; the player list
+   (top left) shows A's slot with A's name and picture. B's list shows A's
+   name too, and B itself as Guest. A's fighter tag shows A's name.
+4. Both play a round: both Blobbis respond as before; press F4 for the
+   NET (states/s, gaps) and NOSTR lines.
+5. Reload A: its card says "not signed in on this server" (a remembered
+   pubkey proves nothing); B shows A's new slot as Guest. Click
+   **Continue as <name>**: verified again.
+6. In A click **Disconnect**: A becomes a guest and keeps playing on the
+   same slot; B shows Guest.
+7. Optional: in A's extension, deny the signature: A shows the reason and
+   stays a guest.
+
 ## Test plan to send a friend
 
 1. Open the URL the host sends you (Chrome, Firefox or Safari, a keyboard).
@@ -64,6 +108,8 @@ one; it says which.
 3. Controls are in the bottom-left card (H hides it). Move WASD/arrows,
    Shift run, Space jump, F punch, G grab then G throw. Grabbed? alternate
    ← → fast.
-4. Press F4 and tell the host the NET line (ms, states/s).
-5. Tell the host: did your Blobbi respond at once, did others move
+4. Optional: click **Connect Nostr** if you have a Nostr extension (Alby,
+   nos2x), so the others see your name; otherwise **Continue as guest**.
+5. Press F4 and tell the host the NET line (ms, states/s).
+6. Tell the host: did your Blobbi respond at once, did others move
    smoothly, any jumps or freezes, and the pill text if something failed.

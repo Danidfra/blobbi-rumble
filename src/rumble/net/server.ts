@@ -22,6 +22,16 @@
  * dropped if it falls far behind), and a heartbeat that drops connections
  * that stopped answering.
  *
+ * IDENTITY (M8A): any connection may prove it holds a Nostr key, NIP-42
+ * style (`social/auth.ts`): it asks for a challenge, signs a kind-22242
+ * event naming the challenge and this server's address, and the server
+ * verifies it and labels the slot the connection holds (the roster). The
+ * server never talks to a relay and never learns a name: a pubkey it saw a
+ * fresh signature from is all it vouches for. Unproven connections play as
+ * guests, exactly as before. The address a proof must name is `authUrls`
+ * (set PUBLIC_URL in production); without it, the Host the connection
+ * itself came in on.
+ *
  * DEV ONLY: `lagMs` / `jitterMs` delay every message each way on its own
  * connection (in order, a bounded queue), to feel latency locally. They live
  * in the transport, never in the match or the protocol.
@@ -29,8 +39,10 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { HavokInstance } from '../sim/physics';
+import { AUTH, ChallengeBook, authAddress, verifyAuth } from '../../social/auth';
+import { shortNpub } from '../../social/keys';
 import { RumbleHost, type ConnectionId } from './host';
-import { parseClientMessage } from './protocol';
+import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage } from './protocol';
 
 export const SERVER_LIMITS = Object.freeze({
   /** Connections at once: four players and a few spectators. */
@@ -47,6 +59,8 @@ export const SERVER_LIMITS = Object.freeze({
   heartbeatMs: 10_000,
   /** Dev lag only: at most this many messages waiting in a delay queue per direction. */
   maxDelayed: 1000,
+  /** A connection may ask for a new auth challenge at most this often, ms. */
+  challengeEveryMs: 1000,
 });
 
 export interface ServerConfig {
@@ -68,6 +82,16 @@ export interface ServerConfig {
   jitterMs?: number;
   /** Don't start the clock (tests step `host.tick()` themselves and call `broadcast()`). */
   manual?: boolean;
+  /**
+   * The public addresses of this server's WebSocket (e.g.
+   * wss://rumble.example/ws) that an identity proof must name. Empty: the
+   * Host header each connection arrived with (fine on a LAN or a dev
+   * machine; set it in production so the binding does not rest on a
+   * header the client chose).
+   */
+  authUrls?: string[];
+  /** A connection may ask for an auth challenge at most this often, ms (default SERVER_LIMITS.challengeEveryMs). */
+  challengeEveryMs?: number;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -89,6 +113,9 @@ export interface ServerStats {
   malformed: number;
   rateDropped: number;
   kicked: number;
+  /** Since the last reset: identity proofs accepted and refused. */
+  authOk: number;
+  authFailed: number;
 }
 
 export interface RumbleServer {
@@ -146,7 +173,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const lag = config.lagMs ?? 0;
   const jitter = config.jitterMs ?? 0;
   const log = config.log ?? (() => {});
-  const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0 });
+  const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0, authOk: 0, authFailed: 0 });
   const stats: ServerStats = { ...fresh(), lastStateBytes: 0, clients: 0 };
   let lateSum = 0;
   let lateCount = 0;
@@ -157,6 +184,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   };
   const clients = new Map<WebSocket, Client>();
   let nextConn = 1;
+  const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
+  const configuredAddresses = (config.authUrls ?? []).map(authAddress).filter((a): a is string => !!a);
+  /** Who drives each slot (bot, guest, proven pubkey) to everyone: on any change, never droppable. */
+  const sendRoster = () => {
+    const data = JSON.stringify(host.roster());
+    for (const c of clients.values()) c.send(data);
+  };
 
   const wss = config.http
     ? new WebSocketServer({ server: config.http, path: config.path ?? '/ws', maxPayload: SERVER_LIMITS.maxPayload })
@@ -188,6 +222,10 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     let droppedThisSecond = 0;
     let droppedSince = performance.now();
     let warnedMalformed = false;
+    let lastChallenge = -Infinity;
+    // The address a proof must name: the configured public one(s), or the one this connection came in on.
+    const pathname = new URL(req.url ?? '/', 'http://x').pathname;
+    const addresses = configuredAddresses.length ? configuredAddresses : [authAddress(`ws://${req.headers.host ?? ''}${pathname}`)].filter((a): a is string => !!a);
     const client: Client = {
       id,
       alive: true,
@@ -205,7 +243,38 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     stats.clients = clients.size;
     const welcome = host.connect(id);
     log(`conn ${id} from ${from}: ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    client.send(JSON.stringify(welcome));
+    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth'] }));
+    sendRoster();
+    /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
+    const identity = (msg: ClientMessage) => {
+      const reply = (m: AuthReply | ChallengeMessage) => client.send(JSON.stringify(m));
+      if (msg.t === 'challenge') {
+        const t = performance.now();
+        if (t - lastChallenge < (config.challengeEveryMs ?? SERVER_LIMITS.challengeEveryMs)) return reply({ t: 'auth', ok: false, reason: 'busy' });
+        lastChallenge = t;
+        const challenge = challenges.issue(id);
+        if (!challenge) return reply({ t: 'auth', ok: false, reason: 'busy' });
+        return reply({ t: 'challenge', challenge, ttl: AUTH.ttlMs / 1000 });
+      }
+      if (msg.t === 'logout') {
+        challenges.drop(id);
+        if (host.setIdentity(id, null)) sendRoster();
+        return reply({ t: 'auth', ok: false, reason: 'logged-out' });
+      }
+      if (msg.t !== 'auth') return;
+      const issued = challenges.take(id);
+      const result = issued === 'none' ? ({ ok: false, reason: 'no-challenge' } as const) : issued === 'expired' ? ({ ok: false, reason: 'expired' } as const) : verifyAuth(msg.event, { challenge: issued.value, addresses });
+      if (!result.ok) {
+        stats.authFailed += 1;
+        log(`conn ${id}: identity refused (${result.reason})`);
+        return reply({ t: 'auth', ok: false, reason: result.reason });
+      }
+      stats.authOk += 1;
+      const changed = host.setIdentity(id, result.pubkey);
+      log(`conn ${id}: ${host.slot(id) ?? 'spectator'} is ${shortNpub(result.pubkey)}`);
+      reply({ t: 'auth', ok: true, pubkey: result.pubkey });
+      if (changed) sendRoster();
+    };
     ws.on('pong', () => (client.alive = true));
     ws.on('message', (data, isBinary) => {
       // A connection being dropped says nothing more.
@@ -222,7 +291,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         if (++droppedThisSecond > SERVER_LIMITS.floodDisconnect) kick(ws, 1008, 'flooding');
         return;
       }
-      if (!parseClientMessage(raw)) {
+      const msg = parseClientMessage(raw);
+      if (!msg) {
         stats.malformed += 1;
         if (!warnedMalformed) {
           warnedMalformed = true;
@@ -232,6 +302,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       inbound(() => {
         if (!clients.has(ws)) return;
+        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout') return identity(msg);
         const reply = host.receive(id, raw);
         if (reply) client.send(JSON.stringify(reply));
       });
@@ -242,6 +313,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       stats.clients = clients.size;
       const slot = host.slot(id);
       host.disconnect(id);
+      challenges.drop(id);
+      if (slot) sendRoster();
       log(`conn ${id} left${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
     });
     ws.on('error', () => ws.terminate());
