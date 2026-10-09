@@ -51,6 +51,8 @@ export interface HudInfo {
   strugglers?: { index: number; keys: string }[];
   /** Debug only: whether the holds are consistent (known where the match runs). */
   holdsConsistent?: boolean;
+  /** Show the text HUD (default true). Network mode shows it only for F4; F3 always shows it. */
+  textHud?: boolean;
 }
 
 export class RumblePresenter {
@@ -114,6 +116,11 @@ export class RumblePresenter {
    * the prediction (`jumped`) rather than the server's counter, which
    * arrives a round trip later.
    */
+  /** What just happened, in words (a ring-out, a round or match decided), until the next round clears it. */
+  get currentMessage(): string {
+    return this.message;
+  }
+
   /** A fighter's name tag: a person's name, or (null) its slot label again. Presentation only. */
   setTag(id: string, name: string | null) {
     const view = this.views.find((v) => v.label === id);
@@ -160,7 +167,10 @@ export class RumblePresenter {
     lines.push('', ...info.controls);
     if (info.footer?.length) lines.push('', ...info.footer);
     if (this.debug.on) lines.push(...this.debugLines(s, info));
-    this.debug.print(lines);
+    const text = info.textHud !== false || this.debug.on;
+    const display = text ? '' : 'none';
+    if (this.hud.style.display !== display) this.hud.style.display = display;
+    if (text) this.debug.print(lines);
     this.scene.render();
   }
 

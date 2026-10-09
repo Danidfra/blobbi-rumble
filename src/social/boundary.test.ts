@@ -24,9 +24,32 @@ describe('the social module boundary', () => {
       const src = readFileSync(f, 'utf8');
       expect(src, f).not.toMatch(/generateSecretKey|nsecEncode|PlainKeySigner|fromNsec|decode\(\s*['"]nsec/);
     }
-    for (const f of [join(__dirname, '../rumble/client/identityView.ts'), join(__dirname, '../rumble/client/identity.ts'), ...files(__dirname)]) {
+    for (const f of [join(__dirname, '../rumble/client/shell.ts'), join(__dirname, '../rumble/client/dom.ts'), join(__dirname, '../rumble/client/identity.ts'), ...files(__dirname)]) {
       if (f.endsWith('.test.ts')) continue;
       expect(readFileSync(f, 'utf8'), f).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|outerHTML\s*=/);
     }
+  });
+});
+
+describe('the identity proof is never published to Nostr', () => {
+  it('no app code can publish an event or answer a relay AUTH: the pool only reads', () => {
+    const app = files(join(__dirname, '..')).filter((x) => x.endsWith('.ts') && !x.endsWith('.test.ts'));
+    for (const f of app) {
+      const src = readFileSync(f, 'utf8');
+      // No publishing, no relay-side AUTH (which would sign a 22242 for a relay), no raw EVENT frames.
+      expect(src, f).not.toMatch(/\.publish\(|automaticallyAuth|onauth\s*:|\[\s*['"]EVENT['"]|\[\s*['"]AUTH['"]/);
+    }
+    // The pool interface the app uses has reads and closes, nothing else.
+    const pool = readFileSync(join(__dirname, 'pool.ts'), 'utf8');
+    const iface = pool.slice(pool.indexOf('export interface PoolLike'), pool.indexOf('\n}', pool.indexOf('export interface PoolLike')));
+    expect(iface).toMatch(/querySync/);
+    expect(iface).toMatch(/close/);
+    expect(iface).not.toMatch(/publish|subscribe/);
+  });
+
+  it('the identity session sends the signed proof only through the game connection it is given', () => {
+    const src = readFileSync(join(__dirname, '../rumble/client/identity.ts'), 'utf8');
+    expect(src).not.toMatch(/social\/(pool|directory|relays)|nostr-tools\/(pool|relay)/);
+    expect(src).toMatch(/this\.d\.send\(\{ t: 'auth', event/);
   });
 });

@@ -1,8 +1,9 @@
 # Blobbi Rumble: Nostr social architecture (M8A0 research)
 
 Status: research and plan, 2026-10-08. **M8A (identity) implemented
-2026-10-09**: see "M8A as built" at the end for what changed from this
-plan.
+2026-10-09**, **M8B (rooms, server identity) implemented 2026-10-09**:
+see "M8A as built" and "M8B as built" at the end for what changed from
+this plan.
 Starting point: M7D (`4cdd0a2`). Multiplayer has been validated on a real
 LAN and with a real remote Internet player.
 
@@ -851,3 +852,65 @@ What was implemented, and where it differs from the plan above.
   If the user connected in this page, the client proves it again
   automatically on the new connection. After a reload it only offers
   "Continue as …", since signing on page load is not allowed.
+
+---
+
+## M8B as built (2026-10-09)
+
+- **Auth audit.** The signed kind-22242 proof has exactly one path:
+  `IdentitySession → send → ws.send` to the game server, which verifies
+  it locally. The relay pool can only `querySync` (reads) and `close`.
+  Nothing in the app calls `publish`, and `SimplePool` is created without
+  `automaticallyAuth`, so it cannot sign a relay's AUTH challenge either.
+  `social/boundary.test.ts` enforces all of this.
+- **Rooms.** `net/rooms.ts`: `RoomManager` sits between `server.ts` (the
+  sockets) and `RumbleHost` (one per room), as planned in §1.
+  - **Routing differs from the plan.** It uses the WebSocket URL's query
+    (`/ws`, `/ws?room=A7F2`, `/ws?create=1`) rather than a first `join`
+    message. The welcome stays immediate, old clients land in the open
+    room unchanged, and the auth binding ignores the query (host + path
+    only).
+  - Room ids: 4 characters from a 31-character alphabet with no
+    look-alikes (`net/roomId.ts`). The open room's id is `OPEN`, which no
+    generated code can be.
+  - Lifecycle: the open room is permanent. A private room is kept for
+    120 s after its last connection leaves, then disposed (match, Havok
+    world, timers).
+  - Limits: 16 rooms, 8 connections per room, 64 in total, 5 creations
+    per address per minute.
+  - Close codes: 4004 (no such room), 4003 (no new room now), 1013 (room
+    or server full).
+  - The roster gains a spectator count.
+  - Rooms record `mode: 'casual'`; nothing reads it yet. It is reserved
+    so a future value-bearing mode cannot be confused with casual rooms.
+- **Share links.** `/play/<code>`, served by `npm run serve` and by the
+  Vite dev server.
+  - The welcome carries the canonical link when `PUBLIC_URL` is set.
+    Otherwise the page uses its own origin.
+  - After creating a room, the page replaces its address with the room
+    link, so a reload or reconnect rejoins instead of creating another
+    room.
+- **Server identity.** `net/serverIdentity.ts`.
+  - `PUBLIC_URL` is the one canonical origin. Auth binding, share links
+    and the well-known document all use it, and it is never taken from
+    forwarded headers.
+  - `SERVER_NAME` is a display name.
+  - `OPERATOR_PUBKEY` is an npub or hex key, *claimed*: nothing verifies
+    that its owner agreed.
+  - `/.well-known/rumble.json` is versioned and CORS-open, with only the
+    configured fields.
+  - Trust labels (`net/serverTrust.ts`):
+    - Local: private and loopback addresses, `*.local`, tailnet 100.64/10.
+    - Official: on the built-in list *and* over TLS.
+    - Community: names an operator.
+    - Unknown: everything else.
+  - The §11 domain-to-key binding is half done: the well-known document
+    is served, but announcements that would need checking against it
+    don't exist yet (M8D).
+- **Duplicate pubkey.** Allowed. Two connections are two players; nothing
+  is merged, taken over or restored.
+- **UI.** `client/shell.ts` replaces the M7D overlay and the M8A cards.
+  - While playing: chips plus a scoreboard.
+  - On demand: the session panel and help (H).
+  - When something is wrong: the banner, now with room actions.
+  - Debug only: the text HUD, F3 and F4.

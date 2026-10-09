@@ -1,8 +1,18 @@
 /**
- * THE RUMBLE SERVER: one authoritative match (`RumbleHost`) behind a
- * WebSocket endpoint, stepped by the server's own clock at a fixed rate.
+ * THE RUMBLE SERVER: authoritative matches behind one WebSocket endpoint,
+ * stepped by the server's own clock at a fixed rate. Since M8B a process
+ * hosts several ROOMS (`rooms.ts`), each with its own match (`RumbleHost`);
+ * a connection picks one by the query of the URL it opens:
  *
- *   clients ──input / ping──► host.receive ··· host.tick() @ 60 Hz ··· every 3rd tick ──state──► every client
+ *   /ws                the open room (where a plain visit plays)
+ *   /ws?room=A7F2      that room; refused (4004) if there is none
+ *   /ws?create=1       a new private room (4003 when over the limits)
+ *
+ *   room clients ──input / ping──► its host.receive ··· every host.tick() @ 60 Hz ··· every 3rd tick ──state──► that room's clients
+ *
+ * Rooms share nothing but the process: inputs, states, rosters, bots and
+ * restarts stay inside their room. An empty private room is kept for a
+ * grace period (a dropped player may come back), then disposed.
  *
  * The loop is a fixed-step accumulator on the monotonic clock: it wakes,
  * runs every step that is due, and sleeps until the next. Message timing
@@ -41,12 +51,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { HavokInstance } from '../sim/physics';
 import { AUTH, ChallengeBook, authAddress, verifyAuth } from '../../social/auth';
 import { shortNpub } from '../../social/keys';
-import { RumbleHost, type ConnectionId } from './host';
-import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage } from './protocol';
+import type { RumbleHost, ConnectionId } from './host';
+import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo } from './protocol';
+import { RoomManager, type Room } from './rooms';
+import { roomShareUrl, type ServerIdentity } from './serverIdentity';
 
 export const SERVER_LIMITS = Object.freeze({
-  /** Connections at once: four players and a few spectators. */
-  maxConnections: 16,
+  /** Connections at once, all rooms together. */
+  maxConnections: 64,
   /** Messages a second per connection kept (a client sends at most ~61: 60 inputs and a ping); the bucket holds a second's worth. */
   maxMessagesPerSecond: 120,
   /** Over this many dropped messages in one second, the connection is flooding: disconnected. */
@@ -61,6 +73,8 @@ export const SERVER_LIMITS = Object.freeze({
   maxDelayed: 1000,
   /** A connection may ask for a new auth challenge at most this often, ms. */
   challengeEveryMs: 1000,
+  /** New private rooms one address may create per minute. */
+  roomsPerMinute: 5,
 });
 
 export interface ServerConfig {
@@ -92,6 +106,14 @@ export interface ServerConfig {
   authUrls?: string[];
   /** A connection may ask for an auth challenge at most this often, ms (default SERVER_LIMITS.challengeEveryMs). */
   challengeEveryMs?: number;
+  /** Who this server is (name, claimed operator, canonical public address). */
+  identity?: ServerIdentity;
+  /** Rooms (ROOMS defaults): at most this many, this many connections each, kept this long empty. */
+  maxRooms?: number;
+  perRoom?: number;
+  roomGraceMs?: number;
+  /** New private rooms per source address per minute. */
+  roomsPerMinute?: number;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -116,14 +138,23 @@ export interface ServerStats {
   /** Since the last reset: identity proofs accepted and refused. */
   authOk: number;
   authFailed: number;
+  /** Since the last reset: private rooms created and closed; and rooms open now. */
+  roomsCreated: number;
+  roomsClosed: number;
+  rooms: number;
 }
 
 export interface RumbleServer {
-  host: RumbleHost;
+  /** The open room's match (where a plain connection plays). */
+  readonly host: RumbleHost;
+  rooms: RoomManager;
+  identity: ServerIdentity;
+  /** Close empty private rooms past their grace period now (the server does this every second by itself). */
+  sweep(): void;
   port: number;
   stats: ServerStats;
   resetStats(): void;
-  /** Send the current state to every client now. */
+  /** Send every room's current state to its clients now. */
   broadcast(): void;
   close(): Promise<void>;
 }
@@ -161,20 +192,24 @@ function bucket(perSecond: number) {
 
 interface Client {
   id: ConnectionId;
+  room: Room;
   send: (data: string, droppable?: boolean) => void;
   alive: boolean;
 }
 
 export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
-  const host = new RumbleHost({ havok: config.havok, tickHz: config.tickHz, snapshotHz: config.snapshotHz });
   const maxCatchUp = config.maxCatchUp ?? 5;
   const maxConnections = config.maxConnections ?? SERVER_LIMITS.maxConnections;
   const perSecond = config.maxMessagesPerSecond ?? SERVER_LIMITS.maxMessagesPerSecond;
   const lag = config.lagMs ?? 0;
   const jitter = config.jitterMs ?? 0;
   const log = config.log ?? (() => {});
-  const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0, authOk: 0, authFailed: 0 });
-  const stats: ServerStats = { ...fresh(), lastStateBytes: 0, clients: 0 };
+  const identity: ServerIdentity = config.identity ?? { name: null, operator: null, public: null };
+  const rooms = new RoomManager({ havok: config.havok, tickHz: config.tickHz, snapshotHz: config.snapshotHz, maxRooms: config.maxRooms, perRoom: config.perRoom, graceMs: config.roomGraceMs });
+  const tickHz = rooms.open.host.tickHz;
+  const ticksPerSnapshot = rooms.open.host.ticksPerSnapshot;
+  const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0, authOk: 0, authFailed: 0, roomsCreated: 0, roomsClosed: 0 });
+  const stats: ServerStats = { ...fresh(), lastStateBytes: 0, clients: 0, rooms: rooms.size };
   let lateSum = 0;
   let lateCount = 0;
   const resetStats = () => {
@@ -183,13 +218,34 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     lateCount = 0;
   };
   const clients = new Map<WebSocket, Client>();
+  /** Per room, its clients (the sockets a room's states and roster go to). */
+  const members = new Map<Room, Set<Client>>();
   let nextConn = 1;
   const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
-  const configuredAddresses = (config.authUrls ?? []).map(authAddress).filter((a): a is string => !!a);
-  /** Who drives each slot (bot, guest, proven pubkey) to everyone: on any change, never droppable. */
-  const sendRoster = () => {
-    const data = JSON.stringify(host.roster());
-    for (const c of clients.values()) c.send(data);
+  const configuredAddresses = [...(config.authUrls ?? []), ...(identity.public ? [identity.public.websocket] : [])].map(authAddress).filter((a): a is string => !!a);
+  const creations = creationLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  /** Who drives each slot in a room (bot, guest, proven pubkey) to everyone in it: on any change, never droppable. */
+  const sendRoster = (room: Room) => {
+    const roster = room.host.roster();
+    const data = JSON.stringify({ ...roster, spectators: [...room.connections].filter((c) => room.host.slot(c) === null).length });
+    for (const c of members.get(room) ?? []) c.send(data);
+  };
+  /** The room a connection asked for (by the query of its URL): the open room, a known room, or a new one. */
+  const roomFor = (req: IncomingMessage, from: string): { room: Room } | { code: number; why: string } => {
+    const q = new URL(req.url ?? '/', 'http://x').searchParams;
+    if (q.has('create')) {
+      const key = req.socket.remoteAddress ?? '?';
+      if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
+      const room = rooms.create();
+      if (!room) return { code: 4003, why: 'room limit reached' };
+      stats.roomsCreated += 1;
+      stats.rooms = rooms.size;
+      log(`room ${room.id} created by ${from} · ${rooms.size} rooms`);
+      return { room };
+    }
+    if (!q.has('room')) return { room: rooms.open };
+    const room = rooms.get(q.get('room'));
+    return room ? { room } : { code: 4004, why: 'no such room' };
   };
 
   const wss = config.http
@@ -209,12 +265,27 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   wss.on('connection', (ws, req: IncomingMessage) => {
     const from = `${req.socket.remoteAddress ?? '?'}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
     if (clients.size >= maxConnections) {
-      // Full: refused cleanly, before it takes a slot or any state.
+      // Full: refused cleanly, before it takes a slot, a room or any state.
       stats.refused += 1;
       log(`refused ${from}: server full (${clients.size}/${maxConnections})`);
       ws.close(1013, 'server full');
       return;
     }
+    const target = roomFor(req, from);
+    if ('code' in target) {
+      stats.refused += 1;
+      log(`refused ${from}: ${target.why}`);
+      ws.close(target.code, target.why);
+      return;
+    }
+    const room = target.room;
+    if (!rooms.hasRoom(room)) {
+      stats.refused += 1;
+      log(`refused ${from}: room ${room.id} full`);
+      ws.close(1013, 'room full');
+      return;
+    }
+    const host = room.host;
     const id = nextConn++;
     const out = delayer(lag, jitter, SERVER_LIMITS.maxDelayed);
     const inbound = delayer(lag, jitter, SERVER_LIMITS.maxDelayed);
@@ -228,6 +299,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     const addresses = configuredAddresses.length ? configuredAddresses : [authAddress(`ws://${req.headers.host ?? ''}${pathname}`)].filter((a): a is string => !!a);
     const client: Client = {
       id,
+      room,
       alive: true,
       send: (data, droppable = false) =>
         out(() => {
@@ -241,12 +313,17 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     };
     clients.set(ws, client);
     stats.clients = clients.size;
+    rooms.enter(room, id);
+    const inRoom = members.get(room) ?? new Set<Client>();
+    members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
-    log(`conn ${id} from ${from}: ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth'] }));
-    sendRoster();
+    log(`conn ${id} from ${from}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
+    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
+    const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
+    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth', 'rooms'], room: info, server }));
+    sendRoster(room);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
-    const identity = (msg: ClientMessage) => {
+    const identityMessage = (msg: ClientMessage) => {
       const reply = (m: AuthReply | ChallengeMessage) => client.send(JSON.stringify(m));
       if (msg.t === 'challenge') {
         const t = performance.now();
@@ -258,7 +335,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       if (msg.t === 'logout') {
         challenges.drop(id);
-        if (host.setIdentity(id, null)) sendRoster();
+        if (host.setIdentity(id, null)) sendRoster(room);
         return reply({ t: 'auth', ok: false, reason: 'logged-out' });
       }
       if (msg.t !== 'auth') return;
@@ -271,9 +348,9 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       stats.authOk += 1;
       const changed = host.setIdentity(id, result.pubkey);
-      log(`conn ${id}: ${host.slot(id) ?? 'spectator'} is ${shortNpub(result.pubkey)}`);
+      log(`conn ${id}: room ${room.id} ${host.slot(id) ?? 'spectator'} is ${shortNpub(result.pubkey)}`);
       reply({ t: 'auth', ok: true, pubkey: result.pubkey });
-      if (changed) sendRoster();
+      if (changed) sendRoster(room);
     };
     ws.on('pong', () => (client.alive = true));
     ws.on('message', (data, isBinary) => {
@@ -302,7 +379,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       inbound(() => {
         if (!clients.has(ws)) return;
-        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout') return identity(msg);
+        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout') return identityMessage(msg);
         const reply = host.receive(id, raw);
         if (reply) client.send(JSON.stringify(reply));
       });
@@ -314,8 +391,10 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       const slot = host.slot(id);
       host.disconnect(id);
       challenges.drop(id);
-      if (slot) sendRoster();
-      log(`conn ${id} left${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
+      rooms.leave(room, id);
+      members.get(room)?.delete(client);
+      log(`conn ${id} left room ${room.id}${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
+      sendRoster(room);
     });
     ws.on('error', () => ws.terminate());
   });
@@ -333,15 +412,33 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   }, SERVER_LIMITS.heartbeatMs);
   heartbeat.unref?.();
 
-  const broadcast = () => {
-    const data = JSON.stringify(host.state());
+  /** Empty private rooms past their grace period go, with their match. */
+  const sweep = () => {
+    for (const id of rooms.reap()) {
+      const room = [...members.keys()].find((r) => r.id === id);
+      if (room) members.delete(room);
+      stats.roomsClosed += 1;
+      log(`room ${id} closed (empty for ${Math.round(rooms.graceMs / 1000)} s) · ${rooms.size} rooms`);
+    }
+    stats.rooms = rooms.size;
+  };
+  const sweeper = config.manual ? null : setInterval(sweep, 1000);
+  sweeper?.unref?.();
+
+  const broadcastRoom = (room: Room) => {
+    // Nobody to tell: no state built.
+    if (!members.get(room)?.size) return;
+    const data = JSON.stringify(room.host.state());
     stats.statesSent += 1;
     stats.lastStateBytes = data.length;
-    for (const c of clients.values()) c.send(data, true);
+    for (const c of members.get(room) ?? []) c.send(data, true);
+  };
+  const broadcast = () => {
+    for (const room of rooms.all()) broadcastRoom(room);
   };
 
-  // The fixed-step loop on the monotonic clock.
-  const stepMs = 1000 / host.tickHz;
+  // The fixed-step loop on the monotonic clock: every room steps on the same beat.
+  const stepMs = 1000 / tickHz;
   let next = performance.now();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = !config.manual;
@@ -355,9 +452,11 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       lateCount += 1;
       stats.lateMean = lateSum / lateCount;
       stats.lateMax = Math.max(stats.lateMax, late);
-      host.tick();
+      for (const room of rooms.all()) {
+        room.host.tick();
+        if (room.host.latest.tick % ticksPerSnapshot === 0) broadcastRoom(room);
+      }
       stats.ticks += 1;
-      if (host.latest.tick % host.ticksPerSnapshot === 0) broadcast();
       next += stepMs;
       steps += 1;
     }
@@ -373,19 +472,25 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const ready = (port: number): RumbleServer => {
     if (running) loop();
     return {
-      host,
+      get host() {
+        return rooms.open.host;
+      },
+      rooms,
+      identity,
       port,
       stats,
       resetStats,
       broadcast,
+      sweep,
       close: () =>
         new Promise<void>((done) => {
           running = false;
           if (timer) clearTimeout(timer);
           clearInterval(heartbeat);
+          if (sweeper) clearInterval(sweeper);
           for (const ws of clients.keys()) ws.terminate();
           wss.close(() => {
-            host.dispose();
+            rooms.dispose();
             done();
           });
         }),
@@ -403,4 +508,23 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       resolve(ready(typeof address === 'object' && address ? address.port : (config.port ?? 8787)));
     });
   });
+}
+
+/** Room creations per source address: at most `perMinute` in any minute, bounded memory. */
+function creationLimiter(perMinute: number) {
+  const seen = new Map<string, number[]>();
+  return {
+    allow(key: string) {
+      const t = Date.now();
+      const recent = (seen.get(key) ?? []).filter((x) => t - x < 60_000);
+      if (seen.size > 1024) for (const [k, v] of seen) if (!v.some((x) => t - x < 60_000)) seen.delete(k);
+      if (recent.length >= perMinute) {
+        seen.set(key, recent);
+        return false;
+      }
+      recent.push(t);
+      seen.set(key, recent);
+      return true;
+    },
+  };
 }

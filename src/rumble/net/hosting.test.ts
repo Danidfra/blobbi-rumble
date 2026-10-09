@@ -149,7 +149,7 @@ describe('limits for a public server', () => {
     for (const raw of ['nonsense', '{"t":"teleport"}', '{"t":"input","seq":"x"}', '[]']) c.ws.send(raw);
     await waitFor(() => server!.stats.malformed === 4);
     expect(lines.filter((l) => l.includes('malformed'))).toHaveLength(1);
-    expect(lines.some((l) => /conn 1 from .*: P1/.test(l))).toBe(true);
+    expect(lines.some((l) => /conn 1 from .*: room OPEN, P1/.test(l))).toBe(true);
   });
 });
 

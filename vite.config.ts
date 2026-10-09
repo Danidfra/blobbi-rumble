@@ -20,7 +20,20 @@ const KIT_3D = resolve(__dirname, 'node_modules/@blobbi-kit/3d');
 const KIT_DIR = existsSync(KIT_3D) ? resolve(realpathSync(KIT_3D), '..', '..') : resolve(__dirname, '..', 'blobbi-kit');
 const BABYLON = resolve(__dirname, 'node_modules/@babylonjs/core');
 
+/** Share links (`/play/<room>`) open the game page in dev too, as `npm run serve` does (`net/static.ts`). */
+const playLinks = {
+  name: 'rumble-play-links',
+  configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: unknown, next: () => void) => void) => void } }) {
+    server.middlewares.use((req, _res, next) => {
+      const [path, query] = (req.url ?? '').split('?');
+      if (/^\/play\/[^/]{0,32}$/.test(path)) req.url = `/rumble.html${query ? `?${query}` : ''}`;
+      next();
+    });
+  },
+};
+
 export default defineConfig({
+  plugins: [playLinks],
   server: { host: '127.0.0.1', port: 5177, fs: { allow: [__dirname, KIT_DIR] } },
   build: { target: 'es2022', chunkSizeWarningLimit: 4000, rollupOptions: { input: { playground: resolve(__dirname, 'index.html'), rumble: resolve(__dirname, 'rumble.html') } } },
   // Havok's loader finds its wasm next to its own module; pre-bundling would move it.

@@ -20,10 +20,17 @@
  * server says it held.
  *
  * IDENTITY (M8A): optional Nostr identity beside the game connection
- * (`identity.ts`, `identityView.ts`). The server only vouches "P2 holds
+ * (`identity.ts`). The server only vouches "P2 holds
  * pubkey X"; names and pictures are looked up here, on a few relays, off
  * the frame loop, and only ever change labels: nothing from a relay touches
  * the match, the prediction or the interpolation.
+ *
+ * ROOMS (M8B): the page is in one room of the server: the open room, a
+ * room from a share link (/play/A7F2), or a new one it asked for; Host /
+ * Join switch rooms in place (a new connection, the same page). The
+ * interface is `shell.ts`: quiet chips and a scoreboard while playing,
+ * panels on demand, the banner when play is impossible; the text HUD is
+ * F3 / F4 only.
  *
  * Keys: any of WASD / arrows, Shift, Space / Enter, F / K, G / L; F3 debug,
  * F4 network diagnostics. Dev query flags: `?server=ws://host:port`,
@@ -33,7 +40,10 @@ import { canAct, type CombatState } from '../combat/combat';
 import { Keyboard, PlayerInput, type KeyBindings, type MoveIntent } from '../control/input';
 import { resolveServerUrl } from '../net/endpoint';
 import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
-import { createOverlay } from './overlay';
+import { createShell } from './shell';
+import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
+import { classifyServer, type ServerTrust } from '../net/serverTrust';
+import type { RoomInfo, ServerInfo } from '../net/protocol';
 import { inputMessage, isNewer, type ClientMessage, type Control, type ServerMessage, type StateMessage } from '../net/protocol';
 import { ROSTER } from '../roster';
 import { combatOf } from '../sim/read';
@@ -50,7 +60,6 @@ import { LOOKUP_RELAYS, relayUrl } from '../../social/relays';
 import { findNip07, nip07Signer } from '../../social/signer';
 import type { SlotIdentity } from '../net/protocol';
 import { IdentitySession } from './identity';
-import { createIdentityView } from './identityView';
 
 /** Storage that may be missing or throw (private windows, blocked site data). */
 const safeStorage = (): Storage | null => {
@@ -60,7 +69,7 @@ const safeStorage = (): Storage | null => {
     return null;
   }
 };
-const WELCOME_SEEN = 'rumble:welcome-seen';
+const START_SEEN = 'rumble:start-seen';
 
 const NET_BINDINGS: KeyBindings = {
   forward: ['KeyW', 'ArrowUp'],
@@ -72,7 +81,7 @@ const NET_BINDINGS: KeyBindings = {
   punch: ['KeyF', 'KeyK'],
   grab: ['KeyG', 'KeyL'],
 };
-const CONTROLS = ['F3 colliders & reach · F4 network numbers · H controls card', 'the next match starts by itself'];
+const CONTROLS = ['F3 colliders & reach · F4 network numbers · H help', 'the next match starts by itself'];
 /** Movement is resent at least this often, ms, so the server knows the keys are still held (it lets go after a second of silence). */
 const KEEPALIVE_MS = 200;
 const PUNCH_TIME = COMBAT.punchActive + COMBAT.punchRecovery;
@@ -102,7 +111,14 @@ class Window {
 
 export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const q = new URLSearchParams(location.search);
+  /** The server's WebSocket address (the room goes in its query); identity proofs name it. */
   const url = resolveServerUrl(location, location.search, { dev: import.meta.env.DEV, configured: import.meta.env.VITE_RUMBLE_SERVER as string | undefined });
+  // Which room: from the page's address; after a create, the room it made.
+  let target: RoomIntent = roomIntent(location);
+  let room: RoomInfo | null = null;
+  let serverInfo: ServerInfo | null = null;
+  let trust: ServerTrust | null = null;
+  let spectators = 0;
   const useInterp = q.get('interp') !== '0';
   const usePredict = q.get('predict') !== '0';
   const keyboard = new Keyboard([NET_BINDINGS]);
@@ -113,12 +129,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let buffer = newBuffer();
   const predictor = new LocalPredictor();
   let ws: WebSocket | null = null;
-  let conn = initialConnection(url);
+  const targetRoom = (t: RoomIntent) => (t.kind === 'join' ? t.id : t.kind === 'invalid' ? t.raw : null);
+  let conn = initialConnection(url, targetRoom(target));
   let connectingSince = 0;
   let status = 'connecting';
-  const overlay = createOverlay(() => {
-    if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
-  });
   let you: string | null = null;
   let players: string[] = [];
   let tickHz = 60;
@@ -172,17 +186,18 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (identity.state.pubkey) pks.push(identity.state.pubkey);
     if (pks.length) profiles().ask(pks);
   };
-  let welcomeSeen = (() => {
+  // The start card: once, on a first visit that lands in the open room (a share link goes straight in).
+  let startSeen = target.kind !== 'open' || (() => {
     try {
-      return storage?.getItem(WELCOME_SEEN) === '1';
+      return storage?.getItem(START_SEEN) === '1';
     } catch {
       return false;
     }
   })();
-  const seenWelcome = () => {
-    welcomeSeen = true;
+  const seeStart = () => {
+    startSeen = true;
     try {
-      storage?.setItem(WELCOME_SEEN, '1');
+      storage?.setItem(START_SEEN, '1');
     } catch {
       // Not remembered: shown again next visit.
     }
@@ -197,14 +212,45 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     storage,
     onChange: () => wantProfiles(),
   });
-  const identityView = createIdentityView({
-    connect: () => {
-      seenWelcome();
+  /** Go to another room in place: a new connection, the same page (and the same Nostr signer, which proves itself again). */
+  const switchTo = (next: RoomIntent) => {
+    target = next;
+    const old = ws;
+    ws = null;
+    old?.close(1000, 'switching room');
+    you = null;
+    roster = null;
+    room = null;
+    predictor.reset();
+    keyboard.held.clear();
+    identity.onClose();
+    conn = initialConnection(url, targetRoom(next));
+    if (next.kind === 'open') history.replaceState(null, '', pageAddress(null, location.search));
+    connect();
+  };
+  const shell = createShell({
+    retry: () => {
+      if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
+    },
+    openRoom: () => switchTo({ kind: 'open' }),
+    hostGame: () => switchTo({ kind: 'create' }),
+    joinGame: (id) => switchTo({ kind: 'join', id }),
+    copyLink: async (link) => {
+      try {
+        await navigator.clipboard.writeText(link);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    connectNostr: () => {
+      seeStart();
       void identity.connect();
     },
-    disconnect: () => identity.disconnect(),
-    guest: () => seenWelcome(),
-    dismissError: () => identity.dismissError(),
+    disconnectNostr: () => identity.disconnect(),
+    dismissIdentityError: () => identity.dismissError(),
+    releaseKeys: () => keyboard.held.clear(),
+    startSeen: seeStart,
   });
   // Idle relays close; nothing stays open for long.
   setInterval(() => relayPool?.sweep(), 10_000);
@@ -222,6 +268,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   };
 
   const connect = () => {
+    if (target.kind === 'invalid') {
+      // A share link with a malformed code: nothing to connect to; the banner offers the open room or a new game.
+      conn = { ...initialConnection(url, target.raw || '?'), phase: 'missing' };
+      return;
+    }
     status = `connecting to ${url}`;
     conn = onRetry(conn);
     connectingSince = performance.now() / 1000;
@@ -231,7 +282,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     predictor.reset();
     let socket: WebSocket;
     try {
-      socket = new WebSocket(url);
+      socket = new WebSocket(socketUrl(url, target));
     } catch {
       // A malformed address: treated as an unreachable server (the retry shows it).
       conn = onClose(conn, 1006, '', performance.now() / 1000);
@@ -260,6 +311,20 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         conn = onWelcome(conn, m.you, now);
         status = `connected · ${m.tickHz} Hz match, ${m.snapshotHz} Hz state`;
         roster = null;
+        // The room (an older server has one match: the open room).
+        const created = target.kind === 'create';
+        room = m.room ?? { id: 'OPEN', kind: 'open', mode: 'casual' };
+        serverInfo = m.server ?? null;
+        trust = classifyServer(url, serverInfo);
+        if (serverInfo?.operator) profiles().ask([serverInfo.operator]);
+        // From now on (reconnects, reloads) this page means this room, not "a new one".
+        target = room.kind === 'private' ? { kind: 'join', id: room.id } : { kind: 'open' };
+        conn = { ...conn, room: room.kind === 'private' ? room.id : null };
+        history.replaceState(null, '', pageAddress(room.kind === 'private' ? room.id : null, location.search));
+        if (created) {
+          shell.toast(`Room ${room.id} is ready: share the link or the code`, 6000);
+          shell.openSession();
+        } else if (room.kind === 'private' && !conn.note) shell.toast(`Joined room ${room.id}`);
         identity.onWelcome(m.features);
       } else if (m.t === 'state') {
         // Late or repeated states are dropped: the newest tick wins.
@@ -285,7 +350,16 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
       } else if (m.t === 'roster') {
+        // Who came and went (not you), briefly.
+        if (roster)
+          for (const [slot, now] of Object.entries(m.slots)) {
+            const before = roster[slot];
+            if (slot === you || !before) continue;
+            if (before.who === 'bot' && now.who !== 'bot') shell.toast(`${now.who === 'nostr' ? clip(displayName(profileOf(now.pubkey), now.pubkey), 20) : 'A guest'} joined as ${slot}`);
+            else if (before.who !== 'bot' && now.who === 'bot') shell.toast(`${slot} left (a bot plays it)`);
+          }
         roster = m.slots;
+        spectators = m.spectators ?? 0;
         wantProfiles();
       } else if (m.t === 'challenge') {
         void identity.onChallenge(m.challenge);
@@ -385,8 +459,23 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       }
     }
     watchConnection(now);
-    overlay.show(conn, now, rtt);
-    identityView.show({ state: identity.state, profile: (pk) => profileOf(pk), roster, you, welcome: !welcomeSeen && identity.state.phase === 'guest' && (conn.phase === 'playing' || conn.phase === 'watching') });
+    shell.show({
+      conn,
+      now,
+      room,
+      share: room && room.kind === 'private' ? shareLink(room.id, location.origin, room.url) : null,
+      trust,
+      server: serverInfo,
+      identity: identity.state,
+      profile: (pk) => profileOf(pk),
+      roster,
+      spectators,
+      you,
+      snapshot: buffer.newest ?? null,
+      message: presenter?.currentMessage ?? '',
+      nameOf: nameFor,
+      startCard: !startSeen && room?.kind === 'open',
+    });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
     if (you) predictor.frame(dt, seq, { ...move, jump: intent.jump, punch: false, grab: false });
@@ -400,6 +489,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       stats.windowStart = nowMs;
     }
     if (!state || !latestSnap) {
+      // Before the first state: the developer view only (the shell shows the connection).
+      hud.style.display = showNet ? '' : 'none';
       hud.textContent = `BLOBBI RUMBLE · network\n${status}\nwaiting for the match…`;
       return;
     }
@@ -442,6 +533,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           return s.players[i] === you ? `YOU · ${who}` : who;
         },
         matchOverHint: 'the next match starts soon',
+        // The text HUD is a developer view now: F4 (or F3).
+        textHud: showNet,
         controls: CONTROLS,
         strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
         footer: showNet
@@ -449,6 +542,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
               `NET  ${status} · ${url} · ${conn.attempts ? `attempt ${conn.attempts}` : 'up'} · reconnects ${reconnects} · rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`,
               `     view ${useInterp ? `interpolated, ${(delay * 1000).toFixed(0)} ms behind` : 'newest state (no interpolation)'} · states ahead ${sample?.ahead ?? '-'} (mean ${aheadW.mean.toFixed(1)})${sample?.extrapolated ? ` · EXTRAPOLATING ${(sample.late * 1000).toFixed(0)} ms` : ''}`,
               `     state gaps ${gaps.mean.toFixed(0)} ± ${gaps.sd.toFixed(0)} ms (max ${gaps.max.toFixed(0)}) · extrapolated ${stats.extrapolatedFrames} / frozen ${stats.frozenFrames} of ${stats.frames} frames · tick ${state.tick}`,
+              `ROOM  ${room ? `${room.id} (${room.kind}, ${room.mode})` : '-'} · ${trust ? `${trust.label} ${trust.host}` : '-'}${serverInfo?.name ? ` · "${serverInfo.name}"` : ''}${serverInfo?.operator ? ` · operator ${serverInfo.operator.slice(0, 8)}… (claimed)` : ''} · ${spectators} watching`,
               `NOSTR ${identity.state.phase}${identity.verified ? ` ${identity.verified.slice(0, 8)}…` : ''} · server ${identity.state.serverSupports === null ? '?' : identity.state.serverSupports ? 'offers identity' : 'no identity'} · relays ${relayPool ? `${relayPool.openRelays.length} open (peak ${relayPool.peak}/${relayPool.maxOpen}), ${relayPool.queries} queries` : 'none opened'} · roster ${Object.entries(roster ?? {}).map(([k, v]) => `${k}:${v.who}`).join(' ') || '-'}`,
               `     prediction ${usePredict ? (predictor.predicting ? 'ON' : 'server has you') : 'off'} · inputs ${ack ?? '-'}/${seq} acked, ${m.pending} frames pending · error ${(m.lastError * 100).toFixed(1)} cm (mean ${(errors.mean * 100).toFixed(1)}, max ${(errors.max * 100).toFixed(1)}) · kept ${m.kept} smoothed ${m.smoothed} snapped ${m.snapped} (resumed ${m.resumed}, ${m.resumeSnaps} by snap) · offset ${(m.offset * 100).toFixed(1)} cm`,
             ]
@@ -488,6 +582,20 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       get rtt() {
         return rtt;
       },
+      /** Rooms, for scripted checks. */
+      get room() {
+        return room;
+      },
+      get trust() {
+        return trust;
+      },
+      get server() {
+        return serverInfo;
+      },
+      host: () => switchTo({ kind: 'create' }),
+      join: (id: string) => switchTo({ kind: 'join', id }),
+      openRoom: () => switchTo({ kind: 'open' }),
+      shell,
       /** Identity, for scripted checks. */
       identity: {
         get state() {

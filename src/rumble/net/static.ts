@@ -5,6 +5,11 @@
  * build directory and nowhere else; `/` goes to the network game; hashed
  * assets are cached for good, the pages never. `/healthz` answers for
  * whatever platform or proxy watches the process.
+ *
+ * M8B: `/play/<room>` is the game page too (a share link: the page reads
+ * the room from its own path; a bad or expired code is the page's to
+ * explain), and `/.well-known/rumble.json` says who the server is
+ * (`serverIdentity.ts`), readable from any origin.
  */
 import { createReadStream, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -43,7 +48,12 @@ export function resolveStatic(root: string, urlPath: string): string | null {
   return file;
 }
 
-export function staticHandler(root: string, health: () => object = () => ({ ok: true })) {
+/** The page every share link opens. */
+export const GAME_PAGE = '/rumble.html';
+/** Share-link paths: /play/<anything short>; the page validates the code. */
+export const isPlayPath = (path: string) => /^\/play\/[^/]{0,32}$/.test(path);
+
+export function staticHandler(root: string, health: () => object = () => ({ ok: true }), opts: { wellKnown?: () => object } = {}) {
   return (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -52,14 +62,20 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
     }
     const path = url.split('?')[0];
     if (path === '/' || path === '') {
-      res.writeHead(302, { location: LANDING }).end();
+      // Keep the query (?room=A7F2, ?server=…): the page reads it.
+      const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
+      res.writeHead(302, { location: query ? `${LANDING}&${query}` : LANDING }).end();
+      return;
+    }
+    if (path === '/.well-known/rumble.json' && opts.wellKnown) {
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-cache', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }).end(JSON.stringify(opts.wellKnown()));
       return;
     }
     if (path === '/healthz') {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(health()));
       return;
     }
-    const file = resolveStatic(root, url);
+    const file = resolveStatic(root, isPlayPath(path) ? GAME_PAGE : url);
     let size = -1;
     try {
       if (file) {
@@ -74,7 +90,7 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
       return;
     }
     const type = TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
-    const immutable = path.startsWith('/assets/');
+    const immutable = path.startsWith('/assets/') && !isPlayPath(path);
     res.writeHead(200, {
       'content-type': type,
       'content-length': size,

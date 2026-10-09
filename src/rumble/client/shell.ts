@@ -1,0 +1,473 @@
+/**
+ * THE GAME'S INTERFACE in network mode: the arena first, the rest quiet
+ * until it matters.
+ *
+ *   ┌ session chip ─────┐      ┌ scoreboard ┐          ┌ identity chip ┐
+ *   ● A7F2 · Local server     round · P1 ●●○ …       Guest · Connect Nostr
+ *
+ *                       contextual message (round, match)
+ *                       struggle bar (when you are held)
+ *   H Help
+ *
+ *   on demand:  session panel (room + share link, host / join, players,
+ *               identity, server), help panel (H), start card (first visit)
+ *   loud:       the centred banner when play is impossible (offline, a
+ *               missing room, …), with what to do about it
+ *   debug:      F3 / F4 (the text HUD), unchanged, off by default
+ *
+ * Everything from Nostr or a server is text set with textContent. Buttons
+ * never take focus; the only field (the room code) owns the keyboard while
+ * focused, and the game's keys are released when it takes it.
+ */
+import { ROUND } from '../tuning';
+import { normalizeRoomId } from '../net/roomId';
+import type { RoomInfo, ServerInfo, SlotIdentity } from '../net/protocol';
+import type { ServerTrust } from '../net/serverTrust';
+import type { MatchSnapshot } from '../sim/snapshot';
+import { npubOf, shortNpub } from '../../social/keys';
+import { clip, displayName, type Profile } from '../../social/profile';
+import { describe, type BannerAction, type ConnectionState } from './connection';
+import { avatar, button, el, isTyping } from './dom';
+import type { IdentityState } from './identity';
+
+export interface ShellActions {
+  retry(): void;
+  openRoom(): void;
+  hostGame(): void;
+  joinGame(code: string): void;
+  copyLink(link: string): Promise<boolean>;
+  connectNostr(): void;
+  disconnectNostr(): void;
+  dismissIdentityError(): void;
+  /** The code field took the keyboard: let go of every game key. */
+  releaseKeys(): void;
+  /** The start card was answered (don't show it again). */
+  startSeen(): void;
+}
+
+export interface ShellView {
+  conn: ConnectionState;
+  now: number;
+  room: RoomInfo | null;
+  share: string | null;
+  trust: ServerTrust | null;
+  server: ServerInfo | null;
+  identity: IdentityState;
+  profile: (pubkey: string) => Profile | null | undefined;
+  roster: Record<string, SlotIdentity> | null;
+  spectators: number;
+  you: string | null;
+  snapshot: MatchSnapshot | null;
+  /** The presenter's current message (slot ids in it are replaced by names). */
+  message: string;
+  /** A proven person's name for a slot, or null. */
+  nameOf: (slot: string) => string | null;
+  startCard: boolean;
+}
+
+const CSS = `
+  .rs-top { position: fixed; top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; z-index: 5; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
+  .rs-top > * { pointer-events: auto; }
+  .rs-chip { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 999px; background: rgba(255,255,255,0.82); box-shadow: 0 3px 12px rgba(40,50,80,0.13); cursor: pointer; white-space: nowrap; max-width: 46vw; overflow: hidden; }
+  .rs-chip:hover { background: rgba(255,255,255,0.95); }
+  .rs-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #6fc38f; }
+  .rs-chip .dot.wait { background: #e6b450; }
+  .rs-chip .dot.off { background: #d0605c; }
+  .rs-chip b { font-weight: 700; letter-spacing: 0.04em; }
+  .rs-chip .dim { color: #6b7082; overflow: hidden; text-overflow: ellipsis; }
+  .rs-board { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: rgba(255,255,255,0.7); box-shadow: 0 3px 12px rgba(40,50,80,0.12); }
+  .rs-board .round { align-self: center; padding: 0 6px; font: 600 11px ui-sans-serif, system-ui, sans-serif; color: #6b7082; white-space: nowrap; }
+  .rs-pl { display: flex; flex-direction: column; align-items: center; min-width: 64px; max-width: 118px; padding: 3px 8px; border-radius: 10px; background: rgba(255,255,255,0.75); }
+  .rs-pl.me { box-shadow: inset 0 0 0 2px #6fc38f; }
+  .rs-pl.out { opacity: 0.45; }
+  .rs-pl .nm { font-weight: 600; font-size: 12px; max-width: 102px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-pl .sc { font-size: 10px; letter-spacing: 2px; color: #3d8f5e; }
+  .rs-pl .pw { font-size: 10px; color: #b07a12; }
+  .rs-msg { position: fixed; left: 50%; top: 22vh; transform: translateX(-50%); max-width: 80vw; padding: 8px 18px; border-radius: 14px; background: rgba(43,43,58,0.72); color: #fff; font: 700 20px ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.02em; text-align: center; pointer-events: none; display: none; z-index: 4; }
+  .rs-struggle { position: fixed; left: 50%; bottom: 14vh; transform: translateX(-50%); padding: 8px 14px; border-radius: 14px; background: rgba(176,65,62,0.88); color: #fff; font: 700 14px ui-sans-serif, system-ui, sans-serif; text-align: center; pointer-events: none; display: none; z-index: 4; }
+  .rs-struggle .bar { margin-top: 6px; height: 8px; width: 220px; border-radius: 4px; background: rgba(255,255,255,0.3); overflow: hidden; }
+  .rs-struggle .bar > i { display: block; height: 100%; background: #fff; }
+  .rs-hint { position: fixed; left: 10px; bottom: 10px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; z-index: 5; }
+  .rs-hint kbd, .rs-help kbd { display: inline-block; padding: 0 5px; border-radius: 4px; background: #eef1f6; border: 1px solid #d6dbe6; font: 11px ui-monospace, Menlo, monospace; color: #2b2b3a; }
+  .rs-card { position: fixed; z-index: 6; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.22); font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
+  .rs-panel { left: 10px; top: 50px; width: min(320px, calc(100vw - 20px)); max-height: calc(100vh - 70px); overflow: auto; padding: 12px 14px; display: none; }
+  .rs-panel h4 { margin: 10px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
+  .rs-panel h4:first-child { margin-top: 0; }
+  .rs-code { font: 700 26px ui-monospace, Menlo, monospace; letter-spacing: 0.12em; }
+  .rs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+  .rs-link { flex: 1; min-width: 0; font: 12px ui-monospace, Menlo, monospace; padding: 4px 6px; border: 1px solid #d6dbe6; border-radius: 8px; background: #f7f8fb; color: #2b2b3a; }
+  .rs-input { width: 90px; font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; border: 1px solid #d6dbe6; border-radius: 8px; }
+  .rs-err { color: #b0413e; font-size: 12px; }
+  .rs-sub { color: #6b7082; font-size: 12px; }
+  .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
+  .rs-btn.go { border-color: #6fc38f; background: #6fc38f; color: #fff; }
+  .rs-players { display: grid; grid-template-columns: auto auto 1fr auto; gap: 4px 8px; align-items: center; }
+  .rs-players .slot { font: 600 11px ui-monospace, Menlo, monospace; color: #6b7082; }
+  .rs-players .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; background: #eef1f6; }
+  .rs-avatar img, .rs-avatar svg { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .rs-help { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(400px, calc(100vw - 20px)); padding: 16px 20px; display: none; line-height: 1.8; }
+  .rs-help h3, .rs-start h3 { margin: 0 0 6px; font-size: 16px; letter-spacing: 0.05em; }
+  .rs-help .x { position: absolute; right: 10px; top: 8px; }
+  .rs-start { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(360px, calc(100vw - 20px)); padding: 18px 20px; text-align: center; display: none; }
+  .rs-start p { margin: 0 0 12px; color: #555a6e; }
+  .rs-start .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
+  .rs-start .id { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eef1f6; font-size: 12px; color: #555a6e; }
+  .rs-toasts { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 7; }
+  .rs-toast { padding: 5px 12px; border-radius: 10px; background: rgba(43,43,58,0.85); color: #fff; font: 12px ui-sans-serif, system-ui, sans-serif; }
+  .rs-banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(210,225,245,0.55); backdrop-filter: blur(2px); z-index: 8; }
+  .rs-banner > div { max-width: 460px; margin: 16px; padding: 18px 22px; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.25); font: 14px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; text-align: center; }
+  .rs-banner h2 { margin: 0 0 6px; font-size: 18px; }
+  .rs-banner p { margin: 0 0 12px; color: #555a6e; word-break: break-word; }
+  .rs-banner .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
+  #hud { top: 52px !important; max-height: calc(100vh - 70px); overflow: auto; }
+  @media (max-width: 860px) {
+    .rs-board { order: 3; flex-basis: 100%; justify-content: center; flex-wrap: wrap; background: none; box-shadow: none; padding: 0; }
+    .rs-pl { min-width: 54px; }
+    .rs-chip { max-width: 48vw; }
+    .rs-toasts { top: auto; bottom: 46px; }
+    .rs-panel { top: 108px; max-height: calc(100vh - 128px); }
+    #hud { top: 108px !important; }
+  }
+`;
+
+const HELP: [string, string][] = [
+  ['WASD / ← ↑ ↓ →', 'move'],
+  ['Shift', 'run'],
+  ['Space / Enter', 'jump'],
+  ['F / K', 'punch'],
+  ['G / L', 'grab, then again to throw'],
+  ['← → (A D) fast', 'break free when grabbed'],
+];
+
+export function createShell(a: ShellActions) {
+  const style = el('style');
+  style.textContent = CSS;
+  document.head.appendChild(style);
+
+  // Top bar.
+  const top = el('div', 'rs-top');
+  const sessionChip = el('div', 'rs-chip');
+  const board = el('div', 'rs-board');
+  const idChip = el('div', 'rs-chip');
+  top.append(sessionChip, board, idChip);
+  // Middle.
+  const msg = el('div', 'rs-msg');
+  const struggle = el('div', 'rs-struggle');
+  // Corners and cards.
+  const hint = el('div', 'rs-hint');
+  hint.append(el('kbd', undefined, 'H'), document.createTextNode(' Help'));
+  const panel = el('div', 'rs-card rs-panel');
+  const help = el('div', 'rs-card rs-help');
+  const start = el('div', 'rs-card rs-start');
+  const toasts = el('div', 'rs-toasts');
+  const banner = el('div', 'rs-banner');
+  const bannerBox = el('div');
+  banner.appendChild(bannerBox);
+  document.body.append(top, msg, struggle, hint, panel, help, start, toasts, banner);
+
+  // The help card: static, built once.
+  help.append(el('h3', undefined, 'How to play'), button('✕', () => toggleHelp(false), 'rs-btn x'));
+  for (const [keys, what] of HELP) {
+    const row = el('div');
+    row.append(el('kbd', undefined, keys), document.createTextNode(`  ${what}`));
+    help.appendChild(row);
+  }
+  help.append(el('div', 'rs-sub', 'Knock the others off the island: the last Blobbi standing wins the round; first to 3 rounds wins the match.'));
+  const dbg = el('div', 'rs-sub');
+  dbg.append(el('kbd', undefined, 'H'), document.createTextNode(' this help · '), el('kbd', undefined, 'F3'), document.createTextNode(' colliders · '), el('kbd', undefined, 'F4'), document.createTextNode(' network numbers'));
+  help.appendChild(dbg);
+
+  let helpOpen = false;
+  let panelOpen = false;
+  const toggleHelp = (open = !helpOpen) => {
+    helpOpen = open;
+    help.style.display = open ? 'block' : 'none';
+  };
+  const togglePanel = (open = !panelOpen) => {
+    panelOpen = open;
+    panel.style.display = open ? 'block' : 'none';
+    lastPanel = '';
+  };
+  hint.addEventListener('click', () => toggleHelp());
+  sessionChip.addEventListener('click', () => togglePanel());
+  idChip.addEventListener('click', () => togglePanel(true));
+  window.addEventListener('keydown', (e) => {
+    if (isTyping(e)) return;
+    if (e.code === 'KeyH') toggleHelp();
+    if (e.code === 'Escape') {
+      toggleHelp(false);
+      togglePanel(false);
+    }
+  });
+
+  // A room-code field: owns the keyboard while focused, Enter joins, Escape leaves it.
+  const codeField = (onJoin: () => void) => {
+    const input = el('input', 'rs-input');
+    input.maxLength = 6;
+    input.placeholder = 'CODE';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.addEventListener('focus', () => a.releaseKeys());
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') onJoin();
+      if (e.key === 'Escape') input.blur();
+    });
+    return input;
+  };
+  const joinRow = (err: HTMLElement) => {
+    const row = el('div', 'rs-row');
+    const input = codeField(() => join());
+    const join = () => {
+      const id = normalizeRoomId(input.value);
+      if (!id) {
+        err.textContent = 'Room codes look like A7F2 (4 letters and numbers).';
+        return;
+      }
+      err.textContent = '';
+      input.blur();
+      a.joinGame(id);
+    };
+    row.append(input, button('Join', join, 'rs-btn go'));
+    return row;
+  };
+
+  let toastCount = 0;
+  const toast = (text: string, ms = 4000) => {
+    const t = el('div', 'rs-toast', text);
+    toasts.appendChild(t);
+    if (++toastCount > 3) toasts.firstElementChild?.remove();
+    setTimeout(() => {
+      t.remove();
+      toastCount--;
+    }, ms);
+  };
+
+  const label = (v: ShellView, slot: string) => v.nameOf(slot) ?? slot;
+
+  let lastSession = '';
+  let lastId = '';
+  let lastBoard = '';
+  let lastMsg = '';
+  let lastStruggle = '';
+  let lastPanel = '';
+  let lastStart = '';
+  let lastBanner = '';
+
+  const renderPanel = (v: ShellView) => {
+    const parts: Node[] = [];
+    // Room.
+    parts.push(el('h4', undefined, 'Room'));
+    if (v.room && v.room.kind === 'private') {
+      parts.push(el('div', 'rs-code', v.room.id));
+      if (v.share) {
+        const row = el('div', 'rs-row');
+        const link = el('input', 'rs-link');
+        link.readOnly = true;
+        link.value = v.share;
+        link.addEventListener('focus', () => link.select());
+        row.append(
+          link,
+          button('Copy link', async () => toast((await a.copyLink(v.share!)) ? 'Link copied' : 'Couldn’t copy: select the link and copy it'), 'rs-btn go'),
+        );
+        parts.push(row, el('div', 'rs-sub', 'Anyone with the link or the code joins this room.'));
+      }
+      parts.push(el('div', 'rs-row'));
+      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a new game', a.hostGame));
+    } else {
+      parts.push(el('div', 'rs-sub', 'The open room: anyone who opens this server plays here, with bots in the empty slots.'));
+      parts.push(el('div', 'rs-row'));
+      (parts.at(-1) as HTMLElement).append(button('Host a game', a.hostGame, 'rs-btn go'));
+    }
+    const err = el('div', 'rs-err');
+    parts.push(el('div', 'rs-sub', 'Join a game by its code:'), joinRow(err), err);
+    // Players.
+    parts.push(el('h4', undefined, 'Players'));
+    const list = el('div', 'rs-players');
+    for (const [slot, id] of Object.entries(v.roster ?? {})) {
+      const mine = slot === v.you;
+      let name: string;
+      let pic: HTMLElement;
+      let tag = mine ? 'you' : '';
+      if (id.who === 'nostr') {
+        const p = v.profile(id.pubkey);
+        name = clip(displayName(p, id.pubkey), 22);
+        pic = avatar(id.pubkey, p?.picture, 18);
+        tag = mine ? 'you · nostr' : 'nostr';
+      } else {
+        name = id.who === 'bot' ? 'Bot' : 'Guest';
+        pic = avatar(null, undefined, 18);
+      }
+      list.append(el('span', 'slot', slot), pic, el('span', 'nm', name), el('span', 'rs-sub', tag));
+    }
+    parts.push(list);
+    if (v.spectators) parts.push(el('div', 'rs-sub', `${v.spectators} watching`));
+    // Identity.
+    parts.push(el('h4', undefined, 'You'));
+    const s = v.identity;
+    const own = s.pubkey ? v.profile(s.pubkey) : undefined;
+    const row = el('div', 'rs-row');
+    if (s.phase === 'verified' && s.pubkey) {
+      const who = el('span');
+      who.append(el('div', undefined, clip(displayName(own, s.pubkey), 28)), el('div', 'rs-sub', shortNpub(s.pubkey, 8, 6)));
+      who.title = npubOf(s.pubkey);
+      row.append(avatar(s.pubkey, own?.picture, 26), who, button('Disconnect Nostr', a.disconnectNostr));
+    } else if (s.phase === 'error') {
+      row.append(el('span', 'rs-err', s.error ?? 'Something went wrong.'), button('Try again', a.connectNostr, 'rs-btn go'), button('Play as guest', a.dismissIdentityError));
+    } else if (s.phase === 'asking' || s.phase === 'proving') {
+      row.append(el('span', 'rs-sub', s.phase === 'asking' ? 'Answer your Nostr extension’s prompt…' : 'Verifying with the game server…'));
+    } else if (s.phase === 'known' && s.pubkey) {
+      row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button('Sign in', a.connectNostr, 'rs-btn go'), button('Forget', a.disconnectNostr));
+    } else {
+      row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
+    }
+    parts.push(row);
+    // Server.
+    parts.push(el('h4', undefined, 'Server'));
+    if (v.trust) {
+      parts.push(el('div', undefined, `${v.trust.label} · ${v.trust.host}`));
+      if (v.server?.name) parts.push(el('div', 'rs-sub', `Calls itself “${v.server.name}”`));
+      if (v.server?.operator) {
+        const p = v.profile(v.server.operator);
+        parts.push(el('div', 'rs-sub', `Operator (as the server states): ${clip(displayName(p, v.server.operator), 28)}`));
+      }
+      parts.push(el('div', 'rs-sub', v.trust.detail));
+    }
+    panel.replaceChildren(...parts);
+  };
+
+  const renderStart = (v: ShellView) => {
+    const parts: Node[] = [el('h3', undefined, 'BLOBBI RUMBLE'), el('p', undefined, 'You’re already in the open room, with bots in the empty slots.')];
+    const err = el('div', 'rs-err');
+    const joining = el('div');
+    joining.style.display = 'none';
+    joining.append(joinRow(err), err);
+    const row = el('div');
+    row.append(
+      button('Play', () => a.startSeen(), 'rs-btn go'),
+      button('Host a game', () => {
+        a.startSeen();
+        a.hostGame();
+      }),
+      button('Join a game', () => {
+        joining.style.display = '';
+        (joining.querySelector('input') as HTMLInputElement | null)?.focus();
+      }),
+    );
+    const id = el('div', 'id');
+    if (v.identity.phase === 'verified' && v.identity.pubkey) id.append(document.createTextNode(`Playing as ${clip(displayName(v.profile(v.identity.pubkey), v.identity.pubkey), 24)}`));
+    else id.append(document.createTextNode('Playing as a guest · '), button('Connect Nostr', a.connectNostr));
+    parts.push(row, joining, id);
+    start.replaceChildren(...parts);
+  };
+
+  return {
+    toast,
+    openSession: () => togglePanel(true),
+    get helpOpen() {
+      return helpOpen;
+    },
+    get panelOpen() {
+      return panelOpen;
+    },
+    show(v: ShellView) {
+      const c = v.conn;
+      const healthy = c.phase === 'playing' || c.phase === 'watching';
+      // Session chip: room · server, and a dot for the connection (quiet when healthy).
+      const roomText = v.room ? (v.room.kind === 'private' ? v.room.id : 'Open room') : c.room ?? '…';
+      const sKey = JSON.stringify([c.phase, roomText, v.trust?.label]);
+      if (sKey !== lastSession) {
+        lastSession = sKey;
+        const dot = el('span', `dot${healthy ? '' : c.phase === 'connecting' ? ' wait' : ' off'}`);
+        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : 'offline'}${c.phase === 'watching' ? ' · watching' : ''}`));
+        sessionChip.title = 'Room, players, identity and server';
+      }
+      // Identity chip.
+      const s = v.identity;
+      const own = s.pubkey ? v.profile(s.pubkey) : undefined;
+      const iKey = JSON.stringify([s.phase, s.pubkey, own?.displayName, own?.name, own?.picture]);
+      if (iKey !== lastId) {
+        lastId = iKey;
+        if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'));
+        else if (s.phase === 'asking' || s.phase === 'proving') idChip.replaceChildren(el('span', 'dim', 'Nostr · check your extension…'));
+        else if (s.phase === 'error') idChip.replaceChildren(el('span', 'dim', 'Nostr · didn’t connect'));
+        else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Sign in', a.connectNostr, 'rs-btn go'));
+        else idChip.replaceChildren(el('span', 'dim', 'Guest ·'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
+      }
+      // Scoreboard.
+      const snap = v.snapshot;
+      const bKey = snap ? JSON.stringify([snap.round, v.you, snap.fighters.map((f) => [f.id, f.score, f.eliminated, f.powerLevel, label(v, f.id)])]) : '';
+      if (bKey !== lastBoard) {
+        lastBoard = bKey;
+        if (!snap) board.replaceChildren();
+        else {
+          const items: Node[] = [el('span', 'round', `R${snap.round} · to ${ROUND.target}`)];
+          for (const f of snap.fighters) {
+            const p = el('div', `rs-pl${f.id === v.you ? ' me' : ''}${f.eliminated ? ' out' : ''}`);
+            p.append(el('span', 'nm', clip(label(v, f.id), 12)), el('span', 'sc', `${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}`));
+            if (f.powerLevel > 0) p.append(el('span', 'pw', `⚡${f.powerLevel}`));
+            p.title = f.id;
+            items.push(p);
+          }
+          board.replaceChildren(...items);
+        }
+      }
+      board.style.display = snap && healthy ? '' : 'none';
+      // The contextual message, with names for slot ids.
+      const m = v.message ? v.message.replace(/\bP[1-4]\b/g, (id) => clip(label(v, id), 16)) : '';
+      if (m !== lastMsg) {
+        lastMsg = m;
+        msg.textContent = m;
+        msg.style.display = m ? 'block' : 'none';
+      }
+      // Your struggle.
+      const me = snap && v.you ? snap.fighters.find((f) => f.id === v.you) : undefined;
+      const held = me?.heldBy && !me.eliminated ? me : undefined;
+      const stKey = held ? `${held.heldBy}|${Math.round(held.combat.struggle * 20)}` : '';
+      if (stKey !== lastStruggle) {
+        lastStruggle = stKey;
+        if (held) {
+          const bar = el('div', 'bar');
+          const fill = el('i');
+          fill.style.width = `${Math.round(held.combat.struggle * 100)}%`;
+          bar.appendChild(fill);
+          struggle.replaceChildren(el('div', undefined, `Grabbed by ${clip(label(v, held.heldBy!), 14)}! Alternate ← → (A D) fast`), bar);
+        }
+        struggle.style.display = held ? 'block' : 'none';
+      }
+      // The session panel, while open.
+      if (panelOpen) {
+        const pKey = JSON.stringify([v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        // Never rebuild under someone typing a code.
+        if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
+          lastPanel = pKey;
+          renderPanel(v);
+        }
+      }
+      // The start card (first visit, open room).
+      const showStart = v.startCard && healthy;
+      const stK = showStart ? JSON.stringify([s.phase, s.pubkey, own?.displayName]) : '';
+      if (stK !== lastStart && !start.contains(document.activeElement)) {
+        lastStart = stK;
+        start.style.display = showStart ? 'block' : 'none';
+        if (showStart) renderStart(v);
+      }
+      // The banner: loud, only when play is impossible.
+      const d = describe(c, v.now);
+      const bnKey = d ? JSON.stringify(d) : '';
+      if (bnKey !== lastBanner) {
+        lastBanner = bnKey;
+        banner.style.display = d ? 'flex' : 'none';
+        if (d) {
+          const acts: Record<BannerAction, () => HTMLButtonElement> = {
+            retry: () => button(c.phase === 'refused' ? 'Try again' : 'Retry now', a.retry, 'rs-btn go'),
+            open: () => button('Play in the open room', a.openRoom, c.phase === 'missing' ? 'rs-btn go' : 'rs-btn'),
+            host: () => button('Host a new game', a.hostGame),
+          };
+          bannerBox.replaceChildren(el('h2', undefined, d.title), el('p', undefined, d.detail), ...d.actions.map((k) => acts[k]()));
+        }
+      }
+    },
+  };
+}

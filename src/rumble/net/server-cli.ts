@@ -10,9 +10,12 @@
 import { networkInterfaces } from 'node:os';
 import { loadHavokNode } from '../sim/havokNode';
 import { startRumbleServer } from './server';
+import { identityFromEnv } from './serverIdentity';
 
 const env = (k: string, d: number) => (process.env[k] === undefined ? d : Number(process.env[k]));
 const stamp = () => new Date().toISOString().slice(11, 19);
+const { identity, authUrls, warnings } = identityFromEnv(process.env);
+for (const w of warnings) console.log(`WARNING ${w}`);
 const havok = await loadHavokNode();
 const server = await startRumbleServer({
   log: (line) => console.log(`[${stamp()}] ${line}`),
@@ -23,12 +26,13 @@ const server = await startRumbleServer({
   snapshotHz: env('SNAPSHOT_HZ', 20),
   lagMs: env('LAG_MS', 0),
   jitterMs: env('JITTER_MS', 0),
-  authUrls: (process.env.PUBLIC_URL ?? '').split(',').map((u) => u.trim()).filter(Boolean),
+  identity,
+  authUrls,
 });
 const lag = env('LAG_MS', 0);
 const jitter = env('JITTER_MS', 0);
 console.log(`Blobbi Rumble server on ws://${process.env.HOST ?? '127.0.0.1'}:${server.port} · ${server.host.tickHz} Hz simulation · ${server.host.snapshotHz} Hz state${lag || jitter ? ` · DEV LAG ${lag} ms + up to ${jitter} ms each way` : ''}`);
-console.log(`play: http://127.0.0.1:5177/rumble.html?network=1  (npm run dev)`);
+console.log(`play: http://127.0.0.1:5177/rumble.html?network=1  (npm run dev) · rooms: http://127.0.0.1:5177/play/<code>`);
 if ((process.env.HOST ?? '127.0.0.1') !== '127.0.0.1')
   for (const [name, addrs] of Object.entries(networkInterfaces()))
     for (const a of addrs ?? []) if (a.family === 'IPv4' && !a.internal) console.log(`  LAN (${name}): http://${a.address}:5177/rumble.html?network=1  (npm run dev -- --host 0.0.0.0)`);

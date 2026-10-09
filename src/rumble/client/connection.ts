@@ -7,11 +7,15 @@
  *        │                            │
  *        └─close, never connected─► failed      └─close / silence─► lost ──retry──► connecting
  *   refused as full ──► full (retrying slowly)
+ *   the room asked for does not exist ──► missing (no retry: the page offers the open room or a new one)
+ *   no new room can be made now ──► refused (no retry)
  *
  * A reconnect is a new connection: it gets whatever slot is free, never a
  * promise of the fighter it had (that fighter went to a bot).
  */
-export type ConnectionPhase = 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full';
+export type ConnectionPhase = 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'missing' | 'refused';
+/** What the banner may offer: try again, go to the open room, make a new room. */
+export type BannerAction = 'retry' | 'open' | 'host';
 
 export interface ConnectionState {
   phase: ConnectionPhase;
@@ -27,6 +31,9 @@ export interface ConnectionState {
   /** A short note shown for a while after a reconnect, and until when. */
   note: string;
   noteUntil: number;
+  /** The room asked for (for the words when it is missing), and why a refusal happened. */
+  room: string | null;
+  why: string;
 }
 
 export const CONNECTION = Object.freeze({
@@ -39,7 +46,7 @@ export const CONNECTION = Object.freeze({
   noteFor: 6,
 });
 
-export const initialConnection = (url: string): ConnectionState => ({ phase: 'connecting', url, you: null, everConnected: false, previous: null, attempts: 0, retryAt: 0, note: '', noteUntil: 0 });
+export const initialConnection = (url: string, room: string | null = null): ConnectionState => ({ phase: 'connecting', url, you: null, everConnected: false, previous: null, attempts: 0, retryAt: 0, note: '', noteUntil: 0, room, why: '' });
 
 export function onWelcome(s: ConnectionState, you: string | null, now: number): ConnectionState {
   const reconnected = s.everConnected;
@@ -49,7 +56,10 @@ export function onWelcome(s: ConnectionState, you: string | null, now: number): 
 
 /** The socket closed (or went silent). `code`/`reason` as the close event gave them. */
 export function onClose(s: ConnectionState, code: number, reason: string, now: number): ConnectionState {
+  s = { ...s, why: reason };
   const attempts = s.attempts + 1;
+  if (code === 4004) return { ...s, phase: 'missing', you: null, attempts, retryAt: Infinity, why: reason };
+  if (code === 4003) return { ...s, phase: 'refused', you: null, attempts, retryAt: Infinity, why: reason };
   const full = code === 1013 && /full/i.test(reason);
   const wait = full ? CONNECTION.retryFull : Math.min(CONNECTION.retryMax, CONNECTION.retryBase * 2 ** (attempts - 1));
   const phase: ConnectionPhase = full ? 'full' : s.everConnected ? 'lost' : 'failed';
@@ -58,18 +68,23 @@ export function onClose(s: ConnectionState, code: number, reason: string, now: n
 
 export const onRetry = (s: ConnectionState): ConnectionState => ({ ...s, phase: 'connecting' });
 
-/** What to show: a headline, a line of detail, and whether to offer a Retry button. Null while simply playing. */
-export function describe(s: ConnectionState, now: number): { title: string; detail: string; retry: boolean } | null {
+/** What to show: a headline, a line of detail, and what to offer. Null while simply playing. */
+export function describe(s: ConnectionState, now: number): { title: string; detail: string; retry: boolean; actions: BannerAction[] } | null {
   const inS = Math.max(0, Math.ceil(s.retryAt - now));
+  const room = s.room ? `Room ${s.room}` : 'That room';
   switch (s.phase) {
     case 'connecting':
-      return { title: s.everConnected ? 'Reconnecting…' : 'Connecting to the Rumble server…', detail: s.url, retry: false };
+      return { title: s.everConnected ? 'Reconnecting…' : 'Connecting to the Rumble server…', detail: s.url.replace(/\?.*$/, ''), retry: false, actions: [] };
     case 'failed':
-      return { title: 'Unable to connect to the Rumble server', detail: `Is it running? Trying again in ${inS} s.`, retry: true };
+      return { title: 'Unable to connect to the Rumble server', detail: `Is it running? Trying again in ${inS} s.`, retry: true, actions: ['retry'] };
     case 'lost':
-      return { title: 'Connection lost', detail: `Your Blobbi is now played by a bot. Reconnecting in ${inS} s (you will get a free slot, maybe a different one).`, retry: true };
+      return { title: 'Connection lost', detail: `Your Blobbi is now played by a bot. Reconnecting in ${inS} s (you will get a free slot, maybe a different one).`, retry: true, actions: ['retry'] };
     case 'full':
-      return { title: 'The server is full', detail: `Trying again in ${inS} s.`, retry: true };
+      return { title: /room/i.test(s.why) ? `${room} is full` : 'The server is full', detail: `Trying again in ${inS} s.`, retry: true, actions: ['retry', 'open'] };
+    case 'missing':
+      return { title: `${room} isn’t here`, detail: 'It may have ended (empty rooms close after a couple of minutes), or the code is mistyped.', retry: false, actions: ['open', 'host'] };
+    case 'refused':
+      return { title: 'Couldn’t start a new game', detail: /minute/.test(s.why) ? 'Too many new games from here: wait a minute and try again.' : 'This server is hosting as many games as it can right now.', retry: false, actions: ['open', 'retry'] };
     default:
       return null;
   }

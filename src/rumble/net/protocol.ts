@@ -13,12 +13,15 @@
  *     { t: 'logout' }                                 M8A: drop this connection's Nostr identity
  *
  *   server → client
- *     { t: 'welcome', you, players, tickHz, snapshotHz }    you: the player id it controls, or null (spectating)
+ *     { t: 'welcome', you, players, tickHz, snapshotHz, features?, room?, server? }
+ *                                                     you: the player id it controls, or null (spectating);
+ *                                                     room (M8B): which room, and its share link if the
+ *                                                     server knows its public address; server: its claims
  *     { t: 'state', tick, time, snapshot, control, acks, ackTicks }   the authoritative match, ~snapshotHz
  *     { t: 'pong', id, ct, tick }
  *     { t: 'challenge', challenge, ttl }              M8A: sign this within ttl seconds
  *     { t: 'auth', ok, pubkey?, reason? }             M8A: the answer to a proof (or a logout)
- *     { t: 'roster', slots }                          M8A: per player slot, who drives it: a bot,
+ *     { t: 'roster', slots, spectators? }             M8A: per player slot, who drives it: a bot,
  *                                                     a guest, or a person proven to hold a pubkey
  *
  * IDENTITY (M8A) is optional and separate from play: a connection plays as
@@ -78,9 +81,29 @@ export interface WelcomeMessage {
   players: string[];
   tickHz: number;
   snapshotHz: number;
-  /** What this server offers beyond play ('nostr-auth': the M8A identity handshake). Absent on older servers. */
+  /** What this server offers beyond play ('nostr-auth': the M8A identity handshake; 'rooms'). Absent on older servers. */
   features?: string[];
+  /** M8B: the room this connection is in. */
+  room?: RoomInfo;
+  /** M8B: what the server says about itself (claims, not proofs). */
+  server?: ServerInfo;
 }
+export interface RoomInfo {
+  id: string;
+  kind: 'open' | 'private';
+  mode: 'casual';
+  /** The canonical share link, when the server knows its public address. */
+  url?: string;
+}
+export interface ServerInfo {
+  name?: string;
+  /** Hex pubkey of the operator, as the server claims. */
+  operator?: string;
+  /** Its canonical public origin. */
+  url?: string;
+}
+/** Close codes beyond the standard ones: the room asked for does not exist; no new room can be made now. */
+export const CLOSE = Object.freeze({ noSuchRoom: 4004, roomRefused: 4003 });
 export interface StateMessage {
   t: 'state';
   tick: number;
@@ -115,6 +138,8 @@ export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; p
 export interface RosterMessage {
   t: 'roster';
   slots: Record<string, SlotIdentity>;
+  /** M8B: how many connections in the room are watching. */
+  spectators?: number;
 }
 export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage;
 

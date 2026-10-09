@@ -53,6 +53,13 @@ and the match's WebSocket (`/ws`) on one port; friends on the LAN open
 reverse proxy in front of port 8080 and share its `https://` URL: the page
 then connects to `wss://<same host>/ws` by itself.
 
+ROOMS (M8B): one server hosts several matches. A plain visit plays the
+open room; "Host a game" makes a private room with a short code (`A7F2`)
+and a share link (`/play/A7F2`); "Join a game" takes a code. Empty rooms
+close after two minutes. `PUBLIC_URL` is the server's one public address
+(identity proofs, share links, `/.well-known/rumble.json`). The interface
+is quiet while playing (chips, scoreboard, `H` help); see HOSTING.md.
+
 NETWORK PLAY (`src/rumble/net/`, M7B): `npm run server` runs one
 authoritative match in Node at a fixed 60 Hz and sends its state to every
 client at 20 Hz over a WebSocket (`ws`). Each browser that connects takes
@@ -256,7 +263,11 @@ src/rumble/
   net/                the network boundary (M7B):
     protocol.ts         the wire messages, validation of untrusted input, state freshness (pure); M8A identity messages
     host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart; the roster
-    server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag; the identity handshake
+    server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag; the identity handshake; room routing
+    rooms.ts            RoomManager: the open room and private rooms, one RumbleHost each; limits, grace period, disposal
+    roomId.ts           short room codes (generation, validation; pure)
+    serverIdentity.ts   PUBLIC_URL (the canonical address), SERVER_NAME, OPERATOR_PUBKEY, /.well-known/rumble.json (pure)
+    serverTrust.ts      Local / Official / Community / Unknown server labels (pure)
     server-cli.ts       `npm run server` (dev, beside Vite)
     static.ts           the built game over HTTP (no traversal, / redirects to the game, /healthz)
     serve-cli.ts        `npm run serve`: the hosted game, page + /ws on one port
@@ -264,8 +275,9 @@ src/rumble/
   client/             the browser client: presenter.ts (draws snapshots, diffing them for feedback),
                       local.ts (the match in the page), network.ts (a client of the server),
                       interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure),
-                      connection.ts (connect / lost / retry states and their words, pure), overlay.ts (status pill, banner, controls card),
-                      identity.ts (the optional Nostr identity session), identityView.ts (identity card, welcome card, player list)
+                      connection.ts (connect / lost / retry / missing-room states and their words, pure),
+                      room.ts (which room a page wants, its links; pure), shell.ts (the interface: chips, scoreboard, panels,
+                      help, banner), dom.ts (text-only DOM helpers), identity.ts (the optional Nostr identity session)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place
