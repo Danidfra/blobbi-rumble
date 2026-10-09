@@ -10,7 +10,8 @@
  *   H Help
  *
  *   on demand:  session panel (room + share link, host / join, players,
- *               identity, server), help panel (H), start card (first visit)
+ *               identity, server), help panel (H), start card (first visit),
+ *               the automatic-invites question (once, a corner card)
  *   loud:       the centred banner when play is impossible (offline, a
  *               missing room, …), with what to do about it
  *   debug:      F3 / F4 (the text HUD), unchanged, off by default
@@ -54,6 +55,10 @@ export interface ShellActions {
   checkInvites(): void;
   joinInvite(id: string): void;
   dismissInvite(id: string): void;
+  /** M8C-B.2: automatic checking, one consent per identity and origin: enable, "Not now", or turn it off later. */
+  enableAutoInvites(): void;
+  declineAutoInvites(): void;
+  disableAutoInvites(): void;
   /** M8C-B.1: set up a private-message inbox (kind 10050) for an identity that has none. */
   openInboxSetup(): void;
   toggleInboxRelay(url: string): void;
@@ -91,8 +96,8 @@ export interface ShellView {
   nameOf: (slot: string) => string | null;
   startCard: boolean;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
-  /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page). */
-  inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null } | null;
+  /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
+  inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
 }
 
 const CSS = `
@@ -147,6 +152,7 @@ const CSS = `
   .rs-start p { margin: 0 0 12px; color: #555a6e; }
   .rs-start .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
   .rs-start .id { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eef1f6; font-size: 12px; color: #555a6e; }
+  .rs-consent { right: 10px; bottom: 10px; width: min(340px, calc(100vw - 20px)); padding: 12px 14px; display: none; }
   .rs-toasts { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 7; }
   .rs-toast { padding: 5px 12px; border-radius: 10px; background: rgba(43,43,58,0.85); color: #fff; font: 12px ui-sans-serif, system-ui, sans-serif; }
   .rs-banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(210,225,245,0.55); backdrop-filter: blur(2px); z-index: 8; }
@@ -194,11 +200,13 @@ export function createShell(a: ShellActions) {
   const panel = el('div', 'rs-card rs-panel');
   const help = el('div', 'rs-card rs-help');
   const start = el('div', 'rs-card rs-start');
+  // M8C-B.2: the one-time question about automatic invites (small, a corner, only until answered).
+  const consent = el('div', 'rs-card rs-consent');
   const toasts = el('div', 'rs-toasts');
   const banner = el('div', 'rs-banner');
   const bannerBox = el('div');
   banner.appendChild(bannerBox);
-  document.body.append(top, msg, struggle, hint, panel, help, start, toasts, banner);
+  document.body.append(top, msg, struggle, hint, panel, help, start, consent, toasts, banner);
 
   // The help card: static, built once.
   help.append(el('h3', undefined, 'How to play'), button('✕', () => toggleHelp(false), 'rs-btn x'));
@@ -287,6 +295,7 @@ export function createShell(a: ShellActions) {
   let lastStruggle = '';
   let lastPanel = '';
   let lastStart = '';
+  let lastConsent = false;
   let lastBanner = '';
 
   // The invite field keeps what was typed across panel redraws.
@@ -379,6 +388,14 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  /** The automatic-checking question (M8C-B.2), as the panel and the corner card both ask it. */
+  const AUTO_WORDS = 'Rumble checks a small number of recent encrypted Nostr messages and listens for new ones while you’re connected. Other messages are discarded immediately.';
+  const consentNodes = (): Node[] => {
+    const row = el('div', 'rs-row');
+    row.append(button('Enable automatic invites', a.enableAutoInvites, 'rs-btn go'), button('Not now', a.declineAutoInvites));
+    return [el('div', undefined, 'Automatically check for Rumble invites?'), el('div', 'rs-sub', AUTO_WORDS), row];
+  };
+
   const inboxSection = (v: ShellView, ib: NonNullable<ShellView['inbox']>): Node[] => {
     const st = ib.state;
     const out: Node[] = [el('h4', undefined, `Invites${ib.cards.length ? ` (${ib.cards.length})` : ''}`)];
@@ -387,26 +404,45 @@ export function createShell(a: ShellActions) {
       case 'no-nip44':
         out.push(el('div', 'rs-sub', 'Your Nostr extension can’t decrypt private messages (NIP-44), so invites can’t be checked here. They still reach you in a Nostr messaging app.'));
         return out;
+      case 'no-inbox':
+        out.push(...setupSection(ib.setup));
+        return out;
+      case 'locating':
+        out.push(el('div', 'rs-sub', 'Finding your private-message inbox…'));
+        return out;
+    }
+    // Automatic checking (M8C-B.2): the question until answered; afterwards a plain On / Off.
+    if (ib.offer) out.push(...consentNodes());
+    else {
+      const row = el('div', 'rs-row');
+      row.append(el('span', undefined, `Automatic invites: ${st.auto === 'on' ? 'On' : 'Off'}`), st.auto === 'on' ? button('Turn off', a.disableAutoInvites) : button('Turn on', a.enableAutoInvites));
+      out.push(row);
+    }
+    switch (st.phase) {
       case 'idle':
       case 'declined': {
-        out.push(el('div', 'rs-sub', st.phase === 'declined' ? 'Your extension declined, so the check stopped.' : explain));
+        if (!ib.offer) out.push(el('div', 'rs-sub', st.phase === 'declined' ? 'Your extension declined, so the check stopped.' : explain));
         const row = el('div', 'rs-row');
         row.append(button(st.phase === 'declined' ? 'Check again' : 'Check invites', a.checkInvites, 'rs-btn go'));
         out.push(row);
         return out;
       }
-      case 'locating':
       case 'checking':
-        out.push(el('div', 'rs-sub', st.phase === 'locating' ? 'Finding your private-message inbox…' : `Checking invites… (${st.checked} looked at; approve the requests in your extension)`));
+        out.push(el('div', 'rs-sub', `Checking invites… (${st.checked} looked at; approve the requests in your extension)`));
         return out;
-      case 'no-inbox':
-        out.push(...setupSection(ib.setup));
-        return out;
+      case 'paused': {
+        out.push(el('div', 'rs-warn', 'Automatic invites paused — decrypt permission needed. Allow decryption in your Nostr extension, then try again.'));
+        const row = el('div', 'rs-row');
+        row.append(button('Try again', a.checkInvites, 'rs-btn go'));
+        out.push(row);
+        break;
+      }
       case 'error':
         out.push(el('div', 'rs-err', 'Couldn’t check invites.'));
         return out;
       case 'live':
-        if (!ib.cards.length) out.push(el('div', 'rs-sub', `No new invites. Listening for new ones while Rumble is open.`));
+        if (st.auto === 'on') out.push(el('div', 'rs-ok', 'Listening for private invites'));
+        if (!ib.cards.length) out.push(el('div', 'rs-sub', st.auto === 'on' ? 'No new invites.' : 'No new invites. Listening for new ones while Rumble is open.'));
     }
     const nowS = Math.floor(Date.now() / 1000);
     for (const c of ib.cards) {
@@ -633,7 +669,7 @@ export function createShell(a: ShellActions) {
       // The session panel, while open.
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
-        const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
+        const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
         const pKey = JSON.stringify([inboxKey, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
@@ -648,6 +684,13 @@ export function createShell(a: ShellActions) {
         lastStart = stK;
         start.style.display = showStart ? 'block' : 'none';
         if (showStart) renderStart(v);
+      }
+      // The automatic-invites question (M8C-B.2): a corner card while unanswered, unless the panel (which asks it too) is open.
+      const showConsent = !!v.inbox?.offer && healthy && !showStart && !panelOpen;
+      if (showConsent !== lastConsent) {
+        lastConsent = showConsent;
+        consent.style.display = showConsent ? 'block' : 'none';
+        if (showConsent) consent.replaceChildren(...consentNodes());
       }
       // The banner: loud, only when play is impossible.
       const d = describe(c, v.now);

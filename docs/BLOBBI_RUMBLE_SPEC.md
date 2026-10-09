@@ -1,10 +1,10 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `81f51f9` (M8C-B) plus the M8C-B.1 follow-up ·
-**Last major completed milestone:** M8C-B (private Nostr invites,
-receiving: core path validated with two real identities). M8C-B.1 (inbox
-setup) is implemented but not yet validated for real.
+**Implementation baseline:** `bed269d` (M8C-B.1) plus the M8C-B.2 follow-up ·
+**Last major completed milestone:** M8C-B.1 (inbox setup, validated for
+real with two identities). M8C-B.2 (automatic invite checking) is
+implemented but not yet validated for real.
 
 Read this first. It says what Blobbi Rumble is, what exists, which
 boundaries are deliberate and which decisions are settled. It does not
@@ -12,7 +12,7 @@ describe every file. The details live in the code and in:
 
 - [`README.md`](../README.md): running, gameplay mechanics in prose, a file map.
 - [`HOSTING.md`](../HOSTING.md): operating a server (rooms, `PUBLIC_URL`, limits, invites).
-- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B and M8C-A.
+- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B, M8C-A, M8C-B, M8C-B.1 and M8C-B.2.
 
 > **When this specification conflicts with current verified
 > implementation, investigate the discrepancy. Do not blindly change
@@ -485,7 +485,7 @@ Alice (in a private room, Nostr-connected, extension with NIP-44)
     fallback, and nothing was sent;
   - the LAN-only link warning appeared.
 
-### 15. Private invite receiving (M8C-B, implemented and validated) and inbox setup (M8C-B.1, implemented)
+### 15. Private invite receiving (M8C-B, validated), inbox setup (M8C-B.1, validated) and automatic checking (M8C-B.2, implemented)
 
 **Receiving (M8C-B).**
 - **Opt-in.** Nothing is decrypted until the player clicks **Check
@@ -557,8 +557,39 @@ the budget.
   - **failed**: nothing usable.
   - It never re-signs or retries by itself.
 
-**Not implemented:** automatic invite checking on connect (a separate
-consent pass), editing an existing inbox list, invite replies, chat.
+**Automatic checking (M8C-B.2).**
+- **Consent first.** Once an identity is connected with NIP-44 and a
+  located kind 10050, Rumble asks once: "Automatically check for Rumble
+  invites?", with "Rumble checks a small number of recent encrypted Nostr
+  messages and listens for new ones while you're connected. Other messages
+  are discarded immediately." and **Enable automatic invites** / **Not
+  now**. A small corner card, and the same question in **Invites**.
+  Nothing is decrypted before Enable.
+- **Scope.** One preference per Nostr identity and per browser origin
+  (localStorage, `on` or `off`; never a message). "Not now" is `off`: the
+  question is not repeated; **Automatic invites: Off · Turn on** stays in
+  the panel.
+- **Start.** With it on, the same check as the button starts by itself
+  when the identity connects (and when a list is adopted after setup):
+  the same 30-wrap catch-up, newest first, remembered ids skipped; then
+  the same live subscription. The panel says **Listening for private
+  invites**; a new invite goes to the Invites section, the ✉ badge and
+  the toast. No gameplay interruption.
+- **Pause.** If the extension refuses or does not answer a decrypt
+  request, checking pauses: "Automatic invites paused — decrypt permission
+  needed", with **Try again**. Nothing is asked again by itself (not by a
+  new list, not by a reconnect); a reload tries once. The preference is
+  not changed by a pause.
+- **Off.** Turning it off closes the subscription at once, keeps what was
+  shown, leaves **Check invites**, and never touches the kind 10050.
+- **Lifecycle.** A game-socket reconnect or a room switch does not restart
+  the inbox (the same signer); an identity change or Disconnect Nostr
+  stops it and clears all invite state; stale asynchronous work is cut off
+  (a run that awaited across a stop goes no further).
+- **Automatic checking is permission to check, not to join.** Join stays a
+  click; nothing navigates by itself.
+
+**Not implemented:** editing an existing inbox list, invite replies, chat.
 
 ### 16. Invites are not access control
 
@@ -609,7 +640,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | One-time wrapper key vs identity key | NIP-59 wrapper keys are made per wrap and dropped; they are not identities. |
 | Private invite vs access control | An invite grants nothing (§16). |
 | Inbox setup vs silent changes | A kind 10050 is published only on an explicit confirm, only when none exists; an existing list is never replaced or merged. |
-| Received messages vs privacy | Decryption only after an explicit check, bounded, local; unrelated messages are never shown, stored or logged. |
+| Received messages vs privacy | Decryption only after an explicit check or an explicit per-identity consent, bounded, local; unrelated messages are never shown, stored or logged. |
+| Automatic checking vs joining | Consent to check is not consent to join: Join stays a click; a pause or a refusal is never retried without one. |
 | Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
 | Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
 
@@ -631,7 +663,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8B | Rooms, server identity, UI cleanup | **Manual multi-room test**: private room V4BU with two players, OPEN isolated, real NIP-07 auth inside the room, empty-room cleanup, steady 60 ticks/s. Follow-up `44179d7` (Copy vs Select link) verified in Chrome on localhost and LAN http. |
 | M8C-A | Private invites: sending | **Real interop**: Rumble → real NIP-17 relay → **Anagram** showed the readable kind 14; no-10050 fallback and LAN-link warning confirmed. |
 | M8C-B | Private invites: receiving | **Real two-identity test**: Danidfra (Rumble) sent; NotASage (Rumble, real extension) checked invites, the extension decrypted, the invite card appeared, and **Join** entered Danidfra's room. |
-| M8C-B.1 | Inbox setup (kind 10050) | Automated tests; a full browser run with the test double and local relays (setup → publish → read back → invite delivered → join). **Real validation with an identity that has no 10050 is pending.** |
+| M8C-B.1 | Inbox setup (kind 10050) | **Real two-identity test** (2026-10-09): Nostr Farm (no 10050, real extension) approved the setup; NIP-42 AUTH signed for `auth.nostr1.com`; the list published; Danidfra's invite received, decrypted (after the extension's decrypt permission) and **Join** entered the room. |
+| M8C-B.2 | Automatic invite checking | Automated tests (consent, start, catch-up, live, pause, off, lifecycle). **Real validation pending** (§15; the procedure is in the M8C-B.2 report). |
 
 ---
 
@@ -659,6 +692,8 @@ immutable forever.
 - **The M8C-B receive behaviour** (explicit check, bounded newest-first
   decryption, marker-only recognition, unrelated messages discarded,
   explicit Join).
+- **The M8C-B.1 inbox setup** (offered only with no list, suggested
+  relays, a strict re-check, one explicit confirm, no retries by itself).
 - **The current minimal HUD** structure.
 
 ---
@@ -667,9 +702,9 @@ immutable forever.
 
 | | |
 | --- | --- |
-| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B |
-| **In validation** | M8C-B.1: inbox setup for identities without kind 10050 (§15) |
-| **Next** | Automatic invite checking, with its own consent design (a separate pass) |
+| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 |
+| **In validation** | M8C-B.2: automatic invite checking after consent (§15) |
+| **Next** | To be decided after M8C-B.2 is validated |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 
@@ -700,8 +735,7 @@ None of this is designed or decided.
   `@blobbi-kit/nostr`), once more apps need it (M8A0 §17).
 - **Fighter appearance from a player's Blobbi** (kind 11125 → 31124): M9
   territory.
-- **Automatic invite checking** on connect (needs its own consent design);
-  **editing an existing inbox list**.
+- **Editing an existing inbox list.**
 - **NIP-05 display**, a follows-based contact picker, invite
   accept/decline over kind 21059, proof-of-work on wraps (M8C0).
 - **Arena 2** with a larger or different layout.

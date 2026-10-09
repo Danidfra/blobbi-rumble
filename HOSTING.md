@@ -202,6 +202,22 @@ own NIP-65 write relays and the chosen inbox relays, and reads it back.
 The result says whether the list is discoverable and how many inbox
 relays accepted it. An existing list is never replaced or merged.
 
+**Automatic checking (M8C-B.2, implemented, awaiting real validation):**
+once an identity with NIP-44 and an inbox is connected, Rumble asks once,
+"Automatically check for Rumble invites?", with **Enable automatic
+invites** / **Not now** (a small corner card, and the same question in
+**Invites**). The answer is one preference per identity and per origin
+(localStorage, one word; never a message). With it on, the same bounded
+check starts by itself each time that identity connects (no click; the
+remembered ids are skipped as before) and the panel says **Listening for
+private invites**. If the extension refuses or does not answer a decrypt
+request, checking **pauses** ("Automatic invites paused — decrypt
+permission needed") and nothing is asked again until **Try again**. The
+Invites section shows **Automatic invites: On / Off** with a switch;
+turning it off closes the subscription at once and leaves **Check
+invites**. Automatic checking is permission to check, not to join: Join
+stays a click, and the kind 10050 list is never touched by it.
+
 ## The interface
 
 While playing: a session chip (top left: room · server, a dot for the

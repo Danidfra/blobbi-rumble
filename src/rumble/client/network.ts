@@ -124,7 +124,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let spectators = 0;
   let inviteStatus: InviteStatus | null = null;
   let inviteBusy = false;
-  // M8C-B: the connected identity's invite inbox (decrypts only after "Check invites"; restarted, emptied, on any identity change).
+  // M8C-B: the connected identity's invite inbox (decrypts after "Check invites", or by itself once the player enabled
+  // automatic checking for this identity on this origin, M8C-B.2; restarted, emptied, on any identity change; untouched
+  // by game reconnects and room switches, which keep the same signer).
   let inbox: InviteInbox | null = null;
   let inboxSigner: unknown = null;
   let inboxExpiredAt = 0;
@@ -153,11 +155,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
             subscribePool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
             lookupRelays: devRelays ?? LOOKUP_RELAYS,
             storage: sessionStore(),
+            prefs: storage,
             onChange: () => {
               const pks = inbox?.state.invites.map((i) => i.from) ?? [];
               if (pks.length) profiles().ask(pks);
             },
             onLiveInvite: (i) => shell.toast(`${clip(displayName(profileOf(i.from), i.from), 20)} invited you to room ${i.room} (open the session panel)`, 6000),
+            onPaused: () => shell.toast('Automatic invites paused: your extension did not allow decrypting (session panel → Invites)', 6000),
           })
         : null;
   };
@@ -167,6 +171,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       trust: classifyServer(`${invite.origin.replace(/^http/, 'ws')}/ws`, null),
       sameOrigin: invite.origin === location.origin,
     }));
+  const inboxView = () => (inbox ? { state: inbox.state, cards: inviteCards(), setup: setup?.state ?? null, offer: inbox.offersAuto } : null);
   const inviteMode = (): InviteMode => (!identity.provenSigner ? 'guest' : identity.provenSigner.nip44 ? 'ready' : 'no-nip44');
   const useInterp = q.get('interp') !== '0';
   const usePredict = q.get('predict') !== '0';
@@ -318,6 +323,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       }).finally(() => (inviteBusy = false));
     },
     checkInvites: () => void inbox?.check(),
+    // M8C-B.2: the automatic-checking consent, one preference per identity and origin; nothing is decrypted before "Enable".
+    enableAutoInvites: () => inbox?.enableAuto(),
+    declineAutoInvites: () => inbox?.declineAuto(),
+    disableAutoInvites: () => inbox?.disableAuto(),
     // M8C-B.1: only for this identity, only when it has no kind-10050 list, only on clicks.
     openInboxSetup: () => {
       const signer = identity.connectedSigner;
@@ -586,7 +595,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
-      inbox: inbox ? { state: inbox.state, cards: inviteCards(), setup: setup?.state ?? null } : null,
+      inbox: inboxView(),
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
@@ -710,9 +719,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       shell,
       /** M8C-B invites, for scripted checks (valid invites only; nothing else is held). */
       get inbox() {
-        return inbox ? { state: inbox.state, cards: inviteCards(), setup: setup?.state ?? null } : null;
+        return inboxView();
       },
       checkInvites: () => inbox?.check(),
+      /** M8C-B.2 automatic checking, for scripted checks (the same consent as the panel's buttons). */
+      autoInvites: { enable: () => inbox?.enableAuto(), decline: () => inbox?.declineAuto(), disable: () => inbox?.disableAuto() },
       /** Identity, for scripted checks. */
       identity: {
         get state() {

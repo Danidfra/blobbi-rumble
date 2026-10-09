@@ -1043,10 +1043,18 @@ M8C-A tests in new code; M8A/M8B verification was not affected.
 
 ---
 
-## M8C-B.1 as built (2026-10-09): inbox setup (pending real validation)
+## M8C-B.1 as built (2026-10-09): inbox setup (validated for real)
 
 M8C-B's core receive path was validated with two real identities
 (Danidfra → NotASage: check, decrypt, card, Join).
+
+**Validated for real on 2026-10-09** with a second pair of identities and a
+real NIP-07 extension: Nostr Farm had no kind 10050; Rumble offered the
+setup; the player approved a kind 10050 with the three suggested relays;
+the extension signed NIP-42 AUTH for `auth.nostr1.com`; the list was
+published; Danidfra sent a NIP-17 invite; Nostr Farm received and
+decrypted it (after granting the extension's decrypt permission) and
+**Join** entered Danidfra's room. M8C-B.1 is frozen.
 
 **Kind 10050** (NIP-17, listed in NIP-51) is a replaceable event: the
 newest wins, and on a tie the lowest id (NIP-01). `findInbox` now applies
@@ -1098,3 +1106,79 @@ The new list is adopted at once (Check invites becomes available).
 'auth' (CLOSED auth-required) or 'down'. nostr-tools reports a CLOSED as
 an EOSE first, so the 'answered' verdict waits one tick for a close to
 override it.
+
+---
+
+## M8C-B.2 as built (2026-10-09): automatic invite checking (pending real validation)
+
+Real M8C-B.1 testing showed the extension asks for NIP-44 decrypt
+permission, and that remembering to press **Check invites** on every visit
+is the friction. M8C-B.2 lets the page start the same check by itself,
+after one explicit consent. The cryptographic receive path is unchanged.
+
+**Consent.**
+- Offered once an identity is connected with NIP-44 **and** a located kind
+  10050 (`InviteInbox.offersAuto`): "Automatically check for Rumble
+  invites?" with the short explanation, **Enable automatic invites** /
+  **Not now**. It is a small corner card (hidden while the session panel
+  is open, which asks the same) and the same question inside **Invites**.
+- Nothing is decrypted before **Enable**.
+- The answer is stored in localStorage as `rumble:auto-invites:v1:<pubkey>`
+  = `on` | `off`: one preference per identity and per origin, one word,
+  nothing else. `off` is also "Not now", so the offer is never repeated;
+  **Automatic invites: Off · Turn on** stays in the panel.
+- Without NIP-44 or without a list nothing is offered: the M8C-B.1 setup
+  flow stays, and nothing is published by this milestone.
+
+**Start.** `InviteInbox.autoStart()` runs after the inbox is located, after
+a list is adopted (set up just now) and on **Enable**: with the preference
+`on`, NIP-44 present, an inbox found and the phase `idle`, it calls the
+same `check()` as the button. From `paused` or `declined` only an explicit
+click (Try again, or Enable itself) starts it: nothing retries by itself.
+
+**Catch-up.** The existing one: `since = now − (2 days + 40 min)`, `limit
+60` per relay, the newest **30** unseen wraps by `created_at`, remembered
+ids skipped without a decrypt call, a live invite's wrap reopened (its
+content is not stored), dismissed and expired wraps remembered. Because
+gift wraps are backdated at random, `created_at` is not arrival order; the
+bound comes from the window plus the remembered ids, not from the
+timestamp alone. The decrypt budget is unchanged (30 + 30 live).
+
+**Live.** The same subscription continues after the catch-up while the
+page is open, the identity connected and the preference on; a valid new
+invite goes to the Invites section, the ✉ badge and the existing toast.
+Unrelated wraps are dropped where they are opened, as before.
+
+**Pause.** A `SignerError` of `denied`, `timeout` or `unavailable` from the
+signer (M8C-B stopped on `denied` only) stops the run: the subscription and
+its pool close, the wrap is **not** marked as judged, and the phase is
+`paused` when automatic checking is on ("Automatic invites paused — decrypt
+permission needed", a toast once, **Try again**) or `declined` for a manual
+check, as before. A pause is not retried by `adopt`, by time or by a game
+reconnect; a reload tries once more (the preference is still on), then
+pauses again if refused. Rumble never assumes the extension's permission
+is permanent, and never works around it.
+
+**Off.** `disableAuto()` writes `off`, closes the subscription and its pool
+at once, keeps the invites already shown, resets the phase to `idle` so
+**Check invites** works, and leaves the kind 10050 alone.
+
+**Lifecycle.** The inbox follows the page's signer
+(`IdentitySession.connectedSigner`), which is the same object across a
+game-socket reconnect and a room switch (tested), so neither restarts the
+inbox; a new signer or **Disconnect Nostr** stops it and forgets all invite
+state. Stale asynchronous work is cut by a generation counter bumped
+whenever listening stops: a run that awaited across a stop (the fetch, a
+decrypt prompt) goes no further and leaves its wrap unjudged; events a
+closed subscription still delivers are ignored.
+
+**Tests** (`inviteInbox.test.ts`, "automatic invites"; `identity.test.ts`):
+first-time offer, no offer without NIP-44 or a list, Not now, enable with
+a bounded catch-up and live arrivals (duplicates, unrelated), reload with
+it on (skipped wraps, rediscovered invite, dismissed stays gone),
+per-identity preference, turn off (closed at once, stale events ignored,
+manual check works), turn off during a hanging prompt, refusal → paused
+with no second prompt (adopt does not restart it; Try again is one more;
+a reload tries once), manual refusal still `declined`, setup → adopt →
+offer / start, stop while listening, and the signer's stability across
+reconnect and room switch.

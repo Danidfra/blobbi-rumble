@@ -140,6 +140,27 @@ describe('the identity session', () => {
     expect(s.sent).toEqual([{ t: 'challenge' }]);
   });
 
+  it('the page’s signer (what the invite inbox follows) survives a game reconnect and a room switch; disconnect ends it', async () => {
+    const s = setup();
+    s.session.onWelcome(['nostr-auth']);
+    expect(s.session.connectedSigner).toBeNull();
+    await s.session.connect();
+    const held = s.session.connectedSigner;
+    expect(held).not.toBeNull();
+    await s.session.onChallenge('c1');
+    s.session.onAuth({ t: 'auth', ok: true, pubkey: s.pk });
+    expect(s.session.connectedSigner).toBe(held);
+    // The game socket drops, or the player switches room: a new connection, the same signer.
+    s.session.onClose();
+    expect(s.session.connectedSigner).toBe(held);
+    s.session.onWelcome(['nostr-auth']);
+    await s.session.onChallenge('c2');
+    s.session.onAuth({ t: 'auth', ok: true, pubkey: s.pk });
+    expect(s.session.connectedSigner).toBe(held);
+    s.session.disconnect();
+    expect(s.session.connectedSigner).toBeNull();
+  });
+
   it('a challenge that expired during a slow prompt is retried once, then reported', async () => {
     const s = setup();
     s.session.onWelcome(['nostr-auth']);
