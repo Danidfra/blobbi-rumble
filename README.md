@@ -40,7 +40,7 @@ sleeping, a pinned motion state, and a lineup of eight presets to compare.
 
 ```
 npm run dev          # http://127.0.0.1:5177/rumble.html            local: the match runs in the page
-npm run server       # ws://127.0.0.1:8787                          the authoritative server (one match)
+npm run server       # ws://127.0.0.1:8787                          the authoritative server (the open room + private rooms)
                      # http://127.0.0.1:5177/rumble.html?network=1  a network client (open several)
 npm run serve        # http://<this machine>:8080/                    hosted: built game + WebSocket on one port (LAN / behind HTTPS)
 npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60)
@@ -116,8 +116,9 @@ them (`src/rumble/profile.ts`, built from the kit's `BLOBBI_GAMEPLAY_PROFILE`
 and nothing of any identity). Walk, run, jump, shove, punch, grab, drag and
 throw. A ring-out eliminates a fighter from the round and the others play
 on; the last Blobbi standing takes the point (the last ones falling on the
-same frame is a draw, no point), first to three wins, R restarts, F3 shows
-colliders, reach and everyone's state.
+same frame is a draw, no point), first to three wins. In local mode R
+starts a new match once one is won; network matches move on by themselves
+after five seconds. F3 shows colliders, reach and everyone's state.
 
 P1 and P2 share the keyboard; P3 and P4 are LOCAL TEST BOTS
 (`control/bot.ts`), not an AI: a few states (seek an orb, seek a fighter,
@@ -219,9 +220,11 @@ other within a second; a diagonal or a sidestep still escapes. With more
 than two touching, each body's contest is with the nearest one it touches. Power gives a very small
 walk and run speed bonus (+1% per orb, capped at +6%), never the jump or
 the air share, and touches nothing else (not reach, hold, mass or
-recovery). It resets every round. The HUD shows each player's multiplier,
-score, whether it is still in, and which are bots; a powered Blobbi has a
-glowing ring at its feet, and every Blobbi carries its label over its head.
+recovery). It resets every round. In local mode the text HUD shows each
+player's multiplier, score, whether it is still in, and which are bots; in
+network mode the scoreboard shows scores and power levels (⚡) and the text
+HUD is behind F4. A powered Blobbi has a glowing ring at its feet, and every
+Blobbi carries its label (or its player's Nostr name) over its head.
 
 THE CAMERA frames every fighter still in the round and on the arena (a body
 going over the rim stops counting once it drops below the floor): the
@@ -451,12 +454,15 @@ the centre line with no roll; determinism), all built with Babylon's
 
 They run in the kit (`npm test` in blobbi-kit) on Babylon's `NullEngine`.
 
-## Limitations
+## Limitations (the renderer and the playground)
 
 - Adult stage only; no egg, no baby.
 - Lighting is Babylon standard materials (no PBR, no environment map).
 - The skin texture repaints only when the blush changes; expressions that
   move the brows and mouth update meshes, which is cheap.
-- The character controller is a stand-in (gravity and a flat floor), not Havok.
-- No LOD, no instancing: one Blobbi is about 45 meshes and 10k vertices.
+- The playground's character controller is a stand-in (gravity and a flat floor),
+  not Havok. Blobbi Rumble moves the same gameplay capsule with Havok.
+- No LOD, and a Blobbi's own meshes are not instanced: one Blobbi is about 45
+  meshes and 10k vertices. (Rumble's arena decoration does use merged meshes and
+  thin instances.)
 - The animation set is the demonstration set; there is no blend tree yet.
