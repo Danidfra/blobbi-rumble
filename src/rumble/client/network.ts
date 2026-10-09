@@ -45,6 +45,8 @@ import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
 import { InboxSetup } from './inboxSetup';
 import { PeopleFinder } from './people';
+import { BlobbiPicker } from './blobbis';
+import { blobbiPreview } from './blobbiPreview';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -141,6 +143,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let setup: InboxSetup | null = null;
   // M8C-C: whom to invite (follows, search, a selection) for the connected identity; it never sends anything itself.
   let people: PeopleFinder | null = null;
+  // M9A: the connected identity's Blobbis (read only) and a local choice among them; nothing published, nothing changed in play yet.
+  let blobbis: BlobbiPicker | null = null;
   const syncInbox = () => {
     const signer = identity.connectedSigner;
     if (signer === inboxSigner) return;
@@ -148,8 +152,19 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     setup?.stop();
     setup = null;
     people?.stop();
+    blobbis?.stop();
     inboxSigner = signer;
     const me = identity.state.pubkey;
+    blobbis =
+      signer && me
+        ? new BlobbiPicker({
+            me,
+            lookup: (profiles(), relayPool!),
+            ...(devBlobbiRelays ? { relays: devBlobbiRelays } : {}),
+            storage,
+            preview: blobbiPreview,
+          })
+        : null;
     people =
       signer && me
         ? new PeopleFinder({
@@ -242,6 +257,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let relayPool: BoundedPool | null = null;
   let directory: ProfileDirectory | null = null;
   // Dev only: ?relays=ws://a,ws://b replaces the lookup relays (tests run a local relay).
+  // Dev only: ?blobbi-relays=ws://a,ws://b replaces the Blobbi state relays (tests use local relays).
+  const devBlobbiRelays = import.meta.env.DEV && q.get('blobbi-relays') ? q.get('blobbi-relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
   // Dev only: ?search-relays=ws://a,ws://b replaces the NIP-50 search relays (tests use local relays).
   const devSearchRelays = import.meta.env.DEV && q.get('search-relays') ? q.get('search-relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
   // Dev only: ?inbox-suggest=wss://a,wss://b replaces the suggested inbox relays (tests use local relays).
@@ -348,6 +365,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (to) doSendInvite(to);
     },
     setPeopleQuery: (text) => people?.setQuery(text),
+    // M9A: a local choice only; no event is published and nothing in play changes yet.
+    selectBlobbi: (d) => blobbis?.select(d),
+    defaultBlobbi: () => blobbis?.useDefault(),
+    reloadBlobbis: () => blobbis?.load(true),
     selectPerson: (pk) => people?.select(pk),
     clearPerson: () => people?.clearSelection(),
     morePeople: () => people?.showMore(),
@@ -605,6 +626,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     syncInbox();
     // The follow list is read the first time the invite section is on screen, not before.
     if (people && shell.panelOpen && room?.kind === 'private' && identity.provenSigner) people.ensureFollows();
+    // The Blobbi list is read the first time the panel shows it for a verified identity, not before.
+    if (blobbis && shell.panelOpen && identity.verified) blobbis.load();
     if (inbox && nowMs - inboxExpiredAt > 1000) {
       inboxExpiredAt = nowMs;
       inbox.expire();
@@ -627,6 +650,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
       people: people && room?.kind === 'private' ? people.state : null,
+      blobbis: blobbis && identity.verified ? blobbis.state : null,
       inbox: inboxView(),
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
@@ -754,6 +778,18 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         return inboxView();
       },
       checkInvites: () => inbox?.check(),
+      /** M9A the player's Blobbis and the local choice, for scripted checks. */
+      blobbis: {
+        get state() {
+          return blobbis?.state ?? null;
+        },
+        get chosen() {
+          return blobbis?.chosen ?? null;
+        },
+        load: () => blobbis?.load(true),
+        select: (d: string) => blobbis?.select(d),
+        useDefault: () => blobbis?.useDefault(),
+      },
       /** M8C-C whom to invite, for scripted checks. */
       people: {
         get state() {

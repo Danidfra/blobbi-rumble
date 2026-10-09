@@ -25,8 +25,11 @@ npm run dev          # http://127.0.0.1:5177/
 npm run check        # typecheck, tests, build
 ```
 
-`@blobbi-kit/3d` is the published package from npm (0.1.0), resolved through
-its `exports` to its `dist/`. There is no copy of the renderer here;
+`@blobbi-kit/3d` is the published package from npm (0.1.1), resolved through
+its `exports` to its `dist/`. Rumble also uses `@blobbi-kit/core` (0.9.0: the
+Blobbi event model, for listing a player's own Blobbis) and
+`@blobbi-kit/renderer` (0.6.0: the kit's 2D drawing, for small previews).
+There is no copy of the renderer here;
 `src/consumer.test.ts` fails if the import ever resolves to a source path. To
 work against an unpublished kit, `npm link` its `packages/blobbi-3d` (see the
 note in `vite.config.ts`).
@@ -289,7 +292,9 @@ src/rumble/
                       inviteInbox.ts (M8C-B: check, bounded newest-first unwrap, live invites, dedup, ids-only session memory;
                       M8C-B.2: the same check started by itself after a per-identity consent, paused by a refusal),
                       inboxSetup.ts (M8C-B.1: create a kind-10050 inbox list for an identity that has none, on confirm),
-                      people.ts (M8C-C: whom to invite: follows window, debounced search, lazy NIP-05 confirmation, an explicit selection)
+                      people.ts (M8C-C: whom to invite: follows window, debounced search, lazy NIP-05 confirmation, an explicit selection),
+                      blobbis.ts (M9A: the identity's own Blobbis, kind 31124 through @blobbi-kit/core, newest per address, modern only;
+                      a local choice per identity), blobbiPreview.ts (the kit's SVG as an image URL)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

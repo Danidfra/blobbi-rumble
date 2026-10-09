@@ -1190,13 +1190,17 @@ reconnect and room switch.
 
 ---
 
-## M8C-C as built (2026-10-09): choosing whom to invite (pending real validation)
+## M8C-C as built (2026-10-09): choosing whom to invite (validated for real)
 
 Pasting an npub was the friction left in inviting. M8C-C adds a people
 finder in front of the unchanged M8C-A sender: follows, search by name /
 npub / nprofile / NIP-05, a profile row per person, an explicit selection,
 then **Send invite**. No new event kinds, nothing published, no game-server
 change.
+
+**Validated for real on 2026-10-09** (Danidfra → NotASage): the follow
+list appeared, NotASage was found by name, selected, invited; the invite
+arrived automatically and Join entered the room.
 
 ### What other clients do (researched first)
 
@@ -1289,3 +1293,110 @@ is one constant (`SEARCH_RELAYS`) with a dev override (`?search-relays=`).
 - The follow list is whatever kind 3 the lookup relays or the user's
   write relays hold; none found and "no relay answered" look the same.
 - A NIP-05 confirmation is an https request to that domain, bounded.
+
+---
+
+## M9A as built (2026-10-09): the player's Blobbis and a local choice (pending real validation)
+
+Rumble's fighters have always been four fixed procedural Blobbis
+(`roster.ts`). M9A lets a connected Nostr identity see the Blobbis it owns
+and pick one as its preferred Rumble character. Discovery, ownership and a
+local choice only: nothing is published, no Blobbi is changed, and the
+fighter in a match is still the default (M9B is the rendering).
+
+### The event model, as found in the ecosystem
+
+Inspected: `~/Developer/nostr-pet` (Blobbi Standalone), `~/Developer/blobbi-kit`
+(`packages/blobbi-core`, `blobbi-react`, `blobbi-renderer`, `blobbi-3d`),
+`~/Developer/blobbi-island`, and this repository. The standalone and Island
+keep no protocol logic of their own: **`@blobbi-kit/core` is the source of
+truth**, and its README is the current spec. The markdown specs in
+`nostr-pet/docs`, `nostr-pet-kinds` and Island's `MD/old-NIP.md` (kinds
+14919/14920/14921, 31125 as the profile, required `t` tags, incubation
+tags) are stale and contradict the kit.
+
+| Kind | What it is | Signed by | Shape |
+| --- | --- | --- | --- |
+| **31124** | **One Blobbi**: its whole mutable state. Egg, baby, adult and every care are replacements at the same address. | the owner | addressable; `d` = `blobbi-<12 hex of owner>-<10 hex pet id>`; `b` = `blobbi:ecosystem:v1`; required `stage`, `state`, `last_interaction`; optional stats, `name`, `seed` (V1/V2), `visual_generation`, mirrored colour tags, `generation` (lineage, not visual), JSON content with missions |
+| 11125 | the Blobbonaut profile: `has` (owned `d` list), `current_companion`, XP, level, onboarding | the player | replaceable; `d` = `blobbonaut-<12 hex>`; **metadata, never a Blobbi**; `has` can lag or be incomplete |
+| 31125 | the deprecated profile kind | — | read by the kit only as a fallback; nothing writes it |
+| 1124 | one social or care interaction (`a` = the Blobbi's address, `p` = owner, `action`) | anyone | regular; a log, never a Blobbi, never proof of ownership |
+
+- **Ownership is the author of the 31124.** The address is
+  `31124:<owner>:<d>`; every ecosystem read is scoped `authors: [me]`. A
+  31124 by anyone else is another address whatever its tags claim; the kit
+  checks neither signatures nor the `d` prefix ("It checks event shape, not
+  `event.pubkey`"), so the host must.
+- **The latest state is newest-wins per `d`**, no merging across kinds
+  (the kit's `useBlobbisCollection`; Island relies on the relay keeping one
+  version per address).
+- **Modern vs legacy vs invalid** (`classifyBlobbiEvent`): legacy (old-app
+  markers, `incubating`/`evolving` in `state`, a non-canonical `d`, a
+  missing seed or name) is hidden everywhere and never migrated; invalid is
+  malformed.
+- **Lifecycle** is the `stage` tag; eggs are Blobbis (the standalone lists
+  them; Island hides them in its world).
+- **Visual generation**: `visual_generation` `v1` (absent too) and `v2` are
+  authored artwork with a `seed` tag and mirrored colour tags; `v3` is
+  procedural ("Algorithm 1"), states no seed, and derives it from the
+  address (`deriveBlobbiV3Seed(pubkey, d)`). An unknown value is read by
+  the kit as `v1`.
+- **Visual identity**: `getBlobbiVisualIdentity(companion)` is the one
+  projection a renderer draws from; for V3 the drawn colours come from
+  `createBlobbiV3Identity(seed)` in the renderer, which `@blobbi-kit/3d`
+  re-exports as `createBlobbiIdentity`. **`@blobbi-kit/3d` builds V3
+  only, adult body only**, and throws otherwise.
+- **Relays**: no dedicated Blobbi relay. The standalone's audit found
+  `relay.ditto.pub` serving 31124/11125 (primal indexes none, nostr.band
+  refused); Island reads one relay, `relay.ditto.pub`.
+- **Selection elsewhere**: Island stores it as `current_companion` on the
+  11125 (a publish); the standalone keeps a local pick first
+  (`getSelectedBlobbiKey`, `blobbi:selected:d:<pubkey>`), then
+  `current_companion`.
+
+### As built here
+
+- **Dependencies**: `@blobbi-kit/core` 0.9.0 (new) and `@blobbi-kit/renderer`
+  0.6.0 (already pulled in by `@blobbi-kit/3d`, now direct, for previews).
+- **`client/blobbis.ts`**
+  - `collectBlobbis(events, me)`: `verifyFresh` on every event (the pool
+    verifies too), kind 31124, `pubkey === me`, the `b` marker,
+    `isModernBlobbiEvent`, newest per `d` (tie: lowest id),
+    `parseModernBlobbiEvent`, `getBlobbiVisualIdentity`; the raw
+    `visual_generation` tag is read as well, so a value newer than
+    `v1`/`v2`/`v3` is listed but flagged `unsupported`; `rumbleReady` is
+    V3 with a seed (what the 3D kit can build). Names go through
+    `cleanText`. Pure; junk never throws.
+  - `findBlobbis(pool, me)`: `{kinds:[31124], authors:[me], '#b':[…],
+    limit: 200}` on `BLOBBI_RELAYS` = `relay.ditto.pub` (dev
+    `?blobbi-relays=`), through the bounded pool. Read only; nothing signed.
+  - `BlobbiPicker`: reads the list the first time the session panel shows
+    it for a verified identity (`Look again` re-reads); the choice is one
+    `d` in localStorage `rumble:blobbi:v1:<pubkey>` (a Rumble key, not the
+    standalone's: a different meaning, and no cross-app clobbering if ever
+    on one origin); restored on reload only while that Blobbi is still
+    listed and supported, otherwise dropped, said so, and cleared;
+    **Use the default fighter** clears it. A new signer gets a new picker
+    (stopped with the old), so nothing leaks between identities.
+  - Previews: `blobbiPreview` renders the kit's `renderBlobbiSvg` of the
+    visual identity (V1, V2 and V3) into a `data:image/svg+xml` URL for an
+    `<img>`; the SVG never enters the page as markup. Some authored V1
+    artwork opens with an XML declaration, which is accepted.
+- **Interface**: "My Blobbis" under **You** in the session panel, verified
+  identities only: a row per Blobbi (picture or a colour dot, name, stage,
+  generation, a note for 2D-only or unknown generations), **Use this
+  Blobbi** / **Selected**, **Use the default fighter**, and the line that
+  the choice is local and does not change the fighter yet. Guests see
+  nothing new; no prompt interrupts play.
+- **Untouched**: the game server, the physics body, gameplay numbers, the
+  roster, NIP-17, kind 10050, 31124 and 11125 (never written).
+
+### Limitations
+
+- One relay holds the ecosystem's state today; "no Blobbis" and "the relay
+  did not answer" look the same, so the panel says both and offers Look
+  again.
+- A 31124 by the owner with a forged `d` prefix is still theirs (the kit's
+  rule: the address is pubkey + `d`).
+- V1 and V2 Blobbis can be chosen but the 3D kit cannot build them; M9B
+  must fall back to the default fighter for them.

@@ -34,6 +34,7 @@ import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
 import type { PeopleState, PersonRow } from './people';
+import type { PickerState } from './blobbis';
 import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
@@ -66,6 +67,10 @@ export interface ShellActions {
   enableAutoInvites(): void;
   declineAutoInvites(): void;
   disableAutoInvites(): void;
+  /** M9A: the player's own Blobbis: choose one as the preferred Rumble character (local), or the default fighter. */
+  selectBlobbi(d: string): void;
+  defaultBlobbi(): void;
+  reloadBlobbis(): void;
   /** M8C-B.1: set up a private-message inbox (kind 10050) for an identity that has none. */
   openInboxSetup(): void;
   toggleInboxRelay(url: string): void;
@@ -105,6 +110,8 @@ export interface ShellView {
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
   /** M8C-C: the people finder of the connected identity (null: none, or not a private room). */
   people: PeopleState | null;
+  /** M9A: the connected identity's Blobbis and its local choice (null: no verified identity). */
+  blobbis: PickerState | null;
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
 }
@@ -152,6 +159,14 @@ const CSS = `
   .rs-person .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rs-person .tag { margin-left: auto; flex: none; font-size: 11px; color: #6b7082; }
   .rs-people h5 { margin: 8px 0 2px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7082; }
+  .rs-blobbi { display: flex; align-items: center; gap: 8px; margin: 3px 0; padding: 4px 6px; border: 1px solid transparent; border-radius: 10px; }
+  .rs-blobbi.sel { border-color: #d6dbe6; background: #f4f7f2; }
+  .rs-blobbi .pic { flex: none; width: 34px; height: 34px; border-radius: 8px; background: #eef1f6; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .rs-blobbi .pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .rs-blobbi .pic span { width: 18px; height: 18px; border-radius: 50%; }
+  .rs-blobbi .who { display: flex; flex-direction: column; min-width: 0; }
+  .rs-blobbi .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-blobbi .rs-btn { margin-left: auto; flex: none; }
   .rs-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 999px; background: #e0794f; color: #fff; font: 700 11px ui-sans-serif, system-ui, sans-serif; text-align: center; }
   .rs-sub { color: #6b7082; font-size: 12px; }
   .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
@@ -543,6 +558,59 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  /** M9A: the player's Blobbis (kind 31124 by this identity, through the kit), and a local choice among them. */
+  const blobbiSection = (ps: PickerState): Node[] => {
+    const out: Node[] = [el('h4', undefined, 'My Blobbis')];
+    const stageWord = { egg: 'Egg', baby: 'Baby', adult: 'Adult' } as const;
+    switch (ps.phase) {
+      case 'idle':
+      case 'loading':
+        out.push(el('div', 'rs-sub', 'Looking for your Blobbis…'));
+        return out;
+      case 'none': {
+        out.push(el('div', 'rs-sub', ps.dropped ? 'The Blobbi you had chosen is no longer found, so Rumble uses its default fighter.' : 'No Blobbis found for this identity (or the Blobbi relay didn’t answer). Rumble uses its default fighter.'));
+        const r = el('div', 'rs-row');
+        r.append(button('Look again', a.reloadBlobbis));
+        out.push(r);
+        return out;
+      }
+    }
+    if (ps.dropped) out.push(el('div', 'rs-warn', 'The Blobbi you had chosen is no longer found: back to the default fighter.'));
+    for (const b of ps.blobbis) {
+      const sel = b.d === ps.selected;
+      const row = el('div', `rs-blobbi${sel ? ' sel' : ''}`);
+      const pic = el('div', 'pic');
+      const url = ps.previews[b.d];
+      if (url) {
+        const img = el('img');
+        img.alt = '';
+        img.decoding = 'async';
+        img.src = url;
+        pic.append(img);
+      } else {
+        const dot = el('span');
+        dot.style.background = b.visual.baseColor;
+        pic.append(dot);
+      }
+      const who = el('div', 'who');
+      who.append(el('b', undefined, clip(b.name, 22)));
+      const words = [stageWord[b.stage], b.generation.toUpperCase()];
+      if (b.unsupported) words.push('newer than this Rumble understands');
+      else if (!b.rumbleReady) words.push('2D artwork: Rumble will keep its default fighter');
+      who.append(el('span', 'rs-sub', words.join(' · ')));
+      row.append(pic, who);
+      if (sel) row.append(el('span', 'rs-ok', 'Selected'));
+      else if (!b.unsupported) row.append(button('Use this Blobbi', () => a.selectBlobbi(b.d)));
+      out.push(row);
+    }
+    const r = el('div', 'rs-row');
+    if (ps.selected) r.append(button('Use the default fighter', a.defaultBlobbi));
+    else r.append(el('span', 'rs-sub', 'Using the default fighter.'));
+    out.push(r);
+    out.push(el('div', 'rs-sub', 'Your choice stays in this browser, for this identity. It doesn’t change your fighter in a match yet.'));
+    return out;
+  };
+
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
     // Room.
@@ -633,6 +701,7 @@ export function createShell(a: ShellActions) {
       row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
     }
     parts.push(row);
+    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis));
     if (v.inbox) parts.push(...inboxSection(v, v.inbox));
     // Server.
     parts.push(el('h4', undefined, 'Server'));
@@ -752,7 +821,7 @@ export function createShell(a: ShellActions) {
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
         const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([inboxKey, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const pKey = JSON.stringify([inboxKey, v.blobbis, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;
