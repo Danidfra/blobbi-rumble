@@ -30,6 +30,8 @@ import { describe, type BannerAction, type ConnectionState } from './connection'
 import { canCopy, copyShortcut, copyText } from './clipboard';
 import { avatar, button, el, isTyping } from './dom';
 import type { IdentityState } from './identity';
+import type { InviteStatus } from './inviteSender';
+import { isLocalHost } from '../net/serverTrust';
 
 export interface ShellActions {
   retry(): void;
@@ -43,7 +45,12 @@ export interface ShellActions {
   releaseKeys(): void;
   /** The start card was answered (don't show it again). */
   startSeen(): void;
+  /** Send a private Nostr invite to an npub / nprofile (M8C-A). */
+  sendInvite(recipient: string): void;
 }
+
+/** Whether this player can send private invites: a guest cannot; an extension without NIP-44 cannot. */
+export type InviteMode = 'guest' | 'no-nip44' | 'ready';
 
 export interface ShellView {
   conn: ConnectionState;
@@ -63,6 +70,7 @@ export interface ShellView {
   /** A proven person's name for a slot, or null. */
   nameOf: (slot: string) => string | null;
   startCard: boolean;
+  invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
 }
 
 const CSS = `
@@ -98,6 +106,7 @@ const CSS = `
   .rs-link { flex: 1; min-width: 0; font: 12px ui-monospace, Menlo, monospace; padding: 4px 6px; border: 1px solid #d6dbe6; border-radius: 8px; background: #f7f8fb; color: #2b2b3a; }
   .rs-input { width: 90px; font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; border: 1px solid #d6dbe6; border-radius: 8px; }
   .rs-err { color: #b0413e; font-size: 12px; }
+  .rs-ok { color: #2f7d4f; font-size: 12px; }
   .rs-sub { color: #6b7082; font-size: 12px; }
   .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
   .rs-btn.go { border-color: #6fc38f; background: #6fc38f; color: #fff; }
@@ -255,6 +264,64 @@ export function createShell(a: ShellActions) {
   let lastStart = '';
   let lastBanner = '';
 
+  // The invite field keeps what was typed across panel redraws.
+  let inviteDraft = '';
+  const inviteWords = (v: ShellView, st: InviteStatus): { text: string; cls: string } => {
+    const who = 'pubkey' in st ? clip(displayName(v.profile(st.pubkey), st.pubkey), 24) : '';
+    switch (st.k) {
+      case 'invalid':
+        return { text: 'Paste an npub or nprofile.', cls: 'rs-err' };
+      case 'looking':
+        return { text: `Looking for ${who}’s private inbox…`, cls: 'rs-sub' };
+      case 'no-inbox':
+        return { text: `${who} has no private-message inbox (NIP-17 relays) set up, so the invite can’t be delivered. Copy the link instead.`, cls: 'rs-err' };
+      case 'sending':
+        return { text: 'Sending… approve the requests in your Nostr extension.', cls: 'rs-sub' };
+      case 'sent':
+        return { text: `Invite sent to ${who} (${st.accepted} of ${st.total} inbox relay${st.total === 1 ? '' : 's'}).`, cls: 'rs-ok' };
+      case 'declined':
+        return { text: 'Your extension declined, so nothing was sent.', cls: 'rs-err' };
+      case 'failed':
+        return { text: st.why === 'relays' ? `No inbox relay accepted the invite. Copy the link instead.` : `Couldn’t send: ${st.detail}.`, cls: 'rs-err' };
+    }
+  };
+  const inviteSection = (v: ShellView): Node[] => {
+    const out: Node[] = [el('h4', undefined, 'Invite a friend')];
+    if (v.invite.mode === 'guest') return [...out, el('div', 'rs-sub', 'Connect Nostr to send private invites. Or copy the link above.')];
+    if (v.invite.mode === 'no-nip44') return [...out, el('div', 'rs-sub', 'Your Nostr extension can’t encrypt private messages (NIP-44), so it can’t send invites. Copy the link above instead.')];
+    const row = el('div', 'rs-row');
+    const input = el('input', 'rs-link');
+    input.placeholder = 'npub… or nprofile…';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.maxLength = 1000;
+    input.value = inviteDraft;
+    input.addEventListener('focus', () => a.releaseKeys());
+    input.addEventListener('input', () => (inviteDraft = input.value));
+    const send = () => {
+      if (v.invite.busy) return;
+      input.blur();
+      a.sendInvite(input.value);
+    };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') send();
+      if (e.key === 'Escape') input.blur();
+    });
+    row.append(input, button(v.invite.busy ? 'Sending…' : 'Send invite', send, 'rs-btn go'));
+    out.push(row);
+    if (v.invite.status) {
+      const w = inviteWords(v, v.invite.status);
+      out.push(el('div', w.cls, w.text));
+    } else out.push(el('div', 'rs-sub', 'A private Nostr message with this room’s link. It doesn’t reserve a seat: anyone with the link can join.'));
+    try {
+      if (v.share && isLocalHost(new URL(v.share).hostname)) out.push(el('div', 'rs-sub', 'Note: this link only works on your local network (the server has no PUBLIC_URL).'));
+    } catch {
+      // No link to judge.
+    }
+    return out;
+  };
+
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
     // Room.
@@ -296,6 +363,7 @@ export function createShell(a: ShellActions) {
       }
       parts.push(el('div', 'rs-row'));
       (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a new game', a.hostGame));
+      parts.push(...inviteSection(v));
     } else {
       parts.push(el('div', 'rs-sub', 'The open room: anyone who opens this server plays here, with bots in the empty slots.'));
       parts.push(el('div', 'rs-row'));
@@ -459,7 +527,8 @@ export function createShell(a: ShellActions) {
       }
       // The session panel, while open.
       if (panelOpen) {
-        const pKey = JSON.stringify([v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
+        const pKey = JSON.stringify([v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;

@@ -914,3 +914,71 @@ What was implemented, and where it differs from the plan above.
   - On demand: the session panel and help (H).
   - When something is wrong: the banner, now with room actions.
   - Debug only: the text HUD, F3 and F4.
+
+---
+
+## M8C-A as built (2026-10-09): sending private invites
+
+**Frozen decisions** (from the M8C0 review):
+- NIP-17 kind 14 invites;
+- no tickets, and no change to room access;
+- recipients given as npub or nprofile;
+- 30-minute lifetime;
+- no copy for the sender;
+- one-time NIP-59 wrapper keys allowed;
+- receiving is deferred to M8C-B.
+
+**Message.** content `"<name> invited you to Blobbi Rumble: <room link>"`, with tags:
+- `["p", recipient]`;
+- `["r", link]`, the same link as in the text;
+- `["b", "blobbi:rumble:invite:v1"]`, following the ecosystem's `b` namespace convention (`blobbi:ecosystem:v1`);
+- `["expiration", now + 1800]`.
+
+The link comes from the M8B share helper (`shareLink`: the server's
+canonical `room.url`, else the page's origin). It must have exactly the
+form `http(s)://host/play/<code>`.
+
+**Construction** (`social/nip17.ts`):
+- **Rumor:** unsigned, by the sender; its id is its hash.
+- **Seal:** `signer.nip44.encrypt` (the extension), then `signEvent` of
+  kind 13 with tags `[]` and a timestamp randomly backdated by up to 2
+  days. It is checked to verify, be kind 13, carry no tags, and be by the
+  rumor's author.
+- **Wrap:** nostr-tools `nip44` and `finalizeEvent` with a fresh
+  `generateSecretKey()`, held in a local variable inside `giftWrap`. Tags
+  are `[p]` plus expiration (the rumor's expiry + up to 1 h of random
+  slack); the timestamp is randomly backdated by up to 2 days. Neither
+  `nip17.wrapEvent` nor `nip59.wrapEvent` could be used: they need the
+  sender's private key.
+- **Spec conflict:** NIP-17 suggests putting the expiration on the seal,
+  but NIP-59 says a kind 13's tags MUST be empty. We follow the MUST. The
+  expiration is on the wrap (relay-visible) and the rumor (authoritative).
+
+**Inbox** (`social/inbox.ts`):
+- **Discovery:** kind 10050 from the lookup relays plus up to 2 nprofile
+  hints, then from the NIP-65 write relays. These relays only *locate*
+  the list.
+- **Inbox set:** the list's own `relay` tags, which must literally be
+  `wss://`, canonicalised, at most 3, created only by `inboxFromList`
+  (checked at run time).
+- **Publishing:** `publishGiftWrap` publishes only a kind 1059 that
+  verifies, only to that set, through a short-lived `SimplePool` that is
+  destroyed afterwards. The lookup pool closes idle relays first
+  (`makeRoom`), so the total stays near the 8-relay cap. Success means at
+  least 1 relay accepted.
+- **Relay AUTH:** `inboxRelayAuth` signs only an exact NIP-42 template
+  (kind 22242, empty content, relay tag = one of that inbox's relays, a
+  non-empty challenge). nostr-tools calls it only on an `auth-required:`
+  rejection, on that relay's connection.
+- **The game proof stays socket-only:** the identity module imports none
+  of the inbox, NIP-17 or pool code (test-pinned).
+
+**Signer** (`social/signer.ts`): `nip44` is optional and feature-detected,
+with timeouts and error classification. Payload shape is checked
+(base64, version 2, length bounds) and plaintext is bounded. Without it,
+identity is untouched and the panel says invites are unavailable.
+
+**Verification:** `social/verify.ts`, `verifyFresh`. nostr-tools caches a
+verdict on the event object under a symbol, and object spread copies
+symbols, so a modified copy of a verified event would pass. Found by the
+M8C-A tests in new code; M8A/M8B verification was not affected.

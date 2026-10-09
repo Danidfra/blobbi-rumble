@@ -152,6 +152,31 @@ server verifies it. The server then tells everyone in the room "P2 is
 pubkey X"; each browser looks up names and pictures on a few relays. The
 server never connects to a relay.
 
+## Private invites (M8C-A: sending)
+
+In a private room, a Nostr-connected player can send a friend a private
+invite: session panel → **Invite a friend** → paste an `npub` or
+`nprofile` → **Send invite**. It is an ordinary NIP-17 private message
+(kind 14, gift-wrapped), readable in any NIP-17 messaging app:
+
+```
+"<your name> invited you to Blobbi Rumble: https://rumble.example/play/V4BU"
+tags: ["p", <friend>] ["r", <room link>] ["b", "blobbi:rumble:invite:v1"] ["expiration", <now + 30 min>]
+```
+
+- It goes only to the friend's NIP-17 inbox relays (their kind 10050
+  list, at most 3). Without such a list nothing is sent: copy the link
+  instead.
+- Your extension is asked to encrypt (NIP-44) and sign the seal; an inbox
+  relay that requires it gets a NIP-42 AUTH signed for that relay only.
+  Nothing goes through the Rumble server; your game identity proof is
+  never sent to a relay.
+- It needs an extension with NIP-44 (Alby and nos2x have it). Without it,
+  identity and play work as before; only invites are unavailable.
+- An invite grants nothing: anyone with the link can join, as with any
+  room link. Receiving invites inside Rumble is not built yet (M8C-B);
+  your friend reads it in their Nostr messaging app.
+
 ## The interface
 
 While playing: a session chip (top left: room · server, a dot for the

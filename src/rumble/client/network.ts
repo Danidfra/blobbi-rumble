@@ -40,7 +40,8 @@ import { canAct, type CombatState } from '../combat/combat';
 import { Keyboard, PlayerInput, type KeyBindings, type MoveIntent } from '../control/input';
 import { resolveServerUrl } from '../net/endpoint';
 import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
-import { createShell } from './shell';
+import { createShell, type InviteMode } from './shell';
+import { sendInvite, type InviteStatus } from './inviteSender';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -119,6 +120,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let serverInfo: ServerInfo | null = null;
   let trust: ServerTrust | null = null;
   let spectators = 0;
+  let inviteStatus: InviteStatus | null = null;
+  let inviteBusy = false;
+  const inviteMode = (): InviteMode => (!identity.provenSigner ? 'guest' : identity.provenSigner.nip44 ? 'ready' : 'no-nip44');
   const useInterp = q.get('interp') !== '0';
   const usePredict = q.get('predict') !== '0';
   const keyboard = new Keyboard([NET_BINDINGS]);
@@ -215,6 +219,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   /** Go to another room in place: a new connection, the same page (and the same Nostr signer, which proves itself again). */
   const switchTo = (next: RoomIntent) => {
     target = next;
+    inviteStatus = null;
     const old = ws;
     ws = null;
     old?.close(1000, 'switching room');
@@ -243,6 +248,28 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     dismissIdentityError: () => identity.dismissError(),
     releaseKeys: () => keyboard.held.clear(),
     startSeen: seeStart,
+    // M8C-A: a private Nostr invite, sent from this page straight to the recipient's NIP-17 inbox (never via the game server).
+    sendInvite: (input) => {
+      const signer = identity.provenSigner;
+      const me = identity.verified;
+      if (!signer || !me || !room || room.kind !== 'private' || inviteBusy) return;
+      inviteBusy = true;
+      const forRoom = room.id;
+      void sendInvite(input, {
+        signer,
+        sender: me,
+        lookup: (profiles(), relayPool!),
+        publishPool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
+        lookupRelays: devRelays ?? LOOKUP_RELAYS,
+        link: shareLink(room.id, location.origin, room.url),
+        inviterName: clip(displayName(profileOf(me), me), 40),
+        onStatus: (st) => {
+          if (room?.id !== forRoom) return;
+          inviteStatus = st;
+          if ('pubkey' in st) profiles().ask([st.pubkey]);
+        },
+      }).finally(() => (inviteBusy = false));
+    },
   });
   // Idle relays close; nothing stays open for long.
   setInterval(() => relayPool?.sweep(), 10_000);
@@ -467,6 +494,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       message: presenter?.currentMessage ?? '',
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
+      invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.

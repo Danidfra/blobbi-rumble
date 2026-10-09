@@ -8,11 +8,14 @@
  *           same interface (nostr-tools' BunkerSigner already does)
  *
  * The interface is nostr-tools' own `Signer`, with the method named, so a
- * BunkerSigner or `window.nostr` drop in. Every call has a timeout (a
+ * BunkerSigner or `window.nostr` drop in. NIP-44 encryption (needed for
+ * NIP-17 private messages) is OPTIONAL in NIP-07: `nip44` is present only
+ * when the extension offers it, and its absence never affects identity. Every call has a timeout (a
  * prompt may sit unanswered) and its failure is classified for the UI.
  * Framework-free; no Rumble imports.
  */
-import { verifyEvent, type EventTemplate, type VerifiedEvent } from 'nostr-tools/pure';
+import type { EventTemplate, VerifiedEvent } from 'nostr-tools/pure';
+import { verifyFresh } from './verify';
 import type { WindowNostr } from 'nostr-tools/nip07';
 import type { Signer } from 'nostr-tools/signer';
 import { normalizePubkey } from './keys';
@@ -21,6 +24,34 @@ export type SignerMethod = 'nip07' | 'nip46';
 
 export interface NostrSigner extends Signer {
   readonly method: SignerMethod;
+  /** NIP-44 v2, if the signer offers it (NIP-07 makes it optional). */
+  readonly nip44?: Nip44Capability;
+}
+
+export interface Nip44Capability {
+  /** Encrypt `plaintext` to `pubkey`: a NIP-44 v2 payload (base64). */
+  encrypt(pubkey: string, plaintext: string): Promise<string>;
+  /** Decrypt a NIP-44 payload from `pubkey`. */
+  decrypt(pubkey: string, payload: string): Promise<string>;
+}
+
+export const NIP44_LIMITS = Object.freeze({
+  /** NIP-44 v2 plaintext is at most 65535 bytes. */
+  maxPlaintext: 65_535,
+  /** Its payload, base64: version byte, 32-byte nonce, padded ciphertext, 32-byte MAC. */
+  minPayload: 132,
+  maxPayload: 87_472,
+});
+
+/** Whether `v` has the shape of a NIP-44 v2 payload (base64, version 2, sane length). Says nothing about who can decrypt it. */
+export function isNip44Payload(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length < NIP44_LIMITS.minPayload || v.length > NIP44_LIMITS.maxPayload || v[0] === '#') return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(v) || v.length % 4 !== 0) return false;
+  try {
+    return atob(v.slice(0, 4)).charCodeAt(0) === 2;
+  } catch {
+    return false;
+  }
 }
 
 export type SignerErrorCode =
@@ -108,20 +139,51 @@ export function checkSigned(ev: unknown, template: EventTemplate, pubkey: string
     JSON.stringify(e.tags) === JSON.stringify(template.tags) &&
     Number.isSafeInteger(e.created_at) &&
     (pubkey === null || e.pubkey === pubkey) &&
-    verifyEvent(e);
+    verifyFresh(e);
   if (!ok) throw new SignerError('malformed', 'the signer returned an event that does not verify');
   return e;
 }
 
 /**
  * The NIP-07 signer: the extension's two calls with timeouts, classified
- * errors, and checks on what they return.
+ * errors, and checks on what they return; plus its NIP-44 calls when it
+ * has them (checked the same way: a payload must look like NIP-44 v2, a
+ * plaintext must be a bounded string).
  */
 export function nip07Signer(ext: WindowNostr, opts: { promptMs?: number } = {}): NostrSigner {
   const promptMs = opts.promptMs ?? SIGNER.promptMs;
   let known: string | null = null;
+  const n44 = ext.nip44;
+  const hasNip44 = !!n44 && typeof n44.encrypt === 'function' && typeof n44.decrypt === 'function';
+  const call = async <T>(what: string, fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await withTimeout(Promise.resolve().then(fn), promptMs, what);
+    } catch (e) {
+      throw classify(e, what);
+    }
+  };
+  const nip44: Nip44Capability | undefined = hasNip44
+    ? {
+        async encrypt(pubkey, plaintext) {
+          const pk = normalizePubkey(pubkey);
+          if (!pk) throw new SignerError('malformed', 'encryption: not a pubkey');
+          if (new TextEncoder().encode(plaintext).length > NIP44_LIMITS.maxPlaintext) throw new SignerError('malformed', 'encryption: message too long');
+          const out = await call('encryption', () => n44!.encrypt(pk, plaintext));
+          if (!isNip44Payload(out)) throw new SignerError('malformed', 'the signer returned something that is not a NIP-44 payload');
+          return out;
+        },
+        async decrypt(pubkey, payload) {
+          const pk = normalizePubkey(pubkey);
+          if (!pk || !isNip44Payload(payload)) throw new SignerError('malformed', 'decryption: bad input');
+          const out = await call('decryption', () => n44!.decrypt(pk, payload));
+          if (typeof out !== 'string' || out.length > NIP44_LIMITS.maxPlaintext) throw new SignerError('malformed', 'the signer returned a malformed plaintext');
+          return out;
+        },
+      }
+    : undefined;
   return {
     method: 'nip07',
+    ...(nip44 ? { nip44 } : {}),
     async getPublicKey() {
       let raw: unknown;
       try {

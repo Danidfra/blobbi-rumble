@@ -75,6 +75,11 @@ export class IdentitySession {
     this.state = { phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, serverSupports: null };
   }
 
+  /** The signer, while this connection's identity is proven (for sending invites; null otherwise). */
+  get provenSigner(): NostrSigner | null {
+    return this.state.phase === 'verified' ? this.signer : null;
+  }
+
   /** The pubkey this connection has proven to the server, or null. */
   get verified(): string | null {
     return this.state.phase === 'verified' ? this.state.pubkey : null;

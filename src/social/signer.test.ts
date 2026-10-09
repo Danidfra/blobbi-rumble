@@ -83,3 +83,18 @@ describe('the NIP-07 signer', () => {
     expect(() => checkSigned('nope', template, null)).toThrow(SignerError);
   });
 });
+
+describe('verifying on a fresh copy', () => {
+  it('a modified copy of a verified event does not inherit its verdict', async () => {
+    const { verifyFresh } = await import('./verify');
+    const sk = generateSecretKey();
+    const ev = finalizeEvent(template, sk);
+    expect(verifyFresh(ev)).toBe(true);
+    expect(verifyFresh({ ...ev, content: 'changed' })).toBe(false);
+    expect(verifyFresh({ ...ev, tags: [['challenge', 'other']] })).toBe(false);
+    expect(verifyFresh({ ...ev, tags: [[1]] })).toBe(false);
+    expect(verifyFresh(null)).toBe(false);
+    // The signer's check uses it too.
+    expect(() => checkSigned({ ...ev, content: 'changed' }, { ...template, content: 'changed' }, null)).toThrow(SignerError);
+  });
+});

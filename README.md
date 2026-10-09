@@ -242,6 +242,9 @@ src/social/
   pool.ts       nostr-tools' SimplePool behind a hard cap of open relays and an idle close
   relays.ts     the lookup relays, relay URL checks, NIP-65 write relays (max 3)
   login.ts      the remembered login: { v, method, pubkey }, never a secret
+  nip17.ts      NIP-17 sending: kind-14 rumor → kind-13 seal (the signer's NIP-44 + signature) → kind-1059 gift wrap (one-time key)
+  inbox.ts      NIP-17 inboxes: find someone's kind-10050 relays; the app's only publisher (gift wraps to those relays, relay AUTH for them only)
+  verify.ts     event verification on a fresh copy (no inherited cached verdicts)
   keys.ts       pubkey checks, npub, short npub
   avatar.ts     a deterministic identicon from a pubkey
 ```
@@ -277,7 +280,8 @@ src/rumble/
                       interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure),
                       connection.ts (connect / lost / retry / missing-room states and their words, pure),
                       room.ts (which room a page wants, its links; pure), shell.ts (the interface: chips, scoreboard, panels,
-                      help, banner), dom.ts (text-only DOM helpers), identity.ts (the optional Nostr identity session)
+                      help, banner), dom.ts (text-only DOM helpers), identity.ts (the optional Nostr identity session),
+                      invites.ts (the kind-14 invite message), inviteSender.ts (recipient → inbox → wrap → publish, as statuses)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

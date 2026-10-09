@@ -18,12 +18,23 @@ describe('the social module boundary', () => {
     }
   });
 
-  it('no app code builds a secret key, imports one, or renders Nostr data as HTML', () => {
+  it('no app code handles an identity secret key; the only key made is the one-time NIP-59 wrapper key, inside giftWrap', () => {
     const app = files(join(__dirname, '..')).filter((x) => x.endsWith('.ts') && !x.endsWith('.test.ts'));
     for (const f of app) {
       const src = readFileSync(f, 'utf8');
-      expect(src, f).not.toMatch(/generateSecretKey|nsecEncode|PlainKeySigner|fromNsec|decode\(\s*['"]nsec/);
+      expect(src, f).not.toMatch(/nsecEncode|PlainKeySigner|fromNsec|decode\(\s*['"]nsec|nsec1|localStorage\.setItem\([^)]*(secret|nsec|privkey)/i);
+      if (!f.endsWith('/social/nip17.ts')) expect(src, f).not.toMatch(/generateSecretKey|finalizeEvent|getConversationKey/);
     }
+    // In nip17.ts: one key, made in giftWrap, used for that wrap's encryption and signature, never returned or kept.
+    const nip17 = readFileSync(join(__dirname, 'nip17.ts'), 'utf8');
+    const body = nip17.slice(nip17.indexOf('export function giftWrap'), nip17.indexOf('\n}', nip17.indexOf('export function giftWrap')));
+    expect(nip17.match(/generateSecretKey\(\)/g)).toHaveLength(1);
+    expect(body).toMatch(/const oneTime = generateSecretKey\(\);/);
+    expect(body.match(/oneTime/g)).toHaveLength(3);
+    expect(body).not.toMatch(/return oneTime|this\.|=\s*oneTime/);
+  });
+
+  it('no app code renders Nostr data as HTML', () => {
     for (const f of [join(__dirname, '../rumble/client/shell.ts'), join(__dirname, '../rumble/client/dom.ts'), join(__dirname, '../rumble/client/identity.ts'), ...files(__dirname)]) {
       if (f.endsWith('.test.ts')) continue;
       expect(readFileSync(f, 'utf8'), f).not.toMatch(/\.innerHTML\s*=|insertAdjacentHTML|outerHTML\s*=/);
@@ -31,14 +42,24 @@ describe('the social module boundary', () => {
   });
 });
 
-describe('the identity proof is never published to Nostr', () => {
-  it('no app code can publish an event or answer a relay AUTH: the pool only reads', () => {
+describe('publishing: only gift wraps to inboxes; the identity proof never', () => {
+  it('only social/inbox.ts publishes or answers relay AUTH, and only the invite sender uses it; the lookup pool only reads', () => {
     const app = files(join(__dirname, '..')).filter((x) => x.endsWith('.ts') && !x.endsWith('.test.ts'));
     for (const f of app) {
       const src = readFileSync(f, 'utf8');
-      // No publishing, no relay-side AUTH (which would sign a 22242 for a relay), no raw EVENT frames.
-      expect(src, f).not.toMatch(/\.publish\(|automaticallyAuth|onauth\s*:|\[\s*['"]EVENT['"]|\[\s*['"]AUTH['"]/);
+      // Nobody hands a pool a signer for automatic AUTH, and nobody writes raw relay frames.
+      expect(src, f).not.toMatch(/automaticallyAuth|\[\s*['"]EVENT['"]|\[\s*['"]AUTH['"]/);
+      if (f.endsWith('/social/inbox.ts')) continue;
+      expect(src, f).not.toMatch(/\.publish\(|onauth/);
+      if (!f.endsWith('/rumble/client/inviteSender.ts')) expect(src, f).not.toMatch(/social\/inbox'|social\/nip17'/);
     }
+    // In inbox.ts: one publish call, inside publishGiftWrap, after the kind-1059 and inbox-set checks.
+    const inbox = readFileSync(join(__dirname, 'inbox.ts'), 'utf8');
+    expect(inbox.match(/\.publish\(/g)).toHaveLength(1);
+    const fn = inbox.slice(inbox.indexOf('export async function publishGiftWrap'));
+    expect(fn.indexOf('wrap.kind !== 1059')).toBeGreaterThan(0);
+    expect(fn.indexOf('issued.has(inbox)')).toBeGreaterThan(0);
+    expect(fn.indexOf('.publish(')).toBeGreaterThan(fn.indexOf('wrap.kind !== 1059'));
     // The pool interface the app uses has reads and closes, nothing else.
     const pool = readFileSync(join(__dirname, 'pool.ts'), 'utf8');
     const iface = pool.slice(pool.indexOf('export interface PoolLike'), pool.indexOf('\n}', pool.indexOf('export interface PoolLike')));
@@ -49,7 +70,7 @@ describe('the identity proof is never published to Nostr', () => {
 
   it('the identity session sends the signed proof only through the game connection it is given', () => {
     const src = readFileSync(join(__dirname, '../rumble/client/identity.ts'), 'utf8');
-    expect(src).not.toMatch(/social\/(pool|directory|relays)|nostr-tools\/(pool|relay)/);
+    expect(src).not.toMatch(/social\/(pool|directory|relays|inbox|nip17)|nostr-tools\/(pool|relay)/);
     expect(src).toMatch(/this\.d\.send\(\{ t: 'auth', event/);
   });
 });

@@ -110,6 +110,12 @@ export class BoundedPool {
     for (const [u, s] of this.open) if (s.busy === 0 && t - s.used > this.idleMs) this.closeRelay(u);
   }
 
+  /** Close idle relays (least recently used first) until `n` more connections fit under the cap (for a short-lived publish elsewhere). */
+  makeRoom(n: number) {
+    const idle = [...this.open.entries()].filter(([, s]) => s.busy === 0).sort((a, b) => a[1].used - b[1].used);
+    while (this.open.size > Math.max(0, this.maxOpen - n) && idle.length) this.closeRelay(idle.shift()![0]);
+  }
+
   /** Close everything (leaving the page, logging out). */
   closeAll() {
     for (const u of [...this.open.keys()]) this.closeRelay(u);
