@@ -24,7 +24,7 @@
  * again (it must be, to show it, since its content is not stored).
  */
 import type { NostrEvent } from 'nostr-tools/pure';
-import { findInbox, inboxRelayAuth, subscribeGiftWraps, type GiftWrapSubscription, type SubscribePoolLike } from '../../social/inbox';
+import { findInbox, inboxFromList, inboxRelayAuth, subscribeGiftWraps, type FoundInbox, type GiftWrapSubscription, type SubscribePoolLike } from '../../social/inbox';
 import { NIP17, UnwrapError, unwrapGiftWrap } from '../../social/nip17';
 import type { BoundedPool } from '../../social/pool';
 import { SignerError, type NostrSigner } from '../../social/signer';
@@ -85,6 +85,10 @@ export class InviteInbox {
   private sub: GiftWrapSubscription | null = null;
   private pool: (SubscribePoolLike & { destroy?: () => void }) | null = null;
   private draining = false;
+  /** The player's inbox, once located (or set up). */
+  private found: FoundInbox | null = null;
+  private locating: Promise<FoundInbox | null> | null = null;
+  private checking = false;
   private stopped = false;
   private initialDone = false;
   private live = INBOX.liveBudget;
@@ -94,6 +98,28 @@ export class InviteInbox {
     this.key = `rumble:invites-seen:v1:${d.me}`;
     this.state = { phase: d.signer.nip44 ? 'idle' : 'no-nip44', invites: [], checked: 0, skipped: 0, relays: 0, left: INBOX.budget };
     for (const id of this.loadSeen()) this.seenWraps.add(id);
+    // Where the player's private messages arrive is public: look it up now (nothing is decrypted).
+    if (d.signer.nip44) {
+      this.state = { ...this.state, phase: 'locating' };
+      this.locating = this.locate();
+    }
+  }
+
+  /** Find the player's own kind-10050 inbox (public data; no decryption). */
+  private async locate(): Promise<FoundInbox | null> {
+    const found = await findInbox(this.d.lookup, { pubkey: this.d.me, hints: [] }, { lookupRelays: this.d.lookupRelays });
+    if (this.stopped) return null;
+    this.found = found;
+    if (this.state.phase === 'locating') this.set(found ? { phase: 'idle', relays: found.relays.length } : { phase: 'no-inbox' });
+    return found;
+  }
+
+  /** The player's inbox is known now (set up just now, or found by the setup's own check). */
+  adopt(list: NostrEvent) {
+    const relays = inboxFromList(list);
+    if (!relays.length || list.pubkey !== this.d.me) return;
+    this.found = { relays, list };
+    this.set({ phase: 'idle', relays: relays.length });
   }
 
   private now() {
@@ -108,9 +134,19 @@ export class InviteInbox {
 
   /** The player asked: locate the inbox, fetch recent wraps, open at most the budget, then keep listening. */
   async check(): Promise<void> {
-    if (this.stopped || !this.d.signer.nip44 || ['locating', 'checking', 'live'].includes(this.state.phase)) return;
+    if (this.stopped || !this.d.signer.nip44 || this.checking || ['checking', 'live'].includes(this.state.phase)) return;
+    this.checking = true;
+    try {
+      await this.runCheck();
+    } finally {
+      this.checking = false;
+    }
+  }
+
+  private async runCheck(): Promise<void> {
+    if (this.locating) await this.locating;
     this.set({ phase: 'locating', checked: 0, skipped: 0, left: INBOX.budget });
-    const found = await findInbox(this.d.lookup, { pubkey: this.d.me, hints: [] }, { lookupRelays: this.d.lookupRelays });
+    const found = this.found ?? (await this.locate());
     if (this.stopped) return;
     if (!found) return this.set({ phase: 'no-inbox' });
     this.set({ phase: 'checking', relays: found.relays.length });

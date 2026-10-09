@@ -285,7 +285,8 @@ src/rumble/
                       room.ts (which room a page wants, its links; pure), shell.ts (the interface: chips, scoreboard, panels,
                       help, banner), dom.ts (text-only DOM helpers), identity.ts (the optional Nostr identity session),
                       invites.ts (the kind-14 invite message; reading one back), inviteSender.ts (recipient → inbox → wrap → publish, as statuses),
-                      inviteInbox.ts (M8C-B: check, bounded newest-first unwrap, live invites, dedup, ids-only session memory)
+                      inviteInbox.ts (M8C-B: check, bounded newest-first unwrap, live invites, dedup, ids-only session memory),
+                      inboxSetup.ts (M8C-B.1: create a kind-10050 inbox list for an identity that has none, on confirm)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

@@ -42,7 +42,7 @@ describe('the social module boundary', () => {
   });
 });
 
-describe('publishing: only gift wraps to inboxes; the identity proof never', () => {
+describe('publishing: only gift wraps to inboxes and the player’s own inbox list; the identity proof never', () => {
   it('only social/inbox.ts publishes or answers relay AUTH, and only the invite sender uses it; the lookup pool only reads', () => {
     const app = files(join(__dirname, '..')).filter((x) => x.endsWith('.ts') && !x.endsWith('.test.ts'));
     for (const f of app) {
@@ -51,15 +51,23 @@ describe('publishing: only gift wraps to inboxes; the identity proof never', () 
       expect(src, f).not.toMatch(/automaticallyAuth|\[\s*['"]EVENT['"]|\[\s*['"]AUTH['"]/);
       if (f.endsWith('/social/inbox.ts')) continue;
       expect(src, f).not.toMatch(/\.publish\(|onauth/);
-      if (!f.endsWith('/rumble/client/inviteSender.ts') && !f.endsWith('/rumble/client/inviteInbox.ts')) expect(src, f).not.toMatch(/social\/inbox'|social\/nip17'/);
+      if (!['/rumble/client/inviteSender.ts', '/rumble/client/inviteInbox.ts', '/rumble/client/inboxSetup.ts'].some((x) => f.endsWith(x))) expect(src, f).not.toMatch(/social\/inbox'|social\/nip17'/);
     }
-    // In inbox.ts: one publish call, inside publishGiftWrap, after the kind-1059 and inbox-set checks.
+    // In inbox.ts: one publish call, in a private helper, reached only by the two checked publishers.
     const inbox = readFileSync(join(__dirname, 'inbox.ts'), 'utf8');
     expect(inbox.match(/\.publish\(/g)).toHaveLength(1);
-    const fn = inbox.slice(inbox.indexOf('export async function publishGiftWrap'));
-    expect(fn.indexOf('wrap.kind !== 1059')).toBeGreaterThan(0);
-    expect(fn.indexOf('issued.has(inbox)')).toBeGreaterThan(0);
-    expect(fn.indexOf('.publish(')).toBeGreaterThan(fn.indexOf('wrap.kind !== 1059'));
+    expect(inbox).toMatch(/\nasync function publishTo\(/);
+    expect(inbox).not.toMatch(/export (async )?function publishTo/);
+    expect(inbox.slice(inbox.indexOf('async function publishTo')).indexOf('.publish(')).toBeGreaterThan(0);
+    expect(inbox.match(/publishTo\(/g)).toHaveLength(3);
+    const wrapFn = inbox.slice(inbox.indexOf('export async function publishGiftWrap'), inbox.indexOf('async function publishTo'));
+    expect(wrapFn.indexOf('wrap.kind !== 1059')).toBeGreaterThan(0);
+    expect(wrapFn.indexOf('issued.has(inbox)')).toBeGreaterThan(0);
+    expect(wrapFn.indexOf('publishTo(')).toBeGreaterThan(wrapFn.indexOf('wrap.kind !== 1059'));
+    const listFn = inbox.slice(inbox.indexOf('export async function publishInboxList'));
+    expect(listFn.indexOf("list.kind !== 10050")).toBeGreaterThan(0);
+    expect(listFn.indexOf('list.pubkey !== me')).toBeGreaterThan(0);
+    expect(listFn.indexOf('publishTo(')).toBeGreaterThan(listFn.indexOf('list.pubkey !== me'));
     // The pool interface the app uses has reads and closes, nothing else.
     const pool = readFileSync(join(__dirname, 'pool.ts'), 'utf8');
     const iface = pool.slice(pool.indexOf('export interface PoolLike'), pool.indexOf('\n}', pool.indexOf('export interface PoolLike')));

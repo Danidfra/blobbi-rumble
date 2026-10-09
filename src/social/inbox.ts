@@ -54,7 +54,8 @@ export async function findInbox(pool: BoundedPool, recipient: Recipient, opts: {
   const newest = (events: NostrEvent[], kind: number) =>
     events
       .filter((e) => e && e.kind === kind && e.pubkey === pk && Number.isSafeInteger(e.created_at) && e.created_at <= now + 600)
-      .sort((a, b) => b.created_at - a.created_at)[0] ?? null;
+      // NIP-01 replaceable: the newest wins; on a tie, the lowest id.
+      .sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0] ?? null;
   const first = await pool.query([...(opts.lookupRelays ?? LOOKUP_RELAYS), ...hints], { kinds: [10050, 10002], authors: [pk] });
   let list = newest(first, 10050);
   if (!list) {
@@ -79,6 +80,11 @@ export type RelayAuth = (template: EventTemplate) => Promise<VerifiedEvent>;
  * that relay, a bounded challenge, nothing else).
  */
 export function inboxRelayAuth(signer: NostrSigner, inbox: InboxSet): RelayAuth {
+  return relayAuthFor(signer, inbox);
+}
+
+/** NIP-42 AUTH signed only for one of `relays` (canonical URLs this module chose), as `inboxRelayAuth`. */
+function relayAuthFor(signer: NostrSigner, inbox: readonly string[]): RelayAuth {
   return async (t) => {
     const relay = t.tags.find((x) => x[0] === 'relay')?.[1];
     const challenge = t.tags.find((x) => x[0] === 'challenge')?.[1];
@@ -98,9 +104,13 @@ export interface PublishResult {
 export async function publishGiftWrap(pool: PublishPoolLike, inbox: InboxSet, wrap: NostrEvent, auth: RelayAuth | null, opts: { maxWait?: number } = {}): Promise<PublishResult> {
   if (!issued.has(inbox) || inbox.length === 0 || inbox.length > RELAY_LIMITS.inbox) throw new Error('publish: not an inbox from a kind-10050 list');
   if (wrap.kind !== 1059 || !wrap.tags.some((t) => t[0] === 'p') || !verifyFresh(wrap)) throw new Error('publish: only a valid kind-1059 gift wrap may be published');
-  const maxWait = opts.maxWait ?? 8000;
-  const relays = [...inbox];
-  const tries = pool.publish(relays, wrap, { ...(auth ? { onauth: auth } : {}), maxWait });
+  return publishTo(pool, [...inbox], wrap, auth, opts.maxWait);
+}
+
+/** The one place this app hands an event to relays. Callers check what and where first. */
+async function publishTo(pool: PublishPoolLike, relays: string[], event: NostrEvent, auth: RelayAuth | null, wait?: number): Promise<PublishResult> {
+  const maxWait = wait ?? 8000;
+  const tries = pool.publish(relays, event, { ...(auth ? { onauth: auth } : {}), maxWait });
   const timeout = <T>(p: Promise<T>) => Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), maxWait + 1000))]);
   const settled = await Promise.allSettled(tries.map(timeout));
   const result: PublishResult = { accepted: [], failed: [] };
@@ -150,4 +160,93 @@ export function subscribeGiftWraps(
     maxWait: opts.maxWait ?? 6000,
   });
   return { close: () => sub.close('done') };
+}
+
+// ─── Inbox setup (M8C-B.1) ──────────────────────────────────────────────────
+
+/**
+ * The player's own kind-10050 list naming `relays` (secure, canonical,
+ * de-duplicated, 1-3): what "set up private invites" signs. Throws on
+ * anything else.
+ */
+export function inboxListTemplate(relays: readonly string[], now = Math.floor(Date.now() / 1000)): EventTemplate {
+  const clean: string[] = [];
+  for (const r of relays) {
+    const u = typeof r === 'string' && /^wss:\/\//i.test(r.trim()) ? relayUrl(r) : null;
+    if (!u) throw new Error(`not a secure relay URL: ${String(r).slice(0, 80)}`);
+    if (!clean.includes(u)) clean.push(u);
+  }
+  if (clean.length < 1 || clean.length > RELAY_LIMITS.inbox) throw new Error(`an inbox needs 1 to ${RELAY_LIMITS.inbox} relays`);
+  return { kind: 10050, created_at: now, tags: clean.map((u) => ['relay', u]), content: '' };
+}
+
+/** At most this many relays receive the player's kind-10050 list. */
+export const MAX_LIST_TARGETS = 9;
+
+/**
+ * Publish the player's own kind-10050 list so others can find it: only a
+ * verified kind 10050 by `me` whose tags are exactly its relay tags (1-3,
+ * wss), only to canonical wss `targets` (discovery relays and the inbox
+ * relays themselves), with relay AUTH for exactly those relays.
+ */
+export async function publishInboxList(pool: PublishPoolLike, list: NostrEvent, me: string, targets: readonly string[], signer: NostrSigner | null, opts: { maxWait?: number } = {}): Promise<PublishResult> {
+  const named = inboxRelays(list);
+  if (!verifyFresh(list) || list.kind !== 10050 || list.pubkey !== me || list.content !== '' || named.length === 0 || named.length !== list.tags.length) throw new Error('publish: only the player’s own valid kind-10050 list may be published');
+  const to: string[] = [];
+  for (const t of targets) {
+    const u = typeof t === 'string' && /^wss:\/\//i.test(t.trim()) ? relayUrl(t) : null;
+    if (u && !to.includes(u)) to.push(u);
+  }
+  if (!to.length || to.length > MAX_LIST_TARGETS) throw new Error('publish: bad targets for the inbox list');
+  return publishTo(pool, to, list, signer ? relayAuthFor(signer, to) : null, opts.maxWait);
+}
+
+/** The part of nostr-tools' SimplePool a read-only probe needs (and tests fake). */
+export interface ProbePoolLike {
+  subscribeMany(relays: string[], filter: Record<string, unknown>, params: { onevent: (e: NostrEvent) => void; oneose?: () => void; onclose?: (reasons: { url: string; reason: string }[]) => void; maxWait?: number }): { close: (reason?: string) => void };
+}
+
+export type ProbeAnswer = 'answered' | 'auth' | 'down';
+
+/**
+ * Ask each relay one read-only question and note how it answered: with its
+ * stored events ('answered'), by requiring AUTH first ('auth'; no AUTH is
+ * attempted, nothing is signed), or not at all ('down'). Never publishes.
+ */
+export async function probeRelays(pool: ProbePoolLike, relays: readonly string[], filter: Record<string, unknown>, maxWait = 5000): Promise<{ answers: Map<string, ProbeAnswer>; events: NostrEvent[] }> {
+  const answers = new Map<string, ProbeAnswer>();
+  const events: NostrEvent[] = [];
+  const clean = relays.map((r) => (typeof r === 'string' && /^wss:\/\//i.test(r.trim()) ? relayUrl(r) : null)).filter((u): u is string => !!u);
+  await Promise.all(
+    [...new Set(clean)].map(
+      (url) =>
+        new Promise<void>((done) => {
+          let settled = false;
+          let sub: { close: (reason?: string) => void } | null = null;
+          const finish = (a: ProbeAnswer) => {
+            if (settled) return;
+            settled = true;
+            answers.set(url, a);
+            clearTimeout(timer);
+            try {
+              sub?.close();
+            } catch {
+              // Already closed.
+            }
+            done();
+          };
+          const timer = setTimeout(() => finish('down'), maxWait + 500);
+          sub = pool.subscribeMany([url], filter, {
+            onevent: (e) => void events.push(e),
+            // nostr-tools reports a CLOSED as an EOSE first, then the close: let the close have its say.
+            oneose: () => void setTimeout(() => finish('answered'), 0),
+            onclose: (reasons) => finish(reasons.some((r) => /auth-required/i.test(r.reason)) ? 'auth' : 'down'),
+            maxWait,
+          });
+          // A pool that answered synchronously: close what it opened.
+          if (settled) sub.close();
+        }),
+    ),
+  );
+  return { answers, events };
 }

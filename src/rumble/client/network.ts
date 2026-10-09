@@ -43,6 +43,7 @@ import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine 
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
+import { InboxSetup } from './inboxSetup';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -134,10 +135,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       return null;
     }
   };
+  let setup: InboxSetup | null = null;
   const syncInbox = () => {
     const signer = identity.connectedSigner;
     if (signer === inboxSigner) return;
     inbox?.stop();
+    setup?.stop();
+    setup = null;
     inboxSigner = signer;
     const me = identity.state.pubkey;
     inbox =
@@ -217,6 +221,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let relayPool: BoundedPool | null = null;
   let directory: ProfileDirectory | null = null;
   // Dev only: ?relays=ws://a,ws://b replaces the lookup relays (tests run a local relay).
+  // Dev only: ?inbox-suggest=wss://a,wss://b replaces the suggested inbox relays (tests use local relays).
+  const devInboxSuggestions = import.meta.env.DEV && q.get('inbox-suggest') ? q.get('inbox-suggest')!.split(',').slice(0, 3) : null;
   const devRelays = import.meta.env.DEV && q.get('relays') ? q.get('relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
   const profiles = () => {
     if (!directory) {
@@ -312,6 +318,35 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       }).finally(() => (inviteBusy = false));
     },
     checkInvites: () => void inbox?.check(),
+    // M8C-B.1: only for this identity, only when it has no kind-10050 list, only on clicks.
+    openInboxSetup: () => {
+      const signer = identity.connectedSigner;
+      const me = identity.state.pubkey;
+      if (!signer || !me || !inbox || inbox.state.phase !== 'no-inbox' || setup) return;
+      const s = new InboxSetup({
+        signer,
+        me,
+        lookup: (profiles(), relayPool!),
+        pools: () => new SimplePool({ enablePing: false, enableReconnect: false }),
+        lookupRelays: devRelays ?? LOOKUP_RELAYS,
+        ...(devInboxSuggestions ? { suggestions: devInboxSuggestions } : {}),
+        onInbox: (list) => {
+          if (setup !== s) return;
+          inbox?.adopt(list);
+          const st = s.state;
+          shell.toast(st.phase === 'exists' ? 'You already had private-message relays: Rumble uses them' : st.phase === 'partial' ? `Private invites set up (${st.inboxOk.length} of ${st.inboxOk.length + st.inboxFailed.length} inbox relays accepted)` : 'Private invites are set up', 6000);
+          setup = null;
+        },
+      });
+      setup = s;
+      void s.open();
+    },
+    toggleInboxRelay: (url) => setup?.toggle(url),
+    confirmInboxSetup: () => void setup?.confirm(),
+    closeInboxSetup: () => {
+      setup?.stop();
+      setup = null;
+    },
     dismissInvite: (id) => inbox?.dismiss(id),
     // Join only on a click, only to the validated destination: this server's room in place, or that server's page.
     joinInvite: (id) => {
@@ -551,7 +586,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
-      inbox: inbox ? { state: inbox.state, cards: inviteCards() } : null,
+      inbox: inbox ? { state: inbox.state, cards: inviteCards(), setup: setup?.state ?? null } : null,
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
@@ -675,7 +710,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       shell,
       /** M8C-B invites, for scripted checks (valid invites only; nothing else is held). */
       get inbox() {
-        return inbox ? { state: inbox.state, cards: inviteCards() } : null;
+        return inbox ? { state: inbox.state, cards: inviteCards(), setup: setup?.state ?? null } : null;
       },
       checkInvites: () => inbox?.check(),
       /** Identity, for scripted checks. */

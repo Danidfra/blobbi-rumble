@@ -1,8 +1,10 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `726b485` (M8C-A) · **Last major completed
-milestone:** M8C-A (private Nostr invites, sending).
+**Implementation baseline:** `81f51f9` (M8C-B) plus the M8C-B.1 follow-up ·
+**Last major completed milestone:** M8C-B (private Nostr invites,
+receiving: core path validated with two real identities). M8C-B.1 (inbox
+setup) is implemented but not yet validated for real.
 
 Read this first. It says what Blobbi Rumble is, what exists, which
 boundaries are deliberate and which decisions are settled. It does not
@@ -373,6 +375,8 @@ Nostr:   identity · profiles · social · invites · (later, maybe) discovery
 - **Relays:**
   - lookups go to `purplepag.es`, `relay.damus.io`, `relay.ditto.pub`,
     plus at most 3 of a user's own relays;
+  - suggested NIP-17 inbox relays for setup: `auth.nostr1.com`,
+    `relay.nostr.net`, `nos.lol` (§15);
   - at most about 8 open lookup connections, idle ones closed;
   - a page with only guests opens no relay connection.
 - The user's identity private key **never** reaches Rumble.
@@ -453,10 +457,14 @@ Alice (in a private room, Nostr-connected, extension with NIP-44)
   key: *Blobbi Rumble never generates, stores or handles the user's Nostr
   identity private key.*
 - **Publishing boundary.**
-  - `social/inbox.ts` is the app's only publisher, and the invite sender
-    is its only user.
-  - It publishes only a valid kind 1059, only to an inbox set built from
-    a kind 10050 list.
+  - `social/inbox.ts` is the app's only publisher. It has exactly two
+    publishing entry points, each validating before the single private
+    publish call:
+    - a valid kind 1059, only to an inbox set built from a kind 10050
+      list (used by the invite sender);
+    - since M8C-B.1, the player's **own** kind 10050 list, only to
+      discovery and inbox relays, only after an explicit confirm (used
+      by inbox setup).
   - Events are verified on a fresh copy (`social/verify.ts`), so a
     modified copy can't inherit a cached "verified" result.
 
@@ -477,23 +485,80 @@ Alice (in a private room, Nostr-connected, extension with NIP-44)
     fallback, and nothing was sent;
   - the LAN-only link warning appeared.
 
-### 15. Private invite receiving (M8C-B) — NEXT, NOT IMPLEMENTED
+### 15. Private invite receiving (M8C-B, implemented and validated) and inbox setup (M8C-B.1, implemented)
 
-Approved direction only:
-- Rumble may receive its own NIP-17 invites, only after an explicit user
-  opt-in or "check".
-- It processes a bounded number of recent gift wraps and decrypts them
-  locally.
-- It recognizes the Rumble marker only after decrypting.
-  - Unrelated messages are discarded at once and never persisted, logged
-    or rendered.
-  - Results are de-duplicated (several relays deliver the same wrap).
-- It shows the inviter, room, destination origin and trust label, with an
-  explicit **Join**. There is no automatic navigation.
+**Receiving (M8C-B).**
+- **Opt-in.** Nothing is decrypted until the player clicks **Check
+  invites**; the privacy explanation sits beside the button.
+- **Where.** The player's own kind 10050 inbox (`wss://`, at most 3) is
+  read. Only kind 1059 addressed to them, within a recent window (wraps
+  are backdated up to 2 days).
+- **How many.** At most **30** wraps are decrypted in the first check,
+  newest first, then up to 30 more live while the page stays open. Each
+  wrap costs 2 NIP-44 decrypt calls on the extension, on this device
+  only. Nothing goes to the Rumble server.
+- **Unwrapping** applies every NIP-17/NIP-59 check:
+  - wrap: verified, kind 1059, addressed to me;
+  - seal: verified, kind 13, no tags;
+  - rumor: unsigned, id = hash, author = the seal's signer.
+- **Recognition.** Only `["b","blobbi:rumble:invite:v1"]` makes an
+  invite, and it needs:
+  - `p` = me and exactly one `r` link to a canonical `/play/CODE` (`https`
+    unless the host is local);
+  - message text naming that same single link;
+  - not expired (lifetime capped at 35 min) and not dated more than
+    10 min ahead.
+- **Unrelated messages** are dropped where they were opened: never shown,
+  stored, logged or kept in state.
+  - De-duplicated by wrap id and rumor id.
+  - sessionStorage keeps only the ids of wraps already judged, per
+    identity, so a reload doesn't decrypt them again.
+- **The card** shows the sender (from the seal; the profile name is
+  cosmetic), room, destination host, trust label (from the host name only:
+  nothing is fetched from the destination before joining) and time left.
+  - **Join** is explicit: it switches room on the same server, or opens
+    the other server's `/play/CODE` page. Never `?server=`.
+  - Dismiss is local to the session.
+- **Identity changes.** Disconnect or another identity stops everything
+  and forgets all invite state.
 
-**Why unrelated wraps may need decrypting:** NIP-17 deliberately hides
-the inner message's kind and tags, so a Rumble invite cannot be told apart
-from any other private message before decryption.
+**Why unrelated wraps must be decrypted:** NIP-17 deliberately hides the
+inner message's kind and tags, so a Rumble invite cannot be told apart
+from any other private message before decryption. Hence the opt-in and
+the budget.
+
+**Inbox setup (M8C-B.1).**
+- **Discovery.** On connecting Nostr, Rumble looks up the player's kind
+  10050 list (public data; nothing is decrypted).
+- **An existing valid list is used exactly as it is:** never overwritten,
+  merged with defaults or republished. Editing relays is out of scope.
+- **With no list,** the Invites section offers **Set up private
+  invites**:
+  - suggested inbox relays (`auth.nostr1.com`, `relay.nostr.net`,
+    `nos.lol`), probed read-only with nothing signed, which the player can
+    untick;
+  - a plain note that publishing makes them the player's public
+    private-message relay list;
+  - only an explicit **Publish and set up** proceeds.
+- **On confirm,** Rumble:
+  1. checks again, strictly, that no list exists. Enough lookup relays
+     must answer (fewer means "uncertain", and nothing is signed), and the
+     NIP-65 write relays are asked too;
+  2. has the extension sign the kind 10050 (`["relay", url]` tags, empty
+     content);
+  3. publishes it to the lookup relays, the player's NIP-65 write relays
+     (at most 3) and the chosen inbox relays, with relay AUTH for exactly
+     those;
+  4. reads it back from the lookup relays.
+- **Results:**
+  - **done**: discoverable and every chosen inbox accepted;
+  - **partial**: discoverable and some accepted;
+  - **unverified**: published but not readable back yet;
+  - **failed**: nothing usable.
+  - It never re-signs or retries by itself.
+
+**Not implemented:** automatic invite checking on connect (a separate
+consent pass), editing an existing inbox list, invite replies, chat.
 
 ### 16. Invites are not access control
 
@@ -543,6 +608,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | Signer vs key custody | NIP-07 holds the key; Rumble never asks for, makes, stores or logs an nsec. |
 | One-time wrapper key vs identity key | NIP-59 wrapper keys are made per wrap and dropped; they are not identities. |
 | Private invite vs access control | An invite grants nothing (§16). |
+| Inbox setup vs silent changes | A kind 10050 is published only on an explicit confirm, only when none exists; an existing list is never replaced or merged. |
+| Received messages vs privacy | Decryption only after an explicit check, bounded, local; unrelated messages are never shown, stored or logged. |
 | Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
 | Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
 
@@ -563,6 +630,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8A | Nostr identity | **Real NIP-07 extension**: proof accepted, profile shown (`danidfra`), disconnect back to Guest mid-match. |
 | M8B | Rooms, server identity, UI cleanup | **Manual multi-room test**: private room V4BU with two players, OPEN isolated, real NIP-07 auth inside the room, empty-room cleanup, steady 60 ticks/s. Follow-up `44179d7` (Copy vs Select link) verified in Chrome on localhost and LAN http. |
 | M8C-A | Private invites: sending | **Real interop**: Rumble → real NIP-17 relay → **Anagram** showed the readable kind 14; no-10050 fallback and LAN-link warning confirmed. |
+| M8C-B | Private invites: receiving | **Real two-identity test**: Danidfra (Rumble) sent; NotASage (Rumble, real extension) checked invites, the extension decrypted, the invite card appeared, and **Join** entered Danidfra's room. |
+| M8C-B.1 | Inbox setup (kind 10050) | Automated tests; a full browser run with the test double and local relays (setup → publish → read back → invite delivered → join). **Real validation with an identity that has no 10050 is pending.** |
 
 ---
 
@@ -587,6 +656,9 @@ immutable forever.
   grace, `/play/CODE`, `PUBLIC_URL` canonical).
 - **The M8C-A send protocol** (kind 14 in a seal and gift wrap, the
   10050-only inbox, the `b` marker, 30-minute expiry, no self-copy).
+- **The M8C-B receive behaviour** (explicit check, bounded newest-first
+  decryption, marker-only recognition, unrelated messages discarded,
+  explicit Join).
 - **The current minimal HUD** structure.
 
 ---
@@ -595,8 +667,9 @@ immutable forever.
 
 | | |
 | --- | --- |
-| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A |
-| **Next** | **M8C-B**: receive private Nostr invites inside Rumble (§15) |
+| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B |
+| **In validation** | M8C-B.1: inbox setup for identities without kind 10050 (§15) |
+| **Next** | Automatic invite checking, with its own consent design (a separate pass) |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 
@@ -627,6 +700,8 @@ None of this is designed or decided.
   `@blobbi-kit/nostr`), once more apps need it (M8A0 §17).
 - **Fighter appearance from a player's Blobbi** (kind 11125 → 31124): M9
   territory.
+- **Automatic invite checking** on connect (needs its own consent design);
+  **editing an existing inbox list**.
 - **NIP-05 display**, a follows-based contact picker, invite
   accept/decline over kind 21059, proof-of-work on wraps (M8C0).
 - **Arena 2** with a larger or different layout.

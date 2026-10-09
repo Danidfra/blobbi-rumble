@@ -82,8 +82,10 @@ const settle = () => new Promise((r) => setTimeout(r, 30));
 describe('the invite inbox', () => {
   it('does nothing until asked; no NIP-44 means unavailable (identity is not its business)', async () => {
     const t = setup([await invite()]);
-    expect(t.inbox.state.phase).toBe('idle');
     await settle();
+    // Located on its own (public data), nothing decrypted or subscribed.
+    expect(t.inbox.state.phase).toBe('idle');
+    expect(t.inbox.state.relays).toBe(2);
     expect(t.sig.calls.decrypt).toBe(0);
     expect(t.state.subscribed).toHaveLength(0);
     const no = setup([], { sig: signer(bob, { nip44: false }) });
@@ -94,6 +96,8 @@ describe('the invite inbox', () => {
 
   it('no kind 10050: nothing to check, nothing subscribed', async () => {
     const t = setup([], { list: null });
+    await settle();
+    expect(t.inbox.state.phase).toBe('no-inbox');
     await t.inbox.check();
     expect(t.inbox.state.phase).toBe('no-inbox');
     expect(t.state.subscribed).toHaveLength(0);

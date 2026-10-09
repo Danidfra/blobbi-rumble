@@ -32,6 +32,7 @@ import { avatar, button, el, isTyping } from './dom';
 import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
+import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
 
@@ -53,6 +54,11 @@ export interface ShellActions {
   checkInvites(): void;
   joinInvite(id: string): void;
   dismissInvite(id: string): void;
+  /** M8C-B.1: set up a private-message inbox (kind 10050) for an identity that has none. */
+  openInboxSetup(): void;
+  toggleInboxRelay(url: string): void;
+  confirmInboxSetup(): void;
+  closeInboxSetup(): void;
 }
 
 /** A received invite as the panel shows it. */
@@ -86,7 +92,7 @@ export interface ShellView {
   startCard: boolean;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page). */
-  inbox: { state: InboxState; cards: InviteCard[] } | null;
+  inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null } | null;
 }
 
 const CSS = `
@@ -341,6 +347,38 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  const setupSection = (su: SetupState | null): Node[] => {
+    const out: Node[] = [el('div', undefined, 'Private invites aren’t set up.')];
+    if (!su) {
+      out.push(el('div', 'rs-sub', 'To receive invites, your Nostr identity needs private-message inbox relays (NIP-17). Rumble can set them up for you: you’ll see which relays first, and nothing is published until you confirm.'));
+      const row = el('div', 'rs-row');
+      row.append(button('Set up private invites', a.openInboxSetup, 'rs-btn go'));
+      out.push(row);
+      return out;
+    }
+    const busy: Partial<Record<SetupState['phase'], string>> = {
+      probing: 'Checking the suggested relays…',
+      checking: 'Making sure you don’t have private-message relays already…',
+      signing: 'Approve the signature in your Nostr extension…',
+      publishing: 'Publishing your private-message relays…',
+      verifying: 'Checking that others can find them…',
+    };
+    if (busy[su.phase]) return [...out, el('div', 'rs-sub', busy[su.phase]!)];
+    out.push(el('div', 'rs-sub', 'Inbox relays (where others’ apps will deliver your private messages):'));
+    const what = { answered: 'reachable', auth: 'reachable, asks you to sign in', down: 'not reachable', checking: '…' } as const;
+    for (const c of su.candidates) {
+      const row = el('div', 'rs-row');
+      row.append(button(c.selected ? '✓' : '○', () => a.toggleInboxRelay(c.url), c.selected ? 'rs-btn go' : 'rs-btn'), el('span', undefined, c.url.replace(/\/$/, '')), el('span', 'rs-sub', what[c.probe]));
+      out.push(row);
+    }
+    if (su.message) out.push(el('div', su.phase === 'unverified' ? 'rs-warn' : 'rs-err', su.message));
+    out.push(el('div', 'rs-sub', 'Publishing makes these your private-message relays on Nostr (a public kind 10050 list that any Nostr app can read). Your extension asks to sign it; some relays may ask you to sign in too.'));
+    const row = el('div', 'rs-row');
+    row.append(button(su.phase === 'unverified' || su.phase === 'failed' ? 'Try again' : 'Publish and set up', a.confirmInboxSetup, 'rs-btn go'), button('Cancel', a.closeInboxSetup));
+    out.push(row);
+    return out;
+  };
+
   const inboxSection = (v: ShellView, ib: NonNullable<ShellView['inbox']>): Node[] => {
     const st = ib.state;
     const out: Node[] = [el('h4', undefined, `Invites${ib.cards.length ? ` (${ib.cards.length})` : ''}`)];
@@ -362,7 +400,7 @@ export function createShell(a: ShellActions) {
         out.push(el('div', 'rs-sub', st.phase === 'locating' ? 'Finding your private-message inbox…' : `Checking invites… (${st.checked} looked at; approve the requests in your extension)`));
         return out;
       case 'no-inbox':
-        out.push(el('div', 'rs-sub', 'This identity has no private-message inbox (NIP-17 relays, kind 10050), so invites can’t be checked here. Set one up in a Nostr messaging app.'));
+        out.push(...setupSection(ib.setup));
         return out;
       case 'error':
         out.push(el('div', 'rs-err', 'Couldn’t check invites.'));
@@ -595,7 +633,7 @@ export function createShell(a: ShellActions) {
       // The session panel, while open.
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
-        const inboxKey = v.inbox ? [v.inbox.state, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
+        const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
         const pKey = JSON.stringify([inboxKey, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {

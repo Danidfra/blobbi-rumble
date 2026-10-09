@@ -188,8 +188,19 @@ invite shows the sender, room, destination host and server label, and
 time left; **Join** (never automatic) switches room on this server or
 opens the other server's page. The session remembers only the ids of
 wraps it already judged, so a reload does not ask to decrypt them again.
-Without NIP-44, or without a kind 10050 inbox, the panel says why and
-invites still reach the player's Nostr messaging app.
+Without NIP-44 the panel says why, and invites still reach the player's
+Nostr messaging app.
+
+**Setting up an inbox (M8C-B.1):** after connecting Nostr, Rumble looks
+up the player's kind 10050 list (public; nothing decrypted). If there is
+one it is used exactly as it is. If there is none, **Invites** offers
+**Set up private invites**: the suggested relays (`auth.nostr1.com`,
+`relay.nostr.net`, `nos.lol`) are checked without signing anything and can
+be unticked; **Publish and set up** (only on that click) has the extension
+sign the kind 10050 list, publishes it to the lookup relays, the player's
+own NIP-65 write relays and the chosen inbox relays, and reads it back.
+The result says whether the list is discoverable and how many inbox
+relays accepted it. An existing list is never replaced or merged.
 
 ## The interface
 

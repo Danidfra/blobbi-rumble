@@ -1040,3 +1040,61 @@ M8C-A tests in new code; M8A/M8B verification was not affected.
   so nothing contacts the destination before the player chooses to go
   there. As a result a community operator claim is not shown on an
   invite card.
+
+---
+
+## M8C-B.1 as built (2026-10-09): inbox setup (pending real validation)
+
+M8C-B's core receive path was validated with two real identities
+(Danidfra → NotASage: check, decrypt, card, Join).
+
+**Kind 10050** (NIP-17, listed in NIP-51) is a replaceable event: the
+newest wins, and on a tie the lowest id (NIP-01). `findInbox` now applies
+that tie-break. Its `["relay", url]` tags are where the user receives
+private messages. NIP-17 asks clients to keep it to 1–3 relays and to
+spread it "to as many relays as viable".
+
+**Suggested inbox relays, probed live on 2026-10-09.** Each was sent a
+throwaway kind 1059 to a throwaway key with a 10-minute expiration.
+
+| Relay | Evidence | Decision |
+| --- | --- | --- |
+| `auth.nostr1.com` | NIP-11 lists 17 and 42 and `auth_required`; reads of 1059 need AUTH (only the recipient reads); writes accepted after AUTH; used in real lists (fiatjaf's, Vitor's) | suggested |
+| `relay.nostr.net` | NIP-11 lists 59; reads of 1059 need AUTH; open writes accepted | suggested |
+| `nos.lol` | open writes accepted, open reads (less private); used in real lists (jb55's, Jack's); a third operator | suggested |
+| `inbox.nostr.wine` | paid; "the inbox you tried to reach does not exist" for non-members | rejected |
+| `relay.0xchat.com` | unreachable | rejected |
+| `relay.damus.io` | connections refused from this machine in every Node probe | not chosen |
+| primal, ditto, offchain, snort, bitcoiner.social | accept writes but serve 1059 to anyone (who receives what is public) | not chosen |
+
+**Where the list is published:**
+- the lookup relays (where Rumble and others look first);
+- the player's NIP-65 write relays (the outbox, where clients look next),
+  at most 3;
+- the chosen inbox relays themselves.
+
+That is at most 9, `wss://` only, through `publishInboxList`, which
+accepts only the player's own valid kind 10050 (relay tags only, empty
+content). Relay AUTH goes through the same exact-relay signer.
+
+**Safety:**
+- Setup is offered only when no list was found.
+- On confirm it checks again, strictly: at least 2 lookup relays must
+  answer (a failed lookup must not read as "none"), and the NIP-65 write
+  relays are asked too. If a list turns up, it is used and nothing is
+  signed.
+- It never retries or re-signs by itself.
+- A disconnect or identity switch mid-way discards the run.
+
+**Results:**
+- **done / partial:** discoverable (read back from the lookup relays with
+  the same event id) and at least 1 chosen inbox relay accepted;
+- **unverified:** accepted somewhere, not readable back;
+- **failed:** no relay, or no inbox relay, accepted.
+
+The new list is adopted at once (Check invites becomes available).
+
+**Probes.** `probeRelays` is read-only and signs nothing: 'answered',
+'auth' (CLOSED auth-required) or 'down'. nostr-tools reports a CLOSED as
+an EOSE first, so the 'answered' verdict waits one tick for a close to
+override it.
