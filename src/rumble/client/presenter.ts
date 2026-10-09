@@ -25,6 +25,7 @@ import { createArena } from '../view/arenaView';
 import { createWorld } from '../view/world';
 import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from '../view/camera';
 import { PhysicsDebug } from '../view/debug';
+import type { BlobbiIdentityInput } from '@blobbi-kit/3d';
 import { FighterView } from '../view/fighterView';
 import { OrbView } from '../view/orbView';
 import { SweeperView } from '../view/sweeperView';
@@ -59,6 +60,10 @@ export class RumblePresenter {
   readonly engine: Engine;
   readonly scene: Scene;
   readonly views: FighterView[];
+  /** Each fighter's default look (its roster seed), to go back to. */
+  private readonly defaults: Map<string, string>;
+  /** The look a fighter wears instead of its default, by its key (null: the default). */
+  private readonly worn = new Map<string, string | null>();
   private readonly env;
   private readonly debug: PhysicsDebug;
   private readonly orbView: OrbView;
@@ -86,7 +91,8 @@ export class RumblePresenter {
     cam.beta = CAMERA.beta;
     createArena(this.scene, this.env.shadows);
     this.debug = new PhysicsDebug(this.scene, hud);
-    this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, seedFromLabel(f.identity), this.env.shadows));
+    this.defaults = new Map(fighters.map((f) => [f.id, seedFromLabel(f.identity)]));
+    this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows));
     this.orbView = new OrbView(this.scene, orbs, this.env.shadows);
     this.sweeperView = new SweeperView(this.scene, this.env.shadows);
     window.addEventListener('keydown', (e) => {
@@ -122,6 +128,36 @@ export class RumblePresenter {
   }
 
   /** A fighter's name tag: a person's name, or (null) its slot label again. Presentation only. */
+  /**
+   * M9B: a fighter takes a look (the player's chosen Blobbi's Rumble form)
+   * or goes back to its default. The old body is disposed and a new one is
+   * built on the spot, the same slot, the same rings and tag; the snapshot
+   * places it on the next frame, so no match state is involved. The same
+   * key again builds nothing. A body the kit refuses leaves the default;
+   * the return says what is worn now.
+   */
+  setLook(id: string, look: BlobbiIdentityInput | null, key: string | null): 'worn' | 'default' | 'unchanged' {
+    const i = this.views.findIndex((v) => v.id === id);
+    const seed = this.defaults.get(id);
+    if (i < 0 || !seed) return 'unchanged';
+    const current = this.worn.get(id) ?? null;
+    if (current === key) return 'unchanged';
+    const old = this.views[i];
+    let view: FighterView;
+    try {
+      view = new FighterView(id, old.label, this.scene, look ?? seed, this.env.shadows);
+    } catch {
+      // Nothing the kit can build: keep what is there (the default, or the previous form).
+      return current === null ? 'default' : 'unchanged';
+    }
+    view.setTag(old.tagText, old.tagMono);
+    view.showDebug(this.debug.on);
+    this.views[i] = view;
+    old.dispose();
+    this.worn.set(id, look ? key : null);
+    return look ? 'worn' : 'default';
+  }
+
   setTag(id: string, name: string | null) {
     const view = this.views.find((v) => v.label === id);
     view?.setTag(name ?? id, name === null);

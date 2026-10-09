@@ -1296,13 +1296,17 @@ is one constant (`SEARCH_RELAYS`) with a dev override (`?search-relays=`).
 
 ---
 
-## M9A as built (2026-10-09): the player's Blobbis and a local choice (pending real validation)
+## M9A as built (2026-10-09): the player's Blobbis and a local choice (validated for real)
 
 Rumble's fighters have always been four fixed procedural Blobbis
 (`roster.ts`). M9A lets a connected Nostr identity see the Blobbis it owns
 and pick one as its preferred Rumble character. Discovery, ownership and a
 local choice only: nothing is published, no Blobbi is changed, and the
 fighter in a match is still the default (M9B is the rendering).
+
+**Validated for real on 2026-10-09**: discovery, selection, persistence
+across reload and identity switching confirmed with real identities.
+M9A is frozen.
 
 ### The event model, as found in the ecosystem
 
@@ -1400,3 +1404,104 @@ tags) are stale and contradict the kit.
   rule: the address is pubkey + `d`).
 - V1 and V2 Blobbis can be chosen but the 3D kit cannot build them; M9B
   must fall back to the default fighter for them.
+
+---
+
+## M9B as built (2026-10-09): adult Rumble forms (pending real validation)
+
+### Blobbi identity ≠ Blobbi form
+
+A Blobbi is a formless creature. Its identity is its kind 31124 at its
+owner's address; the form it takes depends on where it is. In Rumble every
+fighter is an adult procedural Blobbi (the kit's 3D model, the only body
+this game animates), so a visiting Blobbi temporarily takes that form. It
+is not an evolution, a migration or an upgrade: the Blobbi's event, stage,
+generation and 2D appearance are untouched, nothing is published, and the
+form is deterministic.
+
+### What was found before building
+
+- The Rumble fighter already IS the kit's procedural adult model:
+  `FighterView` calls `createBlobbi3D(seed, scene)` (`@blobbi-kit/3d`
+  0.1.1) with a seed from the roster label, and lays the game's own
+  feedback (punch swing, squash, held pose, expressions) over the kit's
+  animator. The kit builds the adult morphology whatever the stage, takes a
+  V3 seed or a `BlobbiV3Visual` (`{ seed, algorithm, colors?, traits? }`,
+  "a stated field always wins", gaps filled from the seed), and refuses
+  anything that is not a V3 seed. It has no V1 / V2 body.
+- The kit's own rule for a V3 Blobbi's seed is its address:
+  `deriveBlobbiV3Seed(owner, d)` (`@blobbi-kit/core`), a frozen SHA-256
+  over a domain, the pubkey and `d`, pinned by the kit's vectors. It does
+  not read the generation, so it is defined for a V1 / V2 address too.
+- The animator (`BlobbiAnimator`) takes no identity: the same inputs give
+  the same states for every look.
+
+### The rule (`client/rumbleForm.ts`, `RUMBLE_FORM_VERSION` 1)
+
+| Canonical Blobbi | Rumble form | `derivation` |
+| --- | --- | --- |
+| V3 adult | its own identity, as it is | `native` |
+| V3 egg or baby | the same identity, the adult body | `adult-stage` |
+| V1 / V2, any stage | the V3 identity of the same address (`deriveBlobbiV3Seed(owner, d)`), wearing the Blobbi's own base / secondary / eye colours | `legacy` |
+| unknown `visual_generation` | none: the default fighter | — |
+
+- **No second hash, no RNG, no clock, no event id.** The address is the
+  only input, so a rename, a care update, a hatch, an evolution or a
+  republish changes nothing; a pinned vector (one fixed address → one
+  fixed seed and key) is in the tests.
+- **Legacy colours are preserved**: the kit sanitises stated hex colours
+  and takes them over the seed's palette; traits, pattern, mark and every
+  proportion come from the address seed. Invalid colour text falls back to
+  the kit's palette (still deterministic). No adapter layer was needed.
+- A native V3 Blobbi's seed as the kit parsed it must equal the address
+  seed; a disagreement is treated as no form (checked, not trusted).
+- `RumbleLook` is exactly the kit's input shape; the form carries the
+  Blobbi's owner, `d`, name, stage and generation beside it, and a `key`
+  (version, seed, colours) for comparison. No pet state is duplicated.
+
+### Rendering (`presenter.setLook`, `FighterView`)
+
+- `FighterView` takes a look (a seed or a V3 identity input) instead of a
+  bare seed; nothing else in it changed, so a legacy form animates, faces,
+  punches, holds and tumbles exactly as the default fighter does.
+- `RumblePresenter.setLook(id, look, key)` swaps one fighter's view: a new
+  body is built, the tag and debug state carried over, the old view
+  disposed (the kit frees every mesh, material and texture it made; the
+  rings and tag are rebuilt). The same key again builds nothing. A body the
+  kit refuses leaves the default and says so. The snapshot places the new
+  body on the next frame; no match state is involved, so a change applies
+  at once, even mid-match.
+- The page keeps one `worn` record and runs `planLook(prev, slot, form)`
+  each frame (pure, a key comparison): the player's slot gets the chosen
+  form; a slot left behind (room change) or a choice removed (default,
+  disconnect, identity switch) goes back to the default. Only the local
+  fighter changes; other players still see the default until M9C.
+- With a remembered choice, the Blobbi list loads at connect (not only when
+  the panel opens), so a reload wears the form without a click.
+
+### Interface
+
+Under My Blobbis the chosen row says "Rumble Form · Temporary"; a legacy
+form explains "Blobbis are formless creatures! Your Blobbi has temporarily
+taken on a new form to play in Rumble (in its own colours). Its original
+appearance remains unchanged."; a V3 egg or baby: "Your Blobbi is
+temporarily taking an adult form to play. Its actual life stage is
+unchanged."; a V3 adult needs no explanation. The 2D preview (M9A) stays
+beside every row, so a V1 / V2 Blobbi's original look remains visible. No
+3D preview: it would need a second Babylon scene per row, which is not
+"reasonably straightforward"; the fighter itself is the preview.
+
+### Invariants kept
+
+Physics and gameplay are untouched: the body is `RUMBLE_BODY` (the kit's
+`BLOBBI_GAMEPLAY_PROFILE`, pinned) for every fighter; a form carries no
+gameplay number and `rumbleForm.ts` imports nothing of the simulation (a
+test greps for it). The server, NIP-17, NIP-42, identity and permissions
+are unchanged. Looks come only from the M9A ownership model; no tag can
+name an asset, a URL or a shader: the only inputs the kit gets are a seed
+and three hex colours.
+
+### Not done
+
+Other players' view of the form (M9C), a 3D preview in the picker, a
+geometry cache across swaps (a swap is rare and builds one body).

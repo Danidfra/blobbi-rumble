@@ -15,7 +15,7 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { Scene } from '@babylonjs/core/scene';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
-import { createBlobbi3D, type AnimatorInput, type Blobbi3D, type ExpressionName } from '@blobbi-kit/3d';
+import { createBlobbi3D, type AnimatorInput, type Blobbi3D, type BlobbiIdentityInput, type ExpressionName } from '@blobbi-kit/3d';
 import { animatorInput, initialBridge, type BridgeState } from '../control/animationBridge';
 import { RUMBLE_BODY } from '../profile';
 import { powerCap } from '../pickups/power';
@@ -52,16 +52,18 @@ export class FighterView {
   private readonly tag: Mesh;
   private readonly tagMat: StandardMaterial;
   private readonly tagTex: DynamicTexture;
-  private tagText = '';
+  tagText = '';
+  tagMono = true;
 
   constructor(
     readonly id: string,
     readonly label: string,
     scene: Scene,
-    seed: string,
-    shadows?: ShadowGenerator,
+    /** A V3 seed, or a V3 identity input (a seed with stated colours): what the kit builds the one adult body from. */
+    look: BlobbiIdentityInput | string,
+    private readonly shadows?: ShadowGenerator,
   ) {
-    this.blobbi = createBlobbi3D(seed, scene, { name: label, shadows });
+    this.blobbi = createBlobbi3D(look, scene, { name: label, shadows });
     this.blobbi.setExpression('happy', 0);
     // Debug rings: the grab and punch reach, on the ground under the fighter. Hidden unless debug is on.
     const ring = (name: string, radius: number, hex: string) => {
@@ -106,8 +108,9 @@ export class FighterView {
    * changes. The caller keeps it short.
    */
   setTag(text: string, mono = false) {
-    if (text === this.tagText) return;
+    if (text === this.tagText && mono === this.tagMono) return;
     this.tagText = text;
+    this.tagMono = mono;
     const ctx = this.tagTex.getContext() as CanvasRenderingContext2D;
     ctx.clearRect(0, 0, 256, 64);
     ctx.font = mono ? 'bold 36px ui-monospace, Menlo, monospace' : 'bold 30px ui-sans-serif, system-ui, sans-serif';
@@ -253,7 +256,9 @@ export class FighterView {
     }
   }
 
+  /** Everything this view made goes (the kit frees its nodes, materials and skin; the shadow list forgets the meshes here). */
   dispose() {
+    if (this.shadows) for (const m of this.blobbi.meshes) this.shadows.removeShadowCaster(m);
     this.blobbi.dispose();
     for (const ring of this.rings) ring.dispose();
     this.powerRing.dispose();

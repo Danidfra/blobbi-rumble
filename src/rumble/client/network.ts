@@ -47,6 +47,7 @@ import { InboxSetup } from './inboxSetup';
 import { PeopleFinder } from './people';
 import { BlobbiPicker } from './blobbis';
 import { blobbiPreview } from './blobbiPreview';
+import { planLook, rumbleFormOf, type RumbleForm, type Worn } from './rumbleForm';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -143,8 +144,33 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let setup: InboxSetup | null = null;
   // M8C-C: whom to invite (follows, search, a selection) for the connected identity; it never sends anything itself.
   let people: PeopleFinder | null = null;
-  // M9A: the connected identity's Blobbis (read only) and a local choice among them; nothing published, nothing changed in play yet.
+  // M9A: the connected identity's Blobbis (read only) and a local choice among them; nothing published.
   let blobbis: BlobbiPicker | null = null;
+  // M9B: the look the player's own fighter wears (the chosen Blobbi's Rumble form); only this page sees it until M9C.
+  let worn: Worn | null = null;
+  let lookNote: 'worn' | 'default' | 'refused' = 'default';
+  const currentForm = (): RumbleForm | null => {
+    const me = identity.verified;
+    const chosen = blobbis?.chosen ?? null;
+    return me && chosen ? rumbleFormOf(chosen, me) : null;
+  };
+  /** Apply the chosen form to the player's slot (and the default to a slot left behind); nothing per frame unless something changed. */
+  const syncLook = () => {
+    if (!presenter) return;
+    const form = currentForm();
+    const plan = planLook(worn, you, form);
+    worn = plan.next;
+    for (const c of plan.changes) {
+      const r = presenter.setLook(c.slot, c.form?.look ?? null, c.form?.key ?? null);
+      if (c.form) {
+        if (r === 'default') {
+          // The kit could not build it: the default stays, and the plan must not think the form is worn.
+          worn = null;
+          lookNote = 'refused';
+        } else lookNote = 'worn';
+      } else if (!form) lookNote = 'default';
+    }
+  };
   const syncInbox = () => {
     const signer = identity.connectedSigner;
     if (signer === inboxSigner) return;
@@ -626,8 +652,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     syncInbox();
     // The follow list is read the first time the invite section is on screen, not before.
     if (people && shell.panelOpen && room?.kind === 'private' && identity.provenSigner) people.ensureFollows();
-    // The Blobbi list is read the first time the panel shows it for a verified identity, not before.
-    if (blobbis && shell.panelOpen && identity.verified) blobbis.load();
+    // The Blobbi list is read the first time the panel shows it for a verified identity, or at once when a choice was remembered (the fighter wears it).
+    if (blobbis && identity.verified && (shell.panelOpen || blobbis.state.selected)) blobbis.load();
+    syncLook();
     if (inbox && nowMs - inboxExpiredAt > 1000) {
       inboxExpiredAt = nowMs;
       inbox.expire();
@@ -650,7 +677,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
       people: people && room?.kind === 'private' ? people.state : null,
-      blobbis: blobbis && identity.verified ? blobbis.state : null,
+      blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote } : null,
       inbox: inboxView(),
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
@@ -778,13 +805,22 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         return inboxView();
       },
       checkInvites: () => inbox?.check(),
-      /** M9A the player's Blobbis and the local choice, for scripted checks. */
+      /** M9A the player's Blobbis and the local choice, for scripted checks; M9B the form worn. */
       blobbis: {
         get state() {
           return blobbis?.state ?? null;
         },
         get chosen() {
           return blobbis?.chosen ?? null;
+        },
+        get form() {
+          return currentForm();
+        },
+        get worn() {
+          return worn;
+        },
+        get lookNote() {
+          return lookNote;
         },
         load: () => blobbis?.load(true),
         select: (d: string) => blobbis?.select(d),

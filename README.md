@@ -294,7 +294,9 @@ src/rumble/
                       inboxSetup.ts (M8C-B.1: create a kind-10050 inbox list for an identity that has none, on confirm),
                       people.ts (M8C-C: whom to invite: follows window, debounced search, lazy NIP-05 confirmation, an explicit selection),
                       blobbis.ts (M9A: the identity's own Blobbis, kind 31124 through @blobbi-kit/core, newest per address, modern only;
-                      a local choice per identity), blobbiPreview.ts (the kit's SVG as an image URL)
+                      a local choice per identity), blobbiPreview.ts (the kit's SVG as an image URL),
+                      rumbleForm.ts (M9B: Blobbi identity ≠ Blobbi form: the adult procedural form a chosen Blobbi takes here;
+                      V1/V2 through the kit's own address seed, in their own colours; which slot wears it)
   headless.ts         a whole bot match on the match alone (tests, measurements); headless-cli.ts runs it
   profile.ts          the one body every player has (collider, mass, speeds, acceleration, braking, air control, friction, damping, gravity)
   tuning.ts           combat, rounds and camera numbers, in one place

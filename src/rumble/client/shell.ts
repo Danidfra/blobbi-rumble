@@ -35,6 +35,7 @@ import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
 import type { PeopleState, PersonRow } from './people';
 import type { PickerState } from './blobbis';
+import type { RumbleForm } from './rumbleForm';
 import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
@@ -110,8 +111,8 @@ export interface ShellView {
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
   /** M8C-C: the people finder of the connected identity (null: none, or not a private room). */
   people: PeopleState | null;
-  /** M9A: the connected identity's Blobbis and its local choice (null: no verified identity). */
-  blobbis: PickerState | null;
+  /** M9A: the connected identity's Blobbis and its local choice (null: no verified identity); M9B: the form the chosen one takes here, and whether the fighter wears it. */
+  blobbis: { state: PickerState; form: RumbleForm | null; note: 'worn' | 'default' | 'refused' } | null;
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
 }
@@ -558,8 +559,8 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
-  /** M9A: the player's Blobbis (kind 31124 by this identity, through the kit), and a local choice among them. */
-  const blobbiSection = (ps: PickerState): Node[] => {
+  /** M9A: the player's Blobbis (kind 31124 by this identity, through the kit), and a local choice among them; M9B: the form the chosen one takes here. */
+  const blobbiSection = (ps: PickerState, form: RumbleForm | null, note: 'worn' | 'default' | 'refused'): Node[] => {
     const out: Node[] = [el('h4', undefined, 'My Blobbis')];
     const stageWord = { egg: 'Egg', baby: 'Baby', adult: 'Adult' } as const;
     switch (ps.phase) {
@@ -596,18 +597,25 @@ export function createShell(a: ShellActions) {
       who.append(el('b', undefined, clip(b.name, 22)));
       const words = [stageWord[b.stage], b.generation.toUpperCase()];
       if (b.unsupported) words.push('newer than this Rumble understands');
-      else if (!b.rumbleReady) words.push('2D artwork: Rumble will keep its default fighter');
+      else if (sel) words.push('Rumble Form · Temporary');
       who.append(el('span', 'rs-sub', words.join(' · ')));
       row.append(pic, who);
       if (sel) row.append(el('span', 'rs-ok', 'Selected'));
       else if (!b.unsupported) row.append(button('Use this Blobbi', () => a.selectBlobbi(b.d)));
       out.push(row);
     }
+    // The chosen Blobbi's form here: what it is, and why it looks as it does (Blobbi identity ≠ Blobbi form).
+    if (ps.selected && form) {
+      if (form.derivation === 'legacy') out.push(el('div', 'rs-sub', `Temporary Rumble Form. Blobbis are formless creatures! Your Blobbi has temporarily taken on a new form to play in Rumble${form.ownColors ? ', in its own colours' : ''}. Its original appearance remains unchanged.`));
+      else if (form.derivation === 'adult-stage') out.push(el('div', 'rs-sub', 'Your Blobbi is temporarily taking an adult form to play. Its actual life stage is unchanged.'));
+      if (note === 'refused') out.push(el('div', 'rs-warn', 'This form couldn’t be built here, so your fighter keeps the default look.'));
+      else out.push(el('div', 'rs-sub', note === 'worn' ? 'Your fighter wears this form now. Only you see it for the moment; other players still see the default.' : 'Your fighter takes this form as soon as the match is on screen.'));
+    } else if (ps.selected && !form) out.push(el('div', 'rs-warn', 'This Blobbi has no Rumble form here, so your fighter keeps the default look.'));
     const r = el('div', 'rs-row');
     if (ps.selected) r.append(button('Use the default fighter', a.defaultBlobbi));
     else r.append(el('span', 'rs-sub', 'Using the default fighter.'));
     out.push(r);
-    out.push(el('div', 'rs-sub', 'Your choice stays in this browser, for this identity. It doesn’t change your fighter in a match yet.'));
+    out.push(el('div', 'rs-sub', 'Your choice stays in this browser, for this identity. Nothing is published, and your Blobbi itself is unchanged.'));
     return out;
   };
 
@@ -701,7 +709,7 @@ export function createShell(a: ShellActions) {
       row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
     }
     parts.push(row);
-    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis));
+    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note));
     if (v.inbox) parts.push(...inboxSection(v, v.inbox));
     // Server.
     parts.push(el('h4', undefined, 'Server'));

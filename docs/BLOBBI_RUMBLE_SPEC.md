@@ -1,10 +1,10 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `3c66306` (M8C-C) plus the M9A follow-up ·
-**Last major completed milestone:** M8C-C (choosing whom to invite,
-validated for real). M9A (the player's Blobbis and a local choice) is
-implemented but not yet validated for real.
+**Implementation baseline:** `d5ab0b4` (M9A) plus the M9B follow-up ·
+**Last major completed milestone:** M9A (the player's Blobbis and a local
+choice, validated for real). M9B (adult Rumble forms: the chosen Blobbi as
+the local fighter's look) is implemented but not yet validated for real.
 
 Read this first. It says what Blobbi Rumble is, what exists, which
 boundaries are deliberate and which decisions are settled. It does not
@@ -12,7 +12,7 @@ describe every file. The details live in the code and in:
 
 - [`README.md`](../README.md): running, gameplay mechanics in prose, a file map.
 - [`HOSTING.md`](../HOSTING.md): operating a server (rooms, `PUBLIC_URL`, limits, invites).
-- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B, M8C-A, M8C-B, M8C-B.1, M8C-B.2, M8C-C (with the search research) and M9A (with the Blobbi event model as found).
+- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B, M8C-A, M8C-B, M8C-B.1, M8C-B.2, M8C-C (with the search research), M9A (with the Blobbi event model as found) and M9B (Blobbi identity ≠ Blobbi form).
 
 > **When this specification conflicts with current verified
 > implementation, investigate the discrepancy. Do not blindly change
@@ -622,7 +622,7 @@ the budget.
   new event kinds; nothing published (not the follow list, not an inbox
   list).
 
-### 15b. The player's Blobbis (M9A, implemented)
+### 15b. The player's Blobbis (M9A, validated)
 
 - **The model is the ecosystem's** (`@blobbi-kit/core` 0.9.0): a Blobbi
   is one kind 31124 at the owner's address (`d` =
@@ -642,11 +642,39 @@ the budget.
   identity's pubkey; restored on reload while that Blobbi is still listed,
   otherwise dropped and said so; **Use the default fighter** clears it; a
   new identity never sees another's. No event is published to remember it.
-- **Nothing in play changes yet**: the fighter, collider, mass, speeds,
-  jump, punch, grab and every gameplay number are untouched; the choice
-  is not sent to other players. Guests and players with no Blobbis play
-  exactly as before; nothing blocks a match.
+- **Nothing in play changes**: the collider, mass, speeds, jump, punch,
+  grab and every gameplay number are untouched; the choice is not sent to
+  other players (M9C). Guests and players with no Blobbis play exactly as
+  before; nothing blocks a match.
 - **Previews** are the kit's own 2D drawing as an image, never page markup.
+
+### 15c. Adult Rumble forms (M9B, implemented)
+
+**Blobbi identity ≠ Blobbi form.** A Blobbi is a formless creature: its
+identity (kind 31124 at its owner's address) persists; in Rumble it
+temporarily takes the form every fighter has here, an adult procedural
+Blobbi. Not an evolution, a migration or an upgrade: the Blobbi's event,
+stage, generation and 2D look are unchanged, and nothing is published.
+
+- **One rule, deterministic**: a V3 adult is its own identity; a V3 egg or
+  baby takes the adult body of the same identity; a V1 / V2 Blobbi takes
+  the V3 identity of its own address, through the kit's own seed rule
+  (`deriveBlobbiV3Seed(owner, d)`), wearing its own colours; an unknown
+  generation has no form. The address is the only input: no RNG, clock or
+  event id, so the same Blobbi is the same form on every device and after
+  every rename, care, hatch or evolution (a pinned vector is tested).
+- **Legacy colours are preserved** through the kit's stated-colour
+  support; invalid colours fall back to the kit's palette.
+- **The local fighter wears it**: the player's slot swaps its body (the
+  old one disposed) when the choice, the slot or the identity changes; the
+  default comes back on "Use the default fighter", Disconnect Nostr or an
+  identity switch; a remembered choice is worn after a reload. The kit's
+  one animator drives every form, so a legacy form moves, faces, punches,
+  grabs and tumbles exactly like a native one.
+- **Physics untouched**: every fighter has the same `RUMBLE_BODY`; a form
+  carries no gameplay number and the form module imports none of the
+  simulation. The server is unchanged.
+- **Only this page sees it** until M9C.
 
 ### 16. Invites are not access control
 
@@ -701,6 +729,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | Automatic checking vs joining | Consent to check is not consent to join: Join stays a click; a pause or a refusal is never retried without one. |
 | Finding people vs identity | A name or a NIP-05 identifies, the pubkey is the identity: every row shows a short npub, a NIP-05 only once confirmed, no badge from metadata alone; the follow list is read, never written; selection never sends. |
 | Blobbi identity vs gameplay | A Blobbi is its kind 31124 at the owner's address, read only, through the kit's rules; a chosen Blobbi is a visual preference held locally and decides nothing in play. |
+| Blobbi identity vs form | The identity persists unchanged; the Rumble form is temporary, derived from the address alone (the kit's seed rule), deterministic, never published, and never a gameplay difference. |
 | Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
 | Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
 
@@ -725,7 +754,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-B.1 | Inbox setup (kind 10050) | **Real two-identity test** (2026-10-09): Nostr Farm (no 10050, real extension) approved the setup; NIP-42 AUTH signed for `auth.nostr1.com`; the list published; Danidfra's invite received, decrypted (after the extension's decrypt permission) and **Join** entered the room. |
 | M8C-B.2 | Automatic invite checking | **Real two-identity test** (2026-10-09): consent given, the invite arrived with no click, card and badge shown, Join entered the room; the setting survived reload and reconnect. |
 | M8C-C | Choosing whom to invite | **Real two-identity test** (2026-10-09): Danidfra's follows listed, NotASage found by name and selected, the invite sent, received automatically, Join entered the room. |
-| M9A | The player's Blobbis, a local choice | Automated tests (ownership, versions, legacy/invalid/junk, generations, relays, previews, persistence per identity, disappearing Blobbi, default). **Real validation pending** (§15b; the procedure is in the M9A report). |
+| M9A | The player's Blobbis, a local choice | **Real test** (2026-10-09): owned Blobbis listed, one selected, restored after reload, no leak across identities, default restored, guest play unchanged. |
+| M9B | Adult Rumble forms | Automated tests (native, adult-stage, legacy with own colours, stability across name / care / stage / time / id, a pinned vector, no form for unknown generations, bad colours, physics untouched, one animator, slot planning). **Real browser validation pending** (§15c; the procedure is in the M9B report). |
 
 ---
 
@@ -760,6 +790,9 @@ immutable forever.
   consent to check is not consent to join).
 - **The M8C-C people finder** (exact identifiers first, read-only follows,
   two validated search relays re-matched locally, selection never sends).
+- **The M9A Blobbi model** (kind 31124 at the owner's address through
+  `@blobbi-kit/core`, modern only, newest per address, a local choice,
+  nothing published).
 - **The current minimal HUD** structure.
 
 ---
@@ -768,9 +801,9 @@ immutable forever.
 
 | | |
 | --- | --- |
-| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C |
-| **In validation** | M9A: the player's Blobbis and a local choice (§15b) |
-| **Next** | M9B: the chosen Blobbi as the fighter's look (V3 through `@blobbi-kit/3d`; V1/V2 fall back), then M9C: showing it to other players |
+| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
+| **In validation** | M9B: adult Rumble forms, the chosen Blobbi as the local fighter's look (§15c) |
+| **Next** | M9C: showing a player's Rumble form to the other players |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 
@@ -799,8 +832,8 @@ None of this is designed or decided.
   tunnel, or an outbound rendezvous relay (M8A0 §13).
 - **A shared Nostr package** (`src/social/` lifted out, e.g. as
   `@blobbi-kit/nostr`), once more apps need it (M8A0 §17).
-- **Fighter appearance from a player's Blobbi**: the choice exists (M9A);
-  drawing it (M9B) and sharing it with the room (M9C) are next.
+- **Fighter appearance from a player's Blobbi**: the choice (M9A) and the
+  local form (M9B) exist; sharing it with the room (M9C) is next.
 - **Editing an existing inbox list.**
 - **Invite accept/decline over kind 21059**, proof-of-work on wraps
   (M8C0); user-editable search relays (a NIP-51 kind 10007 list, as
