@@ -1,10 +1,10 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `bed269d` (M8C-B.1) plus the M8C-B.2 follow-up ·
-**Last major completed milestone:** M8C-B.1 (inbox setup, validated for
-real with two identities). M8C-B.2 (automatic invite checking) is
-implemented but not yet validated for real.
+**Implementation baseline:** `aaca88a` (M8C-B.2) plus the M8C-C follow-up ·
+**Last major completed milestone:** M8C-B.2 (automatic invite checking,
+validated for real). M8C-C (choosing whom to invite: follows and search)
+is implemented but not yet validated for real.
 
 Read this first. It says what Blobbi Rumble is, what exists, which
 boundaries are deliberate and which decisions are settled. It does not
@@ -12,7 +12,7 @@ describe every file. The details live in the code and in:
 
 - [`README.md`](../README.md): running, gameplay mechanics in prose, a file map.
 - [`HOSTING.md`](../HOSTING.md): operating a server (rooms, `PUBLIC_URL`, limits, invites).
-- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B, M8C-A, M8C-B, M8C-B.1 and M8C-B.2.
+- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B, M8C-A, M8C-B, M8C-B.1, M8C-B.2 and M8C-C (with the search research).
 
 > **When this specification conflicts with current verified
 > implementation, investigate the discrepancy. Do not blindly change
@@ -485,7 +485,7 @@ Alice (in a private room, Nostr-connected, extension with NIP-44)
     fallback, and nothing was sent;
   - the LAN-only link warning appeared.
 
-### 15. Private invite receiving (M8C-B, validated), inbox setup (M8C-B.1, validated) and automatic checking (M8C-B.2, implemented)
+### 15. Private invite receiving (M8C-B, validated), inbox setup (M8C-B.1, validated) and automatic checking (M8C-B.2, validated)
 
 **Receiving (M8C-B).**
 - **Opt-in.** Nothing is decrypted until the player clicks **Check
@@ -591,6 +591,37 @@ the budget.
 
 **Not implemented:** editing an existing inbox list, invite replies, chat.
 
+### 15a. Choosing whom to invite (M8C-C, implemented)
+
+- **One box** in Invite a friend: "Search name, npub or NIP-05".
+  - npub / nprofile: one exact person, selected at once (hints are where
+    to look, never an inbox).
+  - `name@domain` or a bare domain: resolved by that domain (NIP-05: no
+    redirects, 3 s, bounded, hex only), selected at once.
+  - a name (2–64 characters): matched among the player's follows and
+    cached profiles first, then on **two** search relays (NIP-50,
+    `relay.vertexlab.io` and `relay.ditto.pub`, chosen by live probing)
+    after a 300 ms pause; every relay answer is re-matched locally;
+    results are merged, ranked (exact, prefix, contains, NIP-05; people
+    you follow first) and capped at 10; stale answers are dropped.
+- **People you follow:** the player's own kind 3, **read only**, most
+  recently followed first, 8 at a time with Show more (at most 40);
+  profiles are looked up only for the rows on screen; no inbox lookups
+  for lists of people.
+- **Rows** show avatar, name, a short npub (names are never unique), a
+  NIP-05 only once its domain confirmed it, and "Following" where it
+  applies. Text only; nothing from a profile is rendered as HTML.
+- **Selection is explicit** and changeable; **Send invite** is a separate
+  click; the chosen person goes through the M8C-A sender unchanged, which
+  looks up their kind 10050 then and reports "no private-message inbox"
+  as before.
+- **Limits, stated in the panel:** Nostr has no global name index; name
+  search can miss people and include impostors; an npub or NIP-05 is the
+  reliable path.
+- **Not changed:** the invite message, the send path, the game server; no
+  new event kinds; nothing published (not the follow list, not an inbox
+  list).
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -642,6 +673,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | Inbox setup vs silent changes | A kind 10050 is published only on an explicit confirm, only when none exists; an existing list is never replaced or merged. |
 | Received messages vs privacy | Decryption only after an explicit check or an explicit per-identity consent, bounded, local; unrelated messages are never shown, stored or logged. |
 | Automatic checking vs joining | Consent to check is not consent to join: Join stays a click; a pause or a refusal is never retried without one. |
+| Finding people vs identity | A name or a NIP-05 identifies, the pubkey is the identity: every row shows a short npub, a NIP-05 only once confirmed, no badge from metadata alone; the follow list is read, never written; selection never sends. |
 | Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
 | Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
 
@@ -664,7 +696,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-A | Private invites: sending | **Real interop**: Rumble → real NIP-17 relay → **Anagram** showed the readable kind 14; no-10050 fallback and LAN-link warning confirmed. |
 | M8C-B | Private invites: receiving | **Real two-identity test**: Danidfra (Rumble) sent; NotASage (Rumble, real extension) checked invites, the extension decrypted, the invite card appeared, and **Join** entered Danidfra's room. |
 | M8C-B.1 | Inbox setup (kind 10050) | **Real two-identity test** (2026-10-09): Nostr Farm (no 10050, real extension) approved the setup; NIP-42 AUTH signed for `auth.nostr1.com`; the list published; Danidfra's invite received, decrypted (after the extension's decrypt permission) and **Join** entered the room. |
-| M8C-B.2 | Automatic invite checking | Automated tests (consent, start, catch-up, live, pause, off, lifecycle). **Real validation pending** (§15; the procedure is in the M8C-B.2 report). |
+| M8C-B.2 | Automatic invite checking | **Real two-identity test** (2026-10-09): consent given, the invite arrived with no click, card and badge shown, Join entered the room; the setting survived reload and reconnect. |
+| M8C-C | Choosing whom to invite | Automated tests (identifier, NIP-05, follows, search, ranking, stale answers, NIP-05 confirmation, selection → the unchanged sender); search relays probed live. **Real validation pending** (§15a; the procedure is in the M8C-C report). |
 
 ---
 
@@ -694,6 +727,9 @@ immutable forever.
   explicit Join).
 - **The M8C-B.1 inbox setup** (offered only with no list, suggested
   relays, a strict re-check, one explicit confirm, no retries by itself).
+- **The M8C-B.2 consent model** (one preference per identity and origin,
+  nothing decrypted before Enable, a pause never retried without a click,
+  consent to check is not consent to join).
 - **The current minimal HUD** structure.
 
 ---
@@ -702,9 +738,9 @@ immutable forever.
 
 | | |
 | --- | --- |
-| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 |
-| **In validation** | M8C-B.2: automatic invite checking after consent (§15) |
-| **Next** | To be decided after M8C-B.2 is validated |
+| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 |
+| **In validation** | M8C-C: choosing whom to invite (follows, search, NIP-05) (§15a) |
+| **Next** | To be decided after M8C-C is validated |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 
@@ -736,8 +772,9 @@ None of this is designed or decided.
 - **Fighter appearance from a player's Blobbi** (kind 11125 → 31124): M9
   territory.
 - **Editing an existing inbox list.**
-- **NIP-05 display**, a follows-based contact picker, invite
-  accept/decline over kind 21059, proof-of-work on wraps (M8C0).
+- **Invite accept/decline over kind 21059**, proof-of-work on wraps
+  (M8C0); user-editable search relays (a NIP-51 kind 10007 list, as
+  Amethyst reads).
 - **Arena 2** with a larger or different layout.
 
 ## 23. Non-goals

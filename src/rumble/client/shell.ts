@@ -33,6 +33,7 @@ import { avatar, button, el, isTyping } from './dom';
 import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
+import type { PeopleState, PersonRow } from './people';
 import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
@@ -51,6 +52,12 @@ export interface ShellActions {
   startSeen(): void;
   /** Send a private Nostr invite to an npub / nprofile (M8C-A). */
   sendInvite(recipient: string): void;
+  /** M8C-C: finding whom to invite (follows, search, selection); only sendSelectedInvite sends, through the M8C-A sender. */
+  sendSelectedInvite(): void;
+  setPeopleQuery(text: string): void;
+  selectPerson(pubkey: string): void;
+  clearPerson(): void;
+  morePeople(): void;
   /** M8C-B: the player asked to check for invites (decrypts a bounded number of recent private messages locally). */
   checkInvites(): void;
   joinInvite(id: string): void;
@@ -96,6 +103,8 @@ export interface ShellView {
   nameOf: (slot: string) => string | null;
   startCard: boolean;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
+  /** M8C-C: the people finder of the connected identity (null: none, or not a private room). */
+  people: PeopleState | null;
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
 }
@@ -136,6 +145,13 @@ const CSS = `
   .rs-ok { color: #2f7d4f; font-size: 12px; }
   .rs-warn { color: #9a6200; font-size: 12px; }
   .rs-invite { margin: 6px 0; padding: 8px 10px; border-radius: 12px; background: #f4f7f2; border: 1px solid #e1e8dc; }
+  .rs-person { display: flex; align-items: center; gap: 8px; width: 100%; margin: 2px 0; padding: 4px 6px; border: 1px solid transparent; border-radius: 10px; background: none; text-align: left; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; cursor: pointer; }
+  .rs-person:hover { background: #f1f3f8; }
+  .rs-person.sel { border-color: #d6dbe6; background: #f4f7f2; cursor: default; }
+  .rs-person .who { display: flex; flex-direction: column; min-width: 0; }
+  .rs-person .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-person .tag { margin-left: auto; flex: none; font-size: 11px; color: #6b7082; }
+  .rs-people h5 { margin: 8px 0 2px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7082; }
   .rs-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 999px; background: #e0794f; color: #fff; font: 700 11px ui-sans-serif, system-ui, sans-serif; text-align: center; }
   .rs-sub { color: #6b7082; font-size: 12px; }
   .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
@@ -319,40 +335,106 @@ export function createShell(a: ShellActions) {
         return { text: st.why === 'relays' ? `No inbox relay accepted the invite. Copy the link instead.` : `Couldn’t send: ${st.detail}.`, cls: 'rs-err' };
     }
   };
+  // M8C-C: the people part of the invite section lives in one element that is refreshed on its own
+  // (the panel is never rebuilt while the search box has the keyboard, so results must not depend on a rebuild).
+  const peopleBox = el('div', 'rs-people');
+  let lastPeople = '';
+  const personRow = (v: ShellView, r: PersonRow, onClick: (() => void) | null, note?: string): HTMLElement => {
+    const p = v.profile(r.pubkey);
+    const row = el('button', `rs-person${onClick ? '' : ' sel'}`);
+    row.type = 'button';
+    row.tabIndex = -1;
+    row.addEventListener('mousedown', (e) => e.preventDefault());
+    if (onClick)
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onClick();
+      });
+    const who = el('div', 'who');
+    who.append(el('b', undefined, clip(displayName(p, r.pubkey), 26)));
+    const sub = [shortNpub(r.pubkey, 6, 4)];
+    // A NIP-05 is shown once its domain confirmed it: a claim alone is just text anyone can type.
+    if (r.nip05?.status === 'verified') sub.push(`✓ ${r.nip05.label}`);
+    who.append(el('span', 'rs-sub', sub.join(' · ')));
+    row.append(avatar(r.pubkey, p?.picture, 26), who);
+    if (note) row.append(el('span', 'tag', note));
+    return row;
+  };
+  const renderPeople = (v: ShellView) => {
+    const ps = v.people;
+    const parts: Node[] = [];
+    if (!ps) return peopleBox.replaceChildren();
+    if (ps.selected) {
+      parts.push(el('h5', undefined, 'Selected'));
+      parts.push(personRow(v, ps.selected, null, ps.selected.followed ? 'Following' : undefined));
+      const acts = el('div', 'rs-row');
+      acts.append(
+        button(v.invite.busy ? 'Sending…' : 'Send invite', () => {
+          if (!v.invite.busy) a.sendSelectedInvite();
+        }, 'rs-btn go'),
+        button('Change', a.clearPerson),
+      );
+      parts.push(acts);
+      if (v.invite.status) {
+        const w = inviteWords(v, v.invite.status);
+        parts.push(el('div', w.cls, w.text));
+      } else parts.push(el('div', 'rs-sub', 'A private Nostr message with this room’s link. It doesn’t reserve a seat: anyone with the link can join.'));
+    }
+    const sr = ps.search;
+    if (sr.phase !== 'idle') {
+      parts.push(el('h5', undefined, 'Search results'));
+      const words: Partial<Record<PeopleState['search']['phase'], string>> = {
+        short: 'Type a bit more, or paste an npub.',
+        invalid: 'That doesn’t look like a valid npub or nprofile.',
+        resolving: 'Asking that domain who this is…',
+        searching: sr.rows.length ? 'Searching the search relays too…' : 'Searching…',
+        'not-found': 'No one found. Nostr has no global name index: an npub or a NIP-05 (name@domain) always works.',
+      };
+      if (words[sr.phase]) parts.push(el('div', 'rs-sub', words[sr.phase]!));
+      for (const r of sr.rows) parts.push(personRow(v, r, () => a.selectPerson(r.pubkey), r.followed ? 'Following' : undefined));
+      if (sr.phase === 'done' && sr.remote) parts.push(el('div', 'rs-sub', 'Names aren’t unique: check the npub. Results come from a few search relays and may miss people.'));
+    }
+    const f = ps.follows;
+    if (f.phase !== 'idle' && !ps.selected) {
+      parts.push(el('h5', undefined, 'People you follow'));
+      if (f.phase === 'loading') parts.push(el('div', 'rs-sub', 'Reading your follow list…'));
+      else if (f.phase === 'none') parts.push(el('div', 'rs-sub', 'No follow list found (or no relay answered). Search by name, npub or NIP-05 instead.'));
+      else if (f.phase === 'empty') parts.push(el('div', 'rs-sub', 'You don’t follow anyone yet. Search by name, npub or NIP-05.'));
+      else {
+        for (const r of f.rows) parts.push(personRow(v, r, () => a.selectPerson(r.pubkey)));
+        if (f.more) {
+          const more = el('div', 'rs-row');
+          more.append(button('Show more', a.morePeople), el('span', 'rs-sub', `${f.rows.length} of ${f.total}`));
+          parts.push(more);
+        }
+      }
+    }
+    peopleBox.replaceChildren(...parts);
+  };
   const inviteSection = (v: ShellView): Node[] => {
     const out: Node[] = [el('h4', undefined, 'Invite a friend')];
     if (v.invite.mode === 'guest') return [...out, el('div', 'rs-sub', 'Connect Nostr to send private invites. Or copy the link above.')];
     if (v.invite.mode === 'no-nip44') return [...out, el('div', 'rs-sub', 'Your Nostr extension can’t encrypt private messages (NIP-44), so it can’t send invites. Copy the link above instead.')];
     const row = el('div', 'rs-row');
     const input = el('input', 'rs-link');
-    input.placeholder = 'npub… or nprofile…';
+    input.placeholder = 'Search name, npub or NIP-05';
     input.autocomplete = 'off';
     input.spellcheck = false;
     input.maxLength = 1000;
     input.value = inviteDraft;
     input.addEventListener('focus', () => a.releaseKeys());
-    input.addEventListener('input', () => (inviteDraft = input.value));
-    const send = () => {
-      if (v.invite.busy) return;
-      input.blur();
-      a.sendInvite(input.value);
-    };
+    input.addEventListener('input', () => {
+      inviteDraft = input.value;
+      a.setPeopleQuery(input.value);
+    });
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
-      if (e.key === 'Enter') send();
-      if (e.key === 'Escape') input.blur();
+      if (e.key === 'Escape' || e.key === 'Enter') input.blur();
     });
-    row.append(input, button(v.invite.busy ? 'Sending…' : 'Send invite', send, 'rs-btn go'));
-    out.push(row);
-    if (v.invite.status) {
-      const w = inviteWords(v, v.invite.status);
-      out.push(el('div', w.cls, w.text));
-    } else out.push(el('div', 'rs-sub', 'A private Nostr message with this room’s link. It doesn’t reserve a seat: anyone with the link can join.'));
-    try {
-      if (v.share && isLocalHost(new URL(v.share).hostname)) out.push(el('div', 'rs-sub', 'Note: this link only works on your local network (the server has no PUBLIC_URL).'));
-    } catch {
-      // No link to judge.
-    }
+    row.append(input);
+    out.push(row, peopleBox);
+    renderPeople(v);
+    lastPeople = JSON.stringify([v.people, v.invite, v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null]);
     return out;
   };
 
@@ -675,6 +757,14 @@ export function createShell(a: ShellActions) {
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;
           renderPanel(v);
+        }
+      }
+      // The people part of the invite section (M8C-C): refreshed on its own, so typing never loses results or focus.
+      if (panelOpen && v.people) {
+        const pplKey = JSON.stringify([v.people, v.invite, v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null, [...v.people.follows.rows, ...v.people.search.rows, ...(v.people.selected ? [v.people.selected] : [])].map((r) => v.profile(r.pubkey) ?? null)]);
+        if (pplKey !== lastPeople) {
+          lastPeople = pplKey;
+          renderPeople(v);
         }
       }
       // The start card (first visit, open room).

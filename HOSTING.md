@@ -152,7 +152,7 @@ server verifies it. The server then tells everyone in the room "P2 is
 pubkey X"; each browser looks up names and pictures on a few relays. The
 server never connects to a relay.
 
-## Private invites (M8C-A: sending)
+## Private invites (M8C-A: sending; M8C-C: choosing whom)
 
 In a private room, a Nostr-connected player can send a friend a private
 invite: session panel → **Invite a friend** → paste an `npub` or
@@ -202,7 +202,24 @@ own NIP-65 write relays and the chosen inbox relays, and reads it back.
 The result says whether the list is discoverable and how many inbox
 relays accepted it. An existing list is never replaced or merged.
 
-**Automatic checking (M8C-B.2, implemented, awaiting real validation):**
+**Choosing whom to invite (M8C-C, implemented, awaiting real validation):**
+in a private room, **Invite a friend** has one box, "Search name, npub or
+NIP-05", and under it **People you follow** (the player's own kind 3,
+read only, most recently followed first, 8 at a time with **Show more**).
+An npub or nprofile names one person and is selected at once; a
+`name@domain` is resolved by that domain (NIP-05) and selected; a name is
+matched first among follows and cached profiles, then, after a short
+pause, on two search relays (`relay.vertexlab.io`, `relay.ditto.pub`,
+NIP-50), merged, ranked (exact name, then prefix, then contains; people
+you follow first) and capped at 10. Every row shows the avatar, the name
+and a short npub (names aren't unique: the npub is the identity), and a
+NIP-05 only once its domain confirmed it. Selecting shows the person and
+**Send invite**; nothing is sent without that click; **Change** picks
+someone else. The invite itself goes through the M8C-A sender unchanged,
+so "no private-message inbox" is reported the same way. Name search is
+not complete: Nostr has no global name index, and the panel says so.
+
+**Automatic checking (M8C-B.2, validated for real):**
 once an identity with NIP-44 and an inbox is connected, Rumble asks once,
 "Automatically check for Rumble invites?", with **Enable automatic
 invites** / **Not now** (a small corner card, and the same question in

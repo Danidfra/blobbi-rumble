@@ -83,13 +83,13 @@ export class BoundedPool {
   }
 
   /** Events matching `filter` from (at most the admitted part of) `relays`; [] if none answer. Never throws. */
-  async query(relays: readonly string[], filter: Filter): Promise<NostrEvent[]> {
+  async query(relays: readonly string[], filter: Filter, opts: { maxWait?: number } = {}): Promise<NostrEvent[]> {
     const use = this.admit(relays);
     if (!use.length) return [];
     this.queries += 1;
     for (const u of use) this.open.get(u)!.busy += 1;
     try {
-      return await this.pool.querySync(use, filter, { maxWait: this.maxWait });
+      return await this.pool.querySync(use, filter, { maxWait: Math.min(opts.maxWait ?? this.maxWait, this.maxWait) });
     } catch {
       return [];
     } finally {

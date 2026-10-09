@@ -115,6 +115,33 @@ describe('sending an invite', () => {
   });
 });
 
+describe('a person chosen in the finder (M8C-C) goes through the same sender', () => {
+  it('the finder hands over an npub (or an nprofile with hints: where to look, never an inbox); the sender does the rest, or says no inbox', async () => {
+    const { PeopleFinder } = await import('./people');
+    const { ProfileDirectory } = await import('../../social/directory');
+    const { nprofileEncode } = await import('nostr-tools/nip19');
+    const lookup = new BoundedPool({ querySync: async () => [], close() {} });
+    const finder = new PeopleFinder({ me: A, lookup, directory: new ProfileDirectory(lookup), fetch: null });
+    finder.setQuery(npubEncode(B));
+    expect(finder.recipient).toBe(npubEncode(B));
+    const t = deps({ holds: [tenk(['wss://in1.example'])], publish: { 'wss://in1.example/': true } });
+    expect(await sendInvite(finder.recipient!, t.d)).toEqual({ k: 'sent', pubkey: B, accepted: 1, total: 1 });
+    // With hints: the hint relay is only looked up on; the invite still goes to the kind-10050 inbox alone.
+    finder.setQuery(nprofileEncode({ pubkey: B, relays: ['wss://hint.example/'] }));
+    const u = deps({ holds: [tenk(['wss://in1.example'])], publish: { 'wss://in1.example/': true } });
+    expect(await sendInvite(finder.recipient!, u.d)).toEqual({ k: 'sent', pubkey: B, accepted: 1, total: 1 });
+    expect(u.published[0].relays).toEqual(['wss://in1.example/']);
+    // No kind 10050: nothing is sent, and the status says so.
+    const none = deps();
+    expect(await sendInvite(finder.recipient!, none.d)).toEqual({ k: 'no-inbox', pubkey: B });
+    expect(none.published).toHaveLength(0);
+    // Nothing selected: nothing to send.
+    finder.clearSelection();
+    expect(finder.recipient).toBeNull();
+    finder.stop();
+  });
+});
+
 describe('recognising a received invite', async () => {
   const { parseInvite, receivedLink } = await import('./invites');
   const t = Math.floor(Date.now() / 1000);

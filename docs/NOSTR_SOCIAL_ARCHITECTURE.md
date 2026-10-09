@@ -1109,12 +1109,17 @@ override it.
 
 ---
 
-## M8C-B.2 as built (2026-10-09): automatic invite checking (pending real validation)
+## M8C-B.2 as built (2026-10-09): automatic invite checking (validated for real)
 
 Real M8C-B.1 testing showed the extension asks for NIP-44 decrypt
 permission, and that remembering to press **Check invites** on every visit
 is the friction. M8C-B.2 lets the page start the same check by itself,
 after one explicit consent. The cryptographic receive path is unchanged.
+
+**Validated for real on 2026-10-09** (Danidfra → Nostr Farm): automatic
+checking enabled after the consent card, the invite arrived with no click,
+the card and badge appeared, Join entered the right room, and the setting
+survived reload and reconnect. M8C-B.2 is frozen.
 
 **Consent.**
 - Offered once an identity is connected with NIP-44 **and** a located kind
@@ -1182,3 +1187,105 @@ with no second prompt (adopt does not restart it; Try again is one more;
 a reload tries once), manual refusal still `declined`, setup → adopt →
 offer / start, stop while listening, and the signer's stability across
 reconnect and room switch.
+
+---
+
+## M8C-C as built (2026-10-09): choosing whom to invite (pending real validation)
+
+Pasting an npub was the friction left in inviting. M8C-C adds a people
+finder in front of the unchanged M8C-A sender: follows, search by name /
+npub / nprofile / NIP-05, a profile row per person, an explicit selection,
+then **Send invite**. No new event kinds, nothing published, no game-server
+change.
+
+### What other clients do (researched first)
+
+| Client | People search | Reusable here |
+| --- | --- | --- |
+| **Ditto** (`~/Developer/ditto`, browser React) | NIP-50 `{kinds:[0], search, limit:20}` routed only to `relay.ditto.pub` and `relay.dreamith.to` (with relay-specific tokens `autocomplete:true sort:top`); merged with a substring scan of cached profiles; its own ranking (exact, prefix, contains, NIP-05 local part, NIP-05 contains; followed first; top 10); 300 ms debounce, the previous REQ aborted, 5 s timeout; NIP-05 with `?name=`, 800 ms timeout, exact then case-insensitive name, hex check, successes cached, verified = `resolve(profile.nip05) === pubkey`; kind 3 `p` tags filtered by hex. | The ranking tiers, the debounce and cancellation, the NIP-05 rules, the kind-3 parsing. Not its relay tokens, Nostrify pool, IndexedDB or moderation lists. |
+| **Amethyst** (Kotlin) | Search relays from a NIP-51 kind 10007 list, defaults `nostr.wine`, `relay.noswhere.com`, `search.nos.today`, `antiprimal.net`, `relay.ditto.pub`; remote `kinds=[0], search, limit=20`; local cache scan on name / display name / NIP-05 / lightning address, ranked follows first, then web of trust, then prefix; identifier resolution (petname → `@` → NIP-05 → npub / nprofile → hex) with a 400 ms debounce. | Local-first order, follows first, the identifier order. Its default relay list is partly dead (below). |
+| **Primal** | A proprietary `["REQ", id, {cache: ["user_search", …]}]` to Primal's caching service; `relay.primal.net` rejects `search`. | Nothing. |
+| **Coracle / welshman** | Fuse.js over cached profiles (name 0.8, about 0.3, NIP-05), score × web of trust; search relays `nostr.wine`, `search.nos.today`; NIP-05 shown only when verified. | The "verified only" rule. Not the fuzzy library. |
+| **Snort, noStrudel, Jumble** | Hard-coded search relay lists (`relay.nostr.band`, `search.nos.today`, `relay.noswhere.com`, `filter.nostr.wine`, `search.nostrarchives.com`). | Candidates to probe. |
+| **Damus / nostrdb** | A local LMDB prefix index over lowercased names; no relay search. | The idea that a local index is the fast path. |
+
+### Search relays, probed on 2026-10-09
+
+Each candidate got a NIP-11 fetch and a real `{kinds:[0], search, limit:10}`
+for `danidfra`, `notasage` and `fiatjaf` (a much-impersonated name), from
+this machine with nostr-tools.
+
+| Relay | NIP-11 lists 50 | Result | Decision |
+| --- | --- | --- | --- |
+| `relay.vertexlab.io` | yes | both test names found in ~1 s; for `fiatjaf` the real account (`_@fiatjaf.com`) first: it ranks by web of trust | **default** |
+| `relay.ditto.pub` | yes | both test names in ~0.8 s; for `fiatjaf` ten impostors first; already a lookup relay here (no extra socket) | **default** (second) |
+| `search.nos.today` | yes (searchnos) | both names found, but 2.5–4 s to the first result and 8 s to EOSE | fallback, not a default |
+| `search.nostrarchives.com` | no NIP-11 (HTTP 400) | both names in ~1 s; real `fiatjaf` first | not chosen (no NIP-11; little known about it) |
+| `profiles.nostrver.se` | yes | neither test name (a small index) | not chosen |
+| `nostr.wine`, `filter.nostr.wine` | yes | paid / members only; `nostr.wine` returned impostors first | rejected |
+| `relay.noswhere.com` | yes | 0 results for everything | rejected (dead index) |
+| `relay.nostr.band`, `antiprimal.net`, `nos.lol` | — | unreachable (timeouts / no DNS) | rejected |
+| `relay.snort.social` | no | answered every search with the same unrelated profiles | shows why results are re-matched locally |
+| `relay.primal.net`, `relay.damus.io`, `relay.nostr.wirednet.jp` | no | reject or ignore `search` | never sent a search |
+
+Takeaways: impersonation is common and relay order is not trust; names
+are not unique; the two defaults are enough and the list will rot, so it
+is one constant (`SEARCH_RELAYS`) with a dev override (`?search-relays=`).
+
+### As built
+
+- **`social/people.ts`** (framework-free):
+  - `classifyQuery`: npub / nprofile (with `nostr:` or `@` stripped, any
+    case) → one recipient with hints; `name@domain` or a bare domain →
+    NIP-05 (lowercased); 2–64 characters otherwise → a name.
+  - `resolveNip05(fetch, id)`: `https://domain/.well-known/nostr.json?name=`,
+    `_` for a bare domain, no redirects (any non-200 is null), 3 s timeout,
+    64 KB cap, exact then case-insensitive name, hex pubkey only, up to 3
+    `wss` relay hints. Null on anything else; never throws.
+  - `parseFollows` / `findFollowList`: the user's newest kind 3 from the
+    lookup relays, then their NIP-65 write relays; `p` tags that are hex,
+    de-duplicated, never the author, at most 2000. **Read only: never
+    published or modified.**
+  - `matchTier` / `rankMatches`: Ditto's tiers (exact name, prefix,
+    contains, NIP-05 local part, NIP-05 contains), then followed first,
+    then pubkey.
+  - `searchProfiles`: `{kinds:[0], search, limit:10}` on the search relays
+    with a 3 s wait, every answer re-matched here (a relay without NIP-50
+    sends anything), newest per pubkey.
+- **`client/people.ts`** (`PeopleFinder`):
+  - follows read once, the first time the invite section is on screen;
+    most recently followed first (NIP-02 appends); 8 rows, **Show more** by
+    8 up to 40; profiles asked only for the rows shown (the directory's
+    batched lookup and cache).
+  - search: an identifier or a NIP-05 selects at once (exact); a name is
+    matched locally at once (follows and cached profiles), then on the
+    relays after a 300 ms pause; results merged, ranked, capped at 10;
+    search answers are offered to the profile cache, so no second lookup;
+    a generation counter drops anything that answers after the text
+    changed or the finder stopped.
+  - NIP-05 on rows: a profile's claim is confirmed lazily (at most 3
+    fetches in flight, cached per pubkey + identifier) and shown only once
+    its domain named that pubkey; a NIP-05 typed in the box is confirmed
+    by its resolution. The identifier's domain learns that this app asked,
+    with `credentials: 'omit'` and no referrer.
+  - the chosen person becomes an npub, or an nprofile when hints exist,
+    and is handed to `sendInvite` exactly as a pasted one would be. The
+    kind 10050 is looked up by the sender, for the one chosen recipient,
+    on Send. **No inbox lookups for lists of people.**
+- **Interface** (session panel, private room): one box; "Selected" with
+  avatar, name, short npub, confirmed NIP-05, **Send invite** / **Change**;
+  "Search results" with "Following" tags and the note that names aren't
+  unique and search isn't complete; "People you follow" with Show more.
+  Text only; a short npub beside every name.
+
+### Limitations (said in the panel too)
+
+- There is no global name index on Nostr. Name search reaches whoever the
+  two search relays know; the real person may be missing and impostors
+  may be present. An npub, an nprofile or a NIP-05 is the reliable path.
+- NIP-05 is identification by a domain, not proof of a person; it shows
+  only when confirmed, and the confirmation is per page load.
+- Two people can share a name; the short npub is always shown.
+- The follow list is whatever kind 3 the lookup relays or the user's
+  write relays hold; none found and "no relay answered" look the same.
+- A NIP-05 confirmation is an https request to that domain, bounded.

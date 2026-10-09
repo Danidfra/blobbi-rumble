@@ -79,6 +79,26 @@ export class ProfileDirectory {
     return this.entries.get(pubkey)?.profile;
   }
 
+  /** Every profile known now (for a local name search); never waits. */
+  known(): Profile[] {
+    const out: Profile[] = [];
+    for (const e of this.entries.values()) if (e.profile) out.push(e.profile);
+    return out;
+  }
+
+  /** A kind-0 event that arrived another way (a search result): kept if it is newer than what is known. Cleaned like any other. */
+  offer(ev: NostrEvent) {
+    if (!ev || ev.kind !== 0 || !isPubkey(ev.pubkey)) return;
+    const t = this.o.now();
+    const profile = parseProfile(ev, Math.floor(t / 1000));
+    if (!profile) return;
+    const prev = this.entries.get(ev.pubkey);
+    if (prev?.profile && prev.profile.createdAt >= profile.createdAt) return;
+    this.entries.set(ev.pubkey, { profile, at: t });
+    for (const fn of this.listeners) fn(ev.pubkey);
+    this.save();
+  }
+
   /** Look these up (those not known, or known but due for a refresh), batched. */
   ask(pubkeys: Iterable<string>) {
     const t = this.o.now();

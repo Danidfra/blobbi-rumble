@@ -44,6 +44,7 @@ import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
 import { InboxSetup } from './inboxSetup';
+import { PeopleFinder } from './people';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -138,14 +139,29 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     }
   };
   let setup: InboxSetup | null = null;
+  // M8C-C: whom to invite (follows, search, a selection) for the connected identity; it never sends anything itself.
+  let people: PeopleFinder | null = null;
   const syncInbox = () => {
     const signer = identity.connectedSigner;
     if (signer === inboxSigner) return;
     inbox?.stop();
     setup?.stop();
     setup = null;
+    people?.stop();
     inboxSigner = signer;
     const me = identity.state.pubkey;
+    people =
+      signer && me
+        ? new PeopleFinder({
+            me,
+            lookup: (profiles(), relayPool!),
+            directory: profiles(),
+            lookupRelays: devRelays ?? LOOKUP_RELAYS,
+            ...(devSearchRelays ? { searchRelays: devSearchRelays } : {}),
+            // NIP-05 goes to the identifier's own domain over https; nothing else of the page goes with it.
+            fetch: (url, init) => fetch(url, { ...init, credentials: 'omit', referrerPolicy: 'no-referrer' }),
+          })
+        : null;
     inbox =
       signer && me
         ? new InviteInbox({
@@ -226,6 +242,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let relayPool: BoundedPool | null = null;
   let directory: ProfileDirectory | null = null;
   // Dev only: ?relays=ws://a,ws://b replaces the lookup relays (tests run a local relay).
+  // Dev only: ?search-relays=ws://a,ws://b replaces the NIP-50 search relays (tests use local relays).
+  const devSearchRelays = import.meta.env.DEV && q.get('search-relays') ? q.get('search-relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
   // Dev only: ?inbox-suggest=wss://a,wss://b replaces the suggested inbox relays (tests use local relays).
   const devInboxSuggestions = import.meta.env.DEV && q.get('inbox-suggest') ? q.get('inbox-suggest')!.split(',').slice(0, 3) : null;
   const devRelays = import.meta.env.DEV && q.get('relays') ? q.get('relays')!.split(',').map(relayUrl).filter((u): u is string => !!u).slice(0, 3) : null;
@@ -285,6 +303,28 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (next.kind === 'open') history.replaceState(null, '', pageAddress(null, location.search));
     connect();
   };
+  /** M8C-A: a private Nostr invite to an npub / nprofile, from this page straight to the recipient's NIP-17 inbox (never via the game server). */
+  const doSendInvite = (input: string) => {
+    const signer = identity.provenSigner;
+    const me = identity.verified;
+    if (!signer || !me || !room || room.kind !== 'private' || inviteBusy) return;
+    inviteBusy = true;
+    const forRoom = room.id;
+    void sendInvite(input, {
+      signer,
+      sender: me,
+      lookup: (profiles(), relayPool!),
+      publishPool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
+      lookupRelays: devRelays ?? LOOKUP_RELAYS,
+      link: shareLink(room.id, location.origin, room.url),
+      inviterName: clip(displayName(profileOf(me), me), 40),
+      onStatus: (st) => {
+        if (room?.id !== forRoom) return;
+        inviteStatus = st;
+        if ('pubkey' in st) profiles().ask([st.pubkey]);
+      },
+    }).finally(() => (inviteBusy = false));
+  };
   const shell = createShell({
     retry: () => {
       if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
@@ -300,28 +340,17 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     dismissIdentityError: () => identity.dismissError(),
     releaseKeys: () => keyboard.held.clear(),
     startSeen: seeStart,
-    // M8C-A: a private Nostr invite, sent from this page straight to the recipient's NIP-17 inbox (never via the game server).
-    sendInvite: (input) => {
-      const signer = identity.provenSigner;
-      const me = identity.verified;
-      if (!signer || !me || !room || room.kind !== 'private' || inviteBusy) return;
-      inviteBusy = true;
-      const forRoom = room.id;
-      void sendInvite(input, {
-        signer,
-        sender: me,
-        lookup: (profiles(), relayPool!),
-        publishPool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
-        lookupRelays: devRelays ?? LOOKUP_RELAYS,
-        link: shareLink(room.id, location.origin, room.url),
-        inviterName: clip(displayName(profileOf(me), me), 40),
-        onStatus: (st) => {
-          if (room?.id !== forRoom) return;
-          inviteStatus = st;
-          if ('pubkey' in st) profiles().ask([st.pubkey]);
-        },
-      }).finally(() => (inviteBusy = false));
+    // M8C-A: a private Nostr invite to a pasted npub / nprofile.
+    sendInvite: (input) => doSendInvite(input),
+    // M8C-C: the chosen person, through the same sender; nothing is sent without this click.
+    sendSelectedInvite: () => {
+      const to = people?.recipient;
+      if (to) doSendInvite(to);
     },
+    setPeopleQuery: (text) => people?.setQuery(text),
+    selectPerson: (pk) => people?.select(pk),
+    clearPerson: () => people?.clearSelection(),
+    morePeople: () => people?.showMore(),
     checkInvites: () => void inbox?.check(),
     // M8C-B.2: the automatic-checking consent, one preference per identity and origin; nothing is decrypted before "Enable".
     enableAutoInvites: () => inbox?.enableAuto(),
@@ -574,6 +603,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     }
     watchConnection(now);
     syncInbox();
+    // The follow list is read the first time the invite section is on screen, not before.
+    if (people && shell.panelOpen && room?.kind === 'private' && identity.provenSigner) people.ensureFollows();
     if (inbox && nowMs - inboxExpiredAt > 1000) {
       inboxExpiredAt = nowMs;
       inbox.expire();
@@ -595,6 +626,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
+      people: people && room?.kind === 'private' ? people.state : null,
       inbox: inboxView(),
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
@@ -722,6 +754,20 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         return inboxView();
       },
       checkInvites: () => inbox?.check(),
+      /** M8C-C whom to invite, for scripted checks. */
+      people: {
+        get state() {
+          return people?.state ?? null;
+        },
+        get recipient() {
+          return people?.recipient ?? null;
+        },
+        setQuery: (t: string) => people?.setQuery(t),
+        select: (pk: string) => people?.select(pk),
+        clear: () => people?.clearSelection(),
+        more: () => people?.showMore(),
+        loadFollows: () => people?.ensureFollows(),
+      },
       /** M8C-B.2 automatic checking, for scripted checks (the same consent as the panel's buttons). */
       autoInvites: { enable: () => inbox?.enableAuto(), decline: () => inbox?.declineAuto(), disable: () => inbox?.disableAuto() },
       /** Identity, for scripted checks. */
