@@ -1,0 +1,676 @@
+# Blobbi Rumble — Specification v1
+
+**Status:** living specification · **Version:** v1 ·
+**Implementation baseline:** `726b485` (M8C-A) · **Last major completed
+milestone:** M8C-A (private Nostr invites, sending).
+
+Read this first. It says what Blobbi Rumble is, what exists, which
+boundaries are deliberate and which decisions are settled. It does not
+describe every file. The details live in the code and in:
+
+- [`README.md`](../README.md): running, gameplay mechanics in prose, a file map.
+- [`HOSTING.md`](../HOSTING.md): operating a server (rooms, `PUBLIC_URL`, limits, invites).
+- [`NOSTR_SOCIAL_ARCHITECTURE.md`](NOSTR_SOCIAL_ARCHITECTURE.md): the Nostr research (M8A0) and the "as built" notes for M8A, M8B and M8C-A.
+
+> **When this specification conflicts with current verified
+> implementation, investigate the discrepancy. Do not blindly change
+> working code to match stale prose.** The repository is the source of
+> truth for implementation details; this document is the source of truth
+> for intent and invariants.
+
+MUST / SHOULD / MUST NOT are used in their RFC 2119 sense.
+
+---
+
+## 1. Product vision
+
+Blobbi Rumble is a physics party brawler starring Blobbis: up to four
+round, soft creatures on a small floating arena, shoving, punching,
+grabbing and throwing each other off the edge. Last Blobbi standing takes
+the round; first to three takes the match.
+
+The spirit:
+
+- **Fast.** Rounds are short; the arena is small on purpose.
+- **Physical.** Bodies push, tumble and fly; contact is felt.
+- **Funny.** Wriggling, flailing, being carried off a cliff.
+- **Readable.** You can see why something happened.
+- **Predictable enough to play intentionally.** A punch does what it did
+  last time; skill shows.
+- **Not simulation-heavy realism.** Physics serves the fun. Where realism
+  and readability disagree, readability wins.
+
+Party brawlers with soft, floppy characters are the reference mood. They
+are context, not something to clone.
+
+---
+
+## 2. Core design principles (invariants)
+
+1. The **authoritative server MUST decide every gameplay outcome**:
+   movement results, hits, holds, throws, pickups, hazards, eliminations,
+   rounds, scores, the winner.
+2. **Clients MUST send only intent** (a movement direction, run, and
+   jump / punch / grab requests) plus pings. They MUST NOT send positions,
+   hits, pickups or results, and the server MUST NOT accept them.
+3. **The visual Blobbi follows its physics body and is never a source of
+   truth.** Nothing visual feeds back into the simulation.
+4. **Blobbi visual morphology MUST NOT change competitive colliders or
+   stats.** Every fighter has the same normalized gameplay capsule, mass,
+   reach and speeds (`profile.ts`, from the kit's
+   `BLOBBI_GAMEPLAY_PROFILE`), whatever it looks like.
+5. **Nostr is identity, social, discovery and invite infrastructure. It
+   MUST NOT carry realtime gameplay or decide any gameplay fact.**
+6. **Gameplay, physics and networking MUST stay outside
+   `@blobbi-kit/3d`.** The kit gets only small, generic, reusable visual
+   fixes.
+7. **Reusable Blobbi visual representation belongs in the kit**, not in
+   Rumble's gameplay code.
+8. Gameplay SHOULD favour readable fun over physical realism (bounded
+   velocity changes, clamped impacts, tumbles that are rotations rather
+   than ragdolls).
+
+---
+
+## 3. Gameplay (current, accepted)
+
+Players: **2 to 4 fighters per match**, always four in network rooms.
+Empty slots are played by local test bots. In local mode, P1 and P2 share
+one keyboard; P3 and P4 are bots (`?players=2|3|4`, `?bots=all`).
+
+| Action | What it does |
+| --- | --- |
+| Move / run | A camera-relative direction; run is faster. Bounded acceleration and braking, applied as impulses on the Havok capsule. |
+| Jump | From the ground only, with full control (not while stunned, tumbling or carrying); limited air control. |
+| Punch | Hits ONE fighter: the nearest in the round within reach and arc (lower roster index on an exact tie). A cosmetic swing may start at once on the client; the hit is the server's. |
+| Grab → carry → throw | Grab lifts ONE fighter to a hold point in front, which turns with the grabber at a bounded rate. Press grab again to throw. **No throw windup.** |
+| Tumble / stun / recovery | A throw or a hard enough hit frees the victim's capsule to tumble (a real rotation, with little steering), then a short recovery rights it. A lighter hit is a brief stun. |
+| Pushing | While capsules touch, steering becomes a bounded spring with a power-scaled push authority. Head-on keys push along the line between bodies; running adds nothing to a shove but impact. |
+
+- **Impacts.** Every punch, throw and hazard goes through one path:
+  base × power × attack × situation, clamped (`combat/impact.ts`).
+- **Holds.** A held or holding body cannot be grabbed (at most one holder
+  per body). A blow on either side, a tumbling carrier or a ring-out ends
+  the hold.
+- **Power orbs.** Three on the arena whatever the player count; scarcity
+  is the point.
+  - Walk into one to take it. It returns after 5 s where nobody stands.
+  - Each orb is one power level, up to 6, and power resets every round.
+  - Punch and throw impact: ×1.08 per level, up to ×1.48.
+  - Push authority: +5% per level, up to ×1.30.
+  - Walk and run speed: +1% per level, up to +6%.
+  - Power changes nothing else: not jump, air control, reach, hold, mass
+    or recovery.
+- **Hazard.** The sweeper (§5).
+- **Rounds.** A ring-out eliminates a fighter from the round.
+  - The last Blobbi standing takes the point; the last fighters falling
+    on the same frame is a draw (no point).
+  - The next round starts after 1.6 s.
+  - **First to 3 rounds wins the match.**
+  - In network play, the next match starts by itself 5 s later. In local
+    mode, R restarts after a match.
+- **Bots** (`control/bot.ts`). Deliberately simple state machines (seek an
+  orb, seek a fighter, attack, carry and throw, recover), driven by a
+  seeded sequence rather than dice.
+  - They avoid the rim, step round the sweeper post, jump the sweeper bar
+    and struggle with a human rhythm (about 1.8 s).
+  - They produce the same intents a keyboard does, so a bot's fighter has
+    exactly a person's body.
+  - Bots are test opponents, not an AI.
+
+### 4. Grab struggle (accepted, frozen pending playtest evidence)
+
+A held fighter breaks free by **reversing** its movement, left-right-left-
+right. Only opposite directions count, so the camera never matters.
+
+- Holding a direction, or repeating one, counts nothing.
+- Useful input is capped at about 6.7 reversals a second.
+- **6 counted reversals break the hold**: about **1.2 s** at a good human
+  pace, 0.8 s at the cap.
+- Then both sides are cleared, the freed body is pushed away, and it has
+  **0.6 s of regrab immunity** (it can still be hit).
+- The struggle is evaluated after the step's attacks, so a throw on the
+  same step wins: a quick throw beats a struggle, a long carry does not.
+- **There is no throw windup.**
+
+Numbers live in `STRUGGLE` in `tuning.ts`. They are accepted as they are
+until real playtests show otherwise.
+
+### 5. Arenas
+
+**Arena 1 (the only arena)** is deliberately **small, fast and dangerous**:
+- a wide, safe centre slab (8 × 8 m) where everyone spawns;
+- two narrower wings (3.5 × 6 m) closer to the rim;
+- a void all round.
+
+**The sweeper** sits in the right wing: a low bar (0.22 m) through a post,
+turning at 1.5 rad/s with a 2 m reach, moved by Havok as an animated body.
+- Only its leading face strikes, through the normal impact path: a shove
+  near the post, a punch-like hit mid-bar, a tumble near the tip.
+- It can be jumped with timing near the tip.
+- Its blow sends you toward the centre on the inner half of its circle,
+  toward the rim on the outer half.
+
+**Orb placement** follows the zones: one contested in the centre, one
+inside the sweeper's circle, one deep in the left wing near the rim.
+
+**Visual identity:** a floating garden island in a bright sky (§6).
+
+- Arena 1 **MUST NOT be resized** merely because a future mode might want
+  more space. Its size is part of its pace.
+- A larger or different layout, if ever needed, is an **Arena 2**
+  exploration.
+
+---
+
+## 6. Visual architecture
+
+```
+@blobbi-kit/3d (published package)          Rumble (this repo)
+  procedural 3D Blobbi from an identity  ◄──  view/: draws snapshots only
+  animation, face, traits                     fighterView, arenaView, sweeperView, orbView,
+                                              world (camera, lights, sky), theme, decor, camera
+                                       ▲
+physics body (Havok capsule) ──► position / velocity / grounded ──► visual Blobbi (follows, never feeds back)
+```
+
+- **`@blobbi-kit/3d`** owns the Blobbi's look: a procedural mesh from the
+  V3 identity, its face, traits and animator. Rumble consumes the
+  published package and contains no copy of the renderer.
+- **Rumble's `view/`** draws the match from snapshots and owns the
+  arena's look.
+  - Visual Pass 1 made the arena a floating garden lawn: rim trim, soil
+    and rock undersides, a candy-striped sweeper, a sky dome, clouds,
+    distant islands, one shadow-casting sun.
+  - Decoration is placed deterministically, clear of play.
+  - Repeated meshes use merged meshes and thin instances.
+- **Morphology independence.** The renderer never reads gameplay stats,
+  and gameplay never derives a collider from a mesh (§2.4).
+- Presentation MUST NOT touch the match: the presenter only reads
+  snapshots and the differences between them.
+
+---
+
+## 7. Authoritative simulation
+
+**`RumbleMatch`** (`sim/match.ts`) is the whole game with no renderer,
+DOM, keyboard or clock:
+- `createRumbleMatch({ havok, players })`
+- `setInput(id, intent)`
+- `step(dt)`, which returns the step's events
+- `snapshot()`, plain data
+- `restart()`
+
+It owns its fighters' Havok bodies in its own physics world, on a Babylon
+`NullEngine` scene that is never drawn. It decides movement, collisions,
+targets, hits, holds, throws, pickups, sweeper hits, tumbles,
+eliminations, rounds, scores and the winner.
+
+- **60 Hz fixed step.** A fixed-step loop on the server's monotonic
+  clock. If the loop falls behind it catches up by at most a few steps,
+  then drops the backlog (counted); it never fast-forwards.
+- **Headless.** The same match runs in plain Node (`npm run headless`) at
+  about 400–500× real time; it is used for tests and measurements.
+  Repeated runs of the same build reproduce identical results, which
+  makes it a regression check. Network play does **not** rely on
+  determinism: the server is authoritative, and there is no lockstep.
+- **Input model.** `PlayerIntent` = a ground-plane direction (cut to unit
+  length), run, and one-shot jump / punch / grab requests. One-shot
+  requests wait in the match until a step takes them.
+- **The client MUST NOT authoritatively decide:** positions, collisions,
+  hits or targets, holds or escapes, throws, pickups, power, hazard hits,
+  eliminations, round or match results, slot assignment, or another
+  player's identity.
+
+---
+
+## 8. Networking
+
+```
+browser (intent) ──WebSocket──► Node server ──► Room ──► RumbleHost ──► RumbleMatch @ 60 Hz
+       ▲                                                                     │
+       └──────────── state snapshots @ 20 Hz (+ acks, roster) ◄─────────────┘
+```
+
+- **Transport.** JSON over one WebSocket per client (`ws`).
+  - The client sends `input` (numbered intents) and `ping`; for identity
+    also `challenge`, `auth` and `logout`.
+  - The server sends `welcome`, `state`, `pong`, `challenge`, `auth` and
+    `roster`. The wire protocol is `net/protocol.ts`.
+- **`RumbleHost`** (`net/host.ts`) owns one match and its four slots.
+  - A connection takes the first free slot; a fifth watches.
+  - A person who leaves hands the fighter straight back to its bot, and
+    a silent client's held movement is released after 1 s.
+  - The host acknowledges the highest input `seq` applied.
+- **Snapshots** go out at 20 Hz. The state message carries no identity or
+  profile data.
+- **Local prediction** (`client/predict.ts`). Your own fighter is predicted
+  from your keys with the server's steering, then reconciled on every
+  state by replaying the inputs not yet acknowledged.
+  - Errors under 5 cm are left alone; larger ones glide away; over 1.2 m
+    they snap.
+  - Nothing is predicted while the server has you (tumbling, held,
+    stunned, out).
+- **Remote interpolation** (`client/interp.ts`). Everything else is drawn
+  100 ms behind the server, blended between states, with at most 50 ms
+  of extrapolation.
+- **Limits.**
+  - Size and rate: 4 KB frames, 120 messages/s per connection (a
+    sustained flood is disconnected), back-pressure on slow clients, a
+    heartbeat.
+  - Connections: 64 in all, 8 per room.
+  - Identity: one auth challenge per second per connection.
+  - The Origin header is logged, not enforced.
+- **Validation status.** Real multi-machine LAN play and a real remote
+  Internet player were tested (M7D). Players reported it fluid; normal
+  play showed no meaningful lag.
+- **Lag compensation (M7E) is not currently justified** by those tests.
+  It is not ruled out, but adding it requires evidence: measured problems
+  in real play.
+
+---
+
+## 9. Hosting model
+
+One Node process serves the built game, the WebSocket (`/ws`),
+`/.well-known/rumble.json` and `/healthz` on one port: `npm run serve`.
+TLS is terminated in front of it (a tunnel, reverse proxy, platform or
+VPS). An `https` page automatically uses `wss` on its own origin.
+
+| Kind | Example |
+| --- | --- |
+| Official hosted | a Blobbi-run server on the built-in official list (`rumble.blobbi.pet`) |
+| Community | someone's VPS or reverse proxy, possibly naming an operator |
+| Player-hosted | `npm run serve` on a laptop, reached over a LAN, Cloudflare Tunnel, Tailscale Funnel, a reverse proxy or a VPS |
+
+- **Player-hosted ≠ peer-to-peer.** A player-hosted server runs the same
+  authoritative Node process; clients still send only intent to it.
+- **Trust.**
+  - **Casual** play: a participant-hosted server is acceptable (players
+    knowingly trust the host).
+  - **Future value-bearing** play (sats, prizes): requires a **neutral,
+    trusted authoritative server**, not one run by a competitor. Rooms
+    already record `mode: 'casual'` so the two cannot be confused later.
+- **Why not WebRTC / P2P.** A browser-hosted authority adds TURN and
+  signalling, dies with a hidden or closed tab, has no host migration,
+  gives the host a 0 ms advantage, and can never be neutral for stakes.
+  The authoritative host stays transport-free, so an experiment remains
+  possible; it is not the architecture (M8A0 §13).
+
+---
+
+## 10. Rooms
+
+One process hosts several rooms (`net/rooms.ts`). Each room owns exactly
+one `RumbleHost`; nothing is shared but the process and the Havok wasm.
+
+| | |
+| --- | --- |
+| **OPEN** | The open room. Always exists; a plain visit plays here; never reaped. |
+| **Private rooms** | Created on request ("Host a game") with a fresh code. |
+| **Codes** | 4 characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (no 0/O, 1/I/L), unique among the server's live rooms. Input is upper-cased, spaces and dashes dropped. `OPEN` contains an O, so no generated code can collide with it. |
+| **Addressing** | Page `/play/CODE` (served by `npm run serve` and the Vite dev server). Socket `/ws` (open), `/ws?room=CODE`, `/ws?create=1`. |
+| **Create / join** | Host and Join switch rooms in place (a new connection, the same page). After a create, the page's address becomes `/play/CODE`, so a **reload or reconnect rejoins** the room rather than creating another. |
+| **Isolation** | Inputs, states, scores, rounds, bots, restarts, rosters and identities stay inside their room (tested). |
+| **Lifecycle** | A private room lives while anyone is connected to it, then **120 s** after the last connection leaves; then its match is disposed. |
+| **Storage** | In memory only. **A server restart ends every private room** (players see "Room … isn't here"). |
+| **Limits** | 16 rooms (OPEN included), 8 connections per room (4 play, 4 watch), 64 in all, 5 new rooms per address per minute. Refusal codes: `4004` no such room, `4003` no new room, `1013` full. |
+
+> **A ROOM CODE IS NOT A SECRET.** Current private rooms are
+> code-addressed rooms, not access-controlled or cryptographically private
+> rooms. Anyone with the code or link can join.
+
+---
+
+## 11. Server identity and trust
+
+All of these are optional (`net/serverIdentity.ts`, `net/serverTrust.ts`):
+
+- **`PUBLIC_URL`**: the server's **one canonical origin** (e.g.
+  `https://rumble.example`).
+  - It is the single source for: the address identity proofs must name
+    (`wss://…/ws`), share links (`…/play/CODE`) and the well-known
+    document.
+  - Extra comma-separated addresses are accepted in proofs only.
+  - Unset (LAN, dev): proofs bind to the Host header of each connection
+    (weaker, documented), and pages share their own origin.
+  - Forwarded headers are **not** trusted.
+  - A malformed value stops the server at start.
+- **`SERVER_NAME`**: a display name.
+- **`OPERATOR_PUBKEY`**: npub or hex, **as claimed**.
+- **`/.well-known/rumble.json`**: versioned and readable from any origin.
+  `{ protocol, version: 1, websocket, capabilities }`, plus `name`,
+  `operator` and `url` only when configured.
+
+**Labels** the page shows:
+
+| Label | Means |
+| --- | --- |
+| Local server | localhost, a private or link-local address, a tailnet, `*.local` |
+| Official server | on the built-in list **and** over TLS; the only check is the TLS certificate |
+| Community server | names an operator, as claimed |
+| Unknown server | anything else |
+
+Operator and community claims are **not** cryptographically verified.
+Every server, whatever its label, is the authority over its own matches.
+
+---
+
+## 12. Nostr architecture
+
+```
+Nostr:   identity · profiles · social · invites · (later, maybe) discovery
+         └── never: gameplay transport · physics · authoritative state · realtime simulation
+```
+
+- **Library:** `nostr-tools` only.
+- **Code layout:**
+  - generic Nostr code is `src/social/`, which imports only nostr-tools
+    and itself (test-enforced), so it can become a shared package later;
+  - Rumble glue is in `src/rumble/client/` (`identity.ts`, `invites.ts`,
+    `inviteSender.ts`, `shell.ts`) and the server handshake in
+    `net/server.ts`.
+- **Relays:**
+  - lookups go to `purplepag.es`, `relay.damus.io`, `relay.ditto.pub`,
+    plus at most 3 of a user's own relays;
+  - at most about 8 open lookup connections, idle ones closed;
+  - a page with only guests opens no relay connection.
+- The user's identity private key **never** reaches Rumble.
+
+### 13. Nostr identity (M8A)
+
+- **Guest** is fully supported and is the default. Nostr is optional.
+- **NIP-07 only.** The extension is asked only after a click.
+  - Every signer call has a timeout and a classified error (unavailable,
+    denied, timeout, malformed, failed).
+  - Whatever the extension returns is checked: a well-formed pubkey; an
+    event that verifies, is by that key and is exactly the template.
+- **Profiles.** Kind 0 is looked up by clients, never by the server.
+  - Text is cleaned and bounded, and rendered only as text.
+  - Pictures must be `https`; otherwise a deterministic identicon is shown.
+  - Profiles are cached in memory and localStorage with age limits. No
+    profile means a short npub.
+- **Remembered identity** is `{ v, method, pubkey }`. It is a hint and
+  proves nothing; "Continue as …" asks the extension again.
+- **Proof flow.**
+  1. The server sends a one-use challenge (32 random bytes, 2 min,
+     bounded).
+  2. The client signs a **kind 22242** with `relay` = the game WebSocket
+     URL and `challenge`.
+  3. The server verifies it locally (signature, challenge, its own
+     address, ±5 min clock skew).
+  4. The connection's slot shows the pubkey in the roster.
+  - Identity belongs to the **connection**, never to the slot, and is
+    never restored on reconnect.
+  - Duplicate pubkeys on two connections are two separate players.
+
+> **INVARIANT: the game-auth kind 22242 is transmitted directly over the
+> Rumble WebSocket and MUST NOT be published to Nostr relays.**
+> Test-pinned: the identity module imports no relay, pool or inbox code.
+
+- **Validated** with a real NIP-07 extension (the player resolved as
+  `danidfra`; disconnecting returned to Guest without interrupting play).
+- **NIP-46** (remote signers) is future work and does not block rooms or
+  invites.
+
+### 14. Private Nostr invites — sending (M8C-A, implemented)
+
+```
+Alice (in a private room, Nostr-connected, extension with NIP-44)
+  kind 14 rumor   unsigned, by Alice: readable text + tags
+  kind 13 seal    extension NIP-44-encrypts the rumor to Bob; extension signs; tags []
+  kind 1059 wrap  NIP-44 from a one-time key to Bob; tags [p Bob, expiration]
+  ──► Bob's kind-10050 inbox relays (at most 3, wss only)
+```
+
+- **Capability.** NIP-44 is optional and feature-detected. Without it,
+  identity, rooms and play are unaffected; only sending is unavailable,
+  and **Copy link** remains.
+- **Recipient.** An `npub` or `nprofile` (a `nostr:` prefix is accepted).
+  nprofile relay hints only help *find* the inbox list.
+- **Inbox.** The recipient's kind 10050 list, located via the lookup
+  relays, hints, then NIP-65 write relays.
+  - The wrap goes **only** to the list's own `relay` tags, which must
+    literally be `wss://`, at most 3.
+  - **No 10050: nothing is sent**, and the panel offers Copy link.
+- **Message.** A normal kind 14:
+  - content `"<name> invited you to Blobbi Rumble: <room link>"`;
+  - tags `["p", recipient]`, `["r", <room link>]`,
+    **`["b", "blobbi:rumble:invite:v1"]`**,
+    `["expiration", now + 30 min]`.
+  - The link is the canonical M8B share link (`/play/CODE`, from
+    `PUBLIC_URL` when set), and the text and the `r` tag carry the same
+    link.
+  - No sender field (the seal proves the sender), no sender self-copy.
+- **Timestamps.** The seal and the wrap are backdated randomly by up to 2
+  days. The wrap's expiration is the rumor's plus random slack. The seal
+  carries no tags: NIP-59 requires that, and it overrides NIP-17's
+  suggestion to put an expiration there.
+- **Success** means at least 1 inbox relay accepted ("Invite sent (k of n
+  inbox relays)"); total failure is reported as failure.
+- **Wrapper key.** A one-time NIP-59 wrapper key is generated in memory
+  for each wrap and dropped. This is protocol machinery, not an identity
+  key: *Blobbi Rumble never generates, stores or handles the user's Nostr
+  identity private key.*
+- **Publishing boundary.**
+  - `social/inbox.ts` is the app's only publisher, and the invite sender
+    is its only user.
+  - It publishes only a valid kind 1059, only to an inbox set built from
+    a kind 10050 list.
+  - Events are verified on a fresh copy (`social/verify.ts`), so a
+    modified copy can't inherit a cached "verified" result.
+
+**Two kind-22242 uses that MUST NOT cross:**
+
+| | GAME AUTH | RELAY AUTH |
+| --- | --- | --- |
+| Challenge from | the Rumble server | a Nostr inbox relay |
+| `relay` tag | the game WebSocket URL | that inbox relay's URL |
+| Sent to | the game WebSocket only | that relay's connection only |
+| Signed by | `client/identity.ts` | `inboxRelayAuth`, which signs only an exact NIP-42 template naming one of that inbox's relays |
+
+- **Validated for real:**
+  - Blobbi Rumble → a real NIP-17 inbox relay → Anagram, which decrypted
+    it and showed a normal, readable kind 14 DM with the correct sender,
+    recipient, `/play/CODE` link, marker, expiration and text;
+  - a recipient without a 10050 list got the "no private-message inbox"
+    fallback, and nothing was sent;
+  - the LAN-only link warning appeared.
+
+### 15. Private invite receiving (M8C-B) — NEXT, NOT IMPLEMENTED
+
+Approved direction only:
+- Rumble may receive its own NIP-17 invites, only after an explicit user
+  opt-in or "check".
+- It processes a bounded number of recent gift wraps and decrypts them
+  locally.
+- It recognizes the Rumble marker only after decrypting.
+  - Unrelated messages are discarded at once and never persisted, logged
+    or rendered.
+  - Results are de-duplicated (several relays deliver the same wrap).
+- It shows the inviter, room, destination origin and trust label, with an
+  explicit **Join**. There is no automatic navigation.
+
+**Why unrelated wraps may need decrypting:** NIP-17 deliberately hides
+the inner message's kind and tags, so a Rumble invite cannot be told apart
+from any other private message before decryption.
+
+### 16. Invites are not access control
+
+- An M8C invite is a **social message**. It carries a room link and
+  creates **no** exclusive room access.
+- The room code remains sufficient to join, as for any room.
+- A possible future **M8C.1** could add invite-only rooms with
+  server-issued capabilities, maybe recipient-bound. That is **not
+  implemented**, and nothing today is an access token.
+
+---
+
+## 17. UI principles
+
+Normal gameplay stays minimal (`client/shell.ts`):
+
+| Layer | Contents |
+| --- | --- |
+| Persistent | session chip (room · server label · connection dot), compact scoreboard (names, score pips, power), identity chip (`Guest · Connect Nostr` / name), `H Help` |
+| Contextual | the centre message (ring-outs, round and match results, with names), the struggle bar when you are held, toasts (joins, leaves, copied, created) |
+| On demand | the session panel (room code, share link, Copy / Select link, Host, Join, Invite a friend, players, identity, server) and help (`H`) |
+| Loud | a centred banner only when play is impossible (offline, missing room, refused), with what to do |
+| Debug | F3 (colliders, reach, state), F4 (the text HUD and network numbers) |
+
+- Buttons never take keyboard focus (Space and Enter stay jump).
+- Text fields own the keyboard only while focused.
+- Healthy state is quiet; error state is loud.
+- Copy link copies in one click where the browser allows it (https and
+  localhost). On plain-http LAN pages, where the Clipboard API doesn't
+  exist, it becomes **Select link**.
+- The UI SHOULD NOT return to a permanent card-heavy HUD without
+  evidence.
+- Local mode keeps its text HUD (§ Contradictions).
+
+---
+
+## 18. Security and trust boundaries
+
+| Boundary | Rule |
+| --- | --- |
+| Server vs client | The server decides; clients send intent. |
+| Nostr identity vs gameplay | A proven pubkey labels a slot; it decides nothing. |
+| Visual vs physics | Visuals follow; they never feed back or change stats. |
+| Game auth vs relay AUTH | Different challenge, `relay` tag, channel and signer; MUST NOT cross (§14). |
+| Server claims vs trust | Name and operator are claims; only TLS proves an official host name; forwarded headers are ignored. |
+| Room code vs secret | A code is an address, not a secret. |
+| Signer vs key custody | NIP-07 holds the key; Rumble never asks for, makes, stores or logs an nsec. |
+| One-time wrapper key vs identity key | NIP-59 wrapper keys are made per wrap and dropped; they are not identities. |
+| Private invite vs access control | An invite grants nothing (§16). |
+| Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
+| Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
+
+---
+
+## 19. Validation status
+
+| Milestone | What | Evidence |
+| --- | --- | --- |
+| M1–M6 | Havok sandbox → 2 players → holds, tumbles → orbs → power as push → Arena 1 + sweeper → 4-player local rumble | Automated tests and scripted headless checks; developed and played locally; accepted as the base for later milestones. No formal playtest record in the repo. |
+| Gameplay Pass 1 | Grab struggle | Tests and scripted checks; tuning accepted **pending real playtest** (§4). |
+| Visual Pass 1 | Floating garden arena | Screenshots and frame-time parity checks during development; accepted. |
+| M7A | Authoritative headless match | Tests; headless runs reproduce. |
+| M7B | First authoritative networked match | Tests; local multi-browser play. |
+| M7C | Prediction and interpolation | Tests and measurements under simulated lag; **passed the user's manual multiplayer playtest**. |
+| M7D | Real network hosting | **Real LAN multi-machine play and a real remote Internet player**: fluid, no meaningful lag noticed. |
+| M8A0 | Nostr social research | Reviewed and approved. |
+| M8A | Nostr identity | **Real NIP-07 extension**: proof accepted, profile shown (`danidfra`), disconnect back to Guest mid-match. |
+| M8B | Rooms, server identity, UI cleanup | **Manual multi-room test**: private room V4BU with two players, OPEN isolated, real NIP-07 auth inside the room, empty-room cleanup, steady 60 ticks/s. Follow-up `44179d7` (Copy vs Select link) verified in Chrome on localhost and LAN http. |
+| M8C-A | Private invites: sending | **Real interop**: Rumble → real NIP-17 relay → **Anagram** showed the readable kind 14; no-10050 fallback and LAN-link warning confirmed. |
+
+---
+
+## 20. Frozen decisions
+
+"Frozen" means: **do not redesign without concrete evidence** from
+testing, correctness, security or product requirements. It does not mean
+immutable forever.
+
+- **Arena 1's size and layout**, and the sweeper's role.
+- **The current grab struggle** (6 reversals, about 1.2 s, 0.6 s
+  immunity, no throw windup).
+- **The authoritative WebSocket architecture** (intent in, 60 Hz server,
+  20 Hz snapshots, prediction and interpolation).
+- **No preventive lag compensation.**
+- **No WebRTC / P2P architecture.**
+- **Identical gameplay body for every Blobbi** (morphology is visual
+  only).
+- **The M8A identity flow** (NIP-07, connection-scoped proof over the game
+  socket, Guest default).
+- **M8B rooms** (OPEN plus code-addressed private rooms, in memory, 120 s
+  grace, `/play/CODE`, `PUBLIC_URL` canonical).
+- **The M8C-A send protocol** (kind 14 in a seal and gift wrap, the
+  10050-only inbox, the `b` marker, 30-minute expiry, no self-copy).
+- **The current minimal HUD** structure.
+
+---
+
+## 21. Roadmap
+
+| | |
+| --- | --- |
+| **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A |
+| **Next** | **M8C-B**: receive private Nostr invites inside Rumble (§15) |
+| **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
+| **Insert when useful** | NIP-46 remote signers (does not block M8C) |
+
+---
+
+## 22. Idea radar (non-normative)
+
+None of this is designed or decided.
+
+- **Room social and room chat.** Room-level communication is on the
+  radar. Candidates include:
+  - ephemeral chat over the room's authoritative WebSocket;
+  - a Nostr-associated room conversation;
+  - private or encrypted room communication.
+
+  **No architecture is chosen**: whether chat is Nostr or WebSocket,
+  encrypted or not, persistent or not. That needs its own design
+  discussion: history, membership, privacy, moderation, player-hosted
+  servers, and whether chat outlives a match.
+- **Public games and server discovery (M8D):** server-signed, expiring
+  room announcements; NIP-89 handler; optional NIP-38 "playing" status
+  (M8A0 §8, §10, §11).
+- **Presence:** no standard exists; in-room presence is already a server
+  fact (M8A0 §8).
+- **Player hosting made easier:** a desktop host app with an automatic
+  tunnel, or an outbound rendezvous relay (M8A0 §13).
+- **A shared Nostr package** (`src/social/` lifted out, e.g. as
+  `@blobbi-kit/nostr`), once more apps need it (M8A0 §17).
+- **Fighter appearance from a player's Blobbi** (kind 11125 → 31124): M9
+  territory.
+- **NIP-05 display**, a follows-based contact picker, invite
+  accept/decline over kind 21059, proof-of-work on wraps (M8C0).
+- **Arena 2** with a larger or different layout.
+
+## 23. Non-goals
+
+- Nostr as realtime gameplay transport or gameplay authority.
+- WebRTC / peer-to-peer play.
+- A public lobby or matchmaking before it is justified.
+- Sats or payments before their milestone.
+- Gameplay, physics or networking inside `blobbi-kit`.
+- Competitive advantage from Blobbi morphology.
+- A general-purpose Nostr messaging client.
+- Pasting, generating, storing or logging a user's nsec.
+
+---
+
+## Contradictions and stale prose found while writing v1
+
+Current code wins; these are documentation gaps, not redesign requests.
+
+1. **README, "Blobbi Rumble" command block:** labels `npm run server` as
+   "(one match)". Since M8B the dev server hosts rooms too (OPEN by
+   default).
+2. **README, "Limitations":** dates from the Visual V0 playground ("the
+   character controller is a stand-in, not Havok", "no instancing"). It
+   describes the playground, not Rumble, which uses Havok and thin
+   instances.
+3. **README gameplay prose:** "The HUD shows each player's multiplier,
+   score…" and "R restarts" are true of **local mode** (text HUD; R
+   restarts only after a match). In network mode the text HUD is F4-only
+   and the scoreboard shows that information; the next match starts by
+   itself.
+4. **`NOSTR_SOCIAL_ARCHITECTURE.md` §1–§16:** the research plan. It
+   differs from what was built, and each difference is recorded in its own
+   "as built" sections:
+   - room routing via the URL query, not a `join` message;
+   - `relay.ditto.pub` instead of `relay.primal.net` for lookups;
+   - the invite tags (the `b` marker; no `subject`, no `["rumble",…]`
+     tags);
+   - a separate `challenge` message rather than a challenge in `welcome`.
+
+   Read those sections as history.
+5. **Relay connection cap:** the "at most 8 open relay sockets" rule holds
+   for lookups. During an invite send, the short-lived inbox connections
+   (at most 3) can briefly push the total past 8, as recorded in the
+   M8C-A "as built" notes.
