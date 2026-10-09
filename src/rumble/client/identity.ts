@@ -13,17 +13,25 @@
  *   verified  the server accepted a fresh proof on THIS connection
  *   error     something said no; the message says what, play goes on
  *
- * Nothing here runs on page load except reading the remembered login: the
- * signer is asked only after a click. Once someone connected in this page,
- * a new game connection (after a drop) is proven again automatically: the
- * server forgets identities with their connection, on purpose.
+ * Once someone connected in this page, a new game connection (after a
+ * drop) is proven again automatically: the server forgets identities with
+ * their connection, on purpose.
+ *
+ * RESTORING (M9B.1): a remembered login made by an explicit connection
+ * carries `auto`; on the next visit the page asks the SAME signer for its
+ * public key (the extension may prompt once; nothing is signed for this)
+ * and, if it is the remembered one, continues exactly as a click would
+ * (`restoring` → `proving`). Any other answer stops it: no extension or
+ * no answer keeps `known` (a Reconnect button); a refusal keeps `known`
+ * and turns `auto` off; another pubkey is `changed`, shown, never
+ * switched to without a click. A click or Disconnect during it wins.
  */
 import type { ClientMessage, AuthReply } from '../net/protocol';
 import { authTemplate } from '../../social/auth';
 import { clearLogin, loadLogin, saveLogin } from '../../social/login';
-import { SignerError, type NostrSigner, type SignerMethod } from '../../social/signer';
+import { SignerError, type NostrSigner, type SignerErrorCode, type SignerMethod } from '../../social/signer';
 
-export type IdentityPhase = 'guest' | 'known' | 'asking' | 'proving' | 'verified' | 'error';
+export type IdentityPhase = 'guest' | 'known' | 'restoring' | 'changed' | 'asking' | 'proving' | 'verified' | 'error';
 
 export interface IdentityState {
   phase: IdentityPhase;
@@ -33,6 +41,10 @@ export interface IdentityState {
   error: string | null;
   /** Whether the game server offers the handshake (null: not connected yet). */
   serverSupports: boolean | null;
+  /** M9B.1: whether this browser reconnects by itself on the next visit (a remembered, explicit connection). */
+  auto: boolean;
+  /** M9B.1: the pubkey the extension holds now, when it is not the remembered one (phase 'changed'). */
+  other: string | null;
 }
 
 export interface IdentityDeps {
@@ -67,12 +79,16 @@ export class IdentitySession {
   private signer: NostrSigner | null = null;
   private connected = false;
   private retried = false;
+  /** Bumped by every click and by Disconnect: an asynchronous step that outlived it changes nothing. */
+  private gen = 0;
+  /** The signer that answered with another pubkey during a restore, kept for an explicit "connect as" only. */
+  private pending: { signer: NostrSigner; pubkey: string } | null = null;
   private readonly key: string;
 
   constructor(private readonly d: IdentityDeps) {
     this.key = d.storageKey ?? 'rumble:nostr-login';
     const saved = loadLogin(d.storage, this.key);
-    this.state = { phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, serverSupports: null };
+    this.state = { phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, serverSupports: null, auto: saved?.auto ?? false, other: null };
   }
 
   /** The signer, while this connection's identity is proven (for sending invites; null otherwise). */
@@ -103,20 +119,82 @@ export class IdentitySession {
   /** The user clicked Connect (or Continue as …): ask the signer, then prove it to the server. */
   async connect(): Promise<void> {
     if (this.state.phase === 'asking') return;
-    this.set({ phase: 'asking', error: null });
+    const g = ++this.gen;
+    this.pending = null;
+    this.set({ phase: 'asking', error: null, other: null });
     try {
       const signer = await this.d.findSigner();
       if (!signer) throw new SignerError('unavailable', 'no signer');
       const pubkey = await signer.getPublicKey();
-      this.signer = signer;
-      saveLogin(this.d.storage, this.key, signer.method, pubkey);
-      this.set({ pubkey, method: signer.method });
-      this.retried = false;
-      this.prove();
+      if (g !== this.gen) return;
+      this.adopt(signer, pubkey);
     } catch (e) {
+      if (g !== this.gen) return;
       const code = e instanceof SignerError ? e.code : 'failed';
       this.set({ phase: 'error', error: SIGNER_WORDS[code] ?? SIGNER_WORDS.failed });
     }
+  }
+
+  /** A signer that answered: remember it (with reconnection on), and prove it to the server. The one path to a connected identity. */
+  private adopt(signer: NostrSigner, pubkey: string) {
+    this.signer = signer;
+    this.pending = null;
+    saveLogin(this.d.storage, this.key, signer.method, pubkey, true);
+    this.set({ pubkey, method: signer.method, auto: true, other: null });
+    this.retried = false;
+    this.prove();
+  }
+
+  /**
+   * M9B.1: on page load, with a remembered login that asked for it, ask
+   * the same kind of signer for its public key (no signature) and continue
+   * as a click would when it is the remembered one. Once per page; a click
+   * or Disconnect meanwhile wins.
+   */
+  async restore(): Promise<void> {
+    const saved = loadLogin(this.d.storage, this.key);
+    if (!saved?.auto || this.state.phase !== 'known') return;
+    const g = ++this.gen;
+    this.set({ phase: 'restoring', error: null });
+    let signer: NostrSigner | null = null;
+    let pubkey: string | null = null;
+    let why: SignerErrorCode | 'other' = 'unavailable';
+    try {
+      signer = await this.d.findSigner();
+      if (signer && signer.method === saved.method) pubkey = await signer.getPublicKey();
+    } catch (e) {
+      why = e instanceof SignerError ? e.code : 'failed';
+      signer = null;
+    }
+    if (g !== this.gen) return;
+    if (signer && pubkey === saved.pubkey) return this.adopt(signer, pubkey);
+    if (signer && pubkey) {
+      // The extension holds another identity: shown, never switched to by itself.
+      this.pending = { signer, pubkey };
+      this.set({ phase: 'changed', other: pubkey });
+      return;
+    }
+    // No extension (yet), or no usable answer: back to the hint. A refusal or a time-out also turns reconnection off, so no prompt repeats by itself.
+    const keep = why === 'unavailable';
+    if (!keep) saveLogin(this.d.storage, this.key, saved.method, saved.pubkey, false);
+    this.set({ phase: 'known', auto: keep });
+  }
+
+  /** The extension holds another identity than the remembered one, and the user said to use it. */
+  connectOther() {
+    if (this.state.phase !== 'changed' || !this.pending) return;
+    ++this.gen;
+    this.adopt(this.pending.signer, this.pending.pubkey);
+  }
+
+  /** The extension holds another identity, and the user said not now: stay a hint, without reconnecting by itself. */
+  dismissChanged() {
+    if (this.state.phase !== 'changed') return;
+    ++this.gen;
+    this.pending = null;
+    const saved = loadLogin(this.d.storage, this.key);
+    if (saved) saveLogin(this.d.storage, this.key, saved.method, saved.pubkey, false);
+    this.set({ phase: 'known', other: null, auto: false });
   }
 
   /** Ask the server for a challenge (now, or as soon as the game connection is up). */
@@ -178,19 +256,22 @@ export class IdentitySession {
     this.set({ phase: 'error', error: SERVER_WORDS[r.reason ?? ''] ?? `The server refused the identity (${r.reason ?? 'unknown'}).` });
   }
 
-  /** The user chose to stop using Nostr: forget the login, tell the server, keep playing. */
+  /** The user chose to stop using Nostr: forget the login (and with it reconnection), tell the server, keep playing. */
   disconnect() {
+    ++this.gen;
     this.signer = null;
+    this.pending = null;
     clearLogin(this.d.storage, this.key);
     this.d.send({ t: 'logout' });
-    this.set({ phase: 'guest', pubkey: null, method: null, error: null });
+    this.set({ phase: 'guest', pubkey: null, method: null, error: null, auto: false, other: null });
   }
 
-  /** Back to guest after an error (keeps the remembered login as a hint). */
+  /** Back to guest after an error (keeps the remembered login as a hint, without reconnecting by itself). */
   dismissError() {
     if (this.state.phase !== 'error') return;
     const saved = loadLogin(this.d.storage, this.key);
+    if (saved?.auto) saveLogin(this.d.storage, this.key, saved.method, saved.pubkey, false);
     this.signer = null;
-    this.set({ phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null });
+    this.set({ phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, auto: false });
   }
 }

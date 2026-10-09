@@ -47,6 +47,9 @@ export interface ShellActions {
   joinGame(code: string): void;
   connectNostr(): void;
   disconnectNostr(): void;
+  /** M9B.1: the extension holds another identity than the remembered one; connect it only on this click, or keep the hint without reconnecting. */
+  connectOtherNostr(): void;
+  dismissOtherNostr(): void;
   dismissIdentityError(): void;
   /** The code field took the keyboard: let go of every game key. */
   releaseKeys(): void;
@@ -701,10 +704,25 @@ export function createShell(a: ShellActions) {
       row.append(avatar(s.pubkey, own?.picture, 26), who, button('Disconnect Nostr', a.disconnectNostr));
     } else if (s.phase === 'error') {
       row.append(el('span', 'rs-err', s.error ?? 'Something went wrong.'), button('Try again', a.connectNostr, 'rs-btn go'), button('Play as guest', a.dismissIdentityError));
-    } else if (s.phase === 'asking' || s.phase === 'proving') {
-      row.append(el('span', 'rs-sub', s.phase === 'asking' ? 'Answer your Nostr extension’s prompt…' : 'Verifying with the game server…'));
+    } else if (s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring') {
+      row.append(el('span', 'rs-sub', s.phase === 'asking' ? 'Answer your Nostr extension’s prompt…' : s.phase === 'restoring' ? 'Restoring Nostr… (your extension may ask once)' : 'Verifying with the game server…'));
+    } else if (s.phase === 'changed' && s.pubkey && s.other) {
+      const o = v.profile(s.other);
+      row.append(avatar(s.other, o?.picture, 22), el('span', undefined, `Your extension is signed in as ${clip(displayName(o, s.other), 20)}, not ${clip(displayName(own, s.pubkey), 20)}.`));
+      parts.push(row);
+      const acts = el('div', 'rs-row');
+      acts.append(button(`Connect as ${clip(displayName(o, s.other), 16)}`, a.connectOtherNostr, 'rs-btn go'), button('Not now', a.dismissOtherNostr), button('Forget', a.disconnectNostr));
+      parts.push(acts);
+      parts.push(el('div', 'rs-sub', 'Nothing switched by itself: your saved Blobbi and invites belong to the remembered identity.'));
+      parts.push(el('h4', undefined, 'Server'));
+      if (v.trust) {
+        parts.push(el('div', undefined, `${v.trust.label} · ${v.trust.host}`));
+        parts.push(el('div', 'rs-sub', v.trust.detail));
+      }
+      panel.replaceChildren(...parts);
+      return;
     } else if (s.phase === 'known' && s.pubkey) {
-      row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button('Sign in', a.connectNostr, 'rs-btn go'), button('Forget', a.disconnectNostr));
+      row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'), button('Forget', a.disconnectNostr));
     } else {
       row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
     }
@@ -775,13 +793,15 @@ export function createShell(a: ShellActions) {
       const s = v.identity;
       const own = s.pubkey ? v.profile(s.pubkey) : undefined;
       const invites = v.inbox?.cards.length ?? 0;
-      const iKey = JSON.stringify([s.phase, s.pubkey, own?.displayName, own?.name, own?.picture, invites]);
+      const iKey = JSON.stringify([s.phase, s.pubkey, s.other, own?.displayName, own?.name, own?.picture, invites]);
       if (iKey !== lastId) {
         lastId = iKey;
         if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'), ...(invites ? [el('span', 'rs-badge', `✉ ${invites}`)] : []));
         else if (s.phase === 'asking' || s.phase === 'proving') idChip.replaceChildren(el('span', 'dim', 'Nostr · check your extension…'));
+        else if (s.phase === 'restoring') idChip.replaceChildren(el('span', 'dim', 'Restoring Nostr…'));
+        else if (s.phase === 'changed') idChip.replaceChildren(el('span', 'dim', 'Nostr · another account'), button('Session', () => togglePanel(true)));
         else if (s.phase === 'error') idChip.replaceChildren(el('span', 'dim', 'Nostr · didn’t connect'));
-        else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Sign in', a.connectNostr, 'rs-btn go'));
+        else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'));
         else idChip.replaceChildren(el('span', 'dim', 'Guest ·'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
       }
       // Scoreboard.

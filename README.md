@@ -247,7 +247,7 @@ src/social/
   directory.ts  pubkey → Profile: batched lookups, write-relay fallback, cache with age limits
   pool.ts       nostr-tools' SimplePool behind a hard cap of open relays and an idle close
   relays.ts     the lookup relays, relay URL checks, NIP-65 write relays (max 3)
-  login.ts      the remembered login: { v, method, pubkey }, never a secret
+  login.ts      the remembered login: { v, method, pubkey, auto }, never a secret (auto: reconnect by itself next visit, M9B.1)
   nip17.ts      NIP-17: rumor → seal (the signer's NIP-44 + signature) → gift wrap (one-time key); and unwrapping with every check
   inbox.ts      NIP-17 inboxes: find kind-10050 relays; the app's only publisher (gift wraps); read own wraps; relay AUTH for those relays only
   people.ts     finding people (M8C-C): npub / nprofile, NIP-05 resolution, the read-only NIP-02 follow list, name matching and ranking, NIP-50 search on two validated relays

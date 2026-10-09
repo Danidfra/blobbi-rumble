@@ -381,6 +381,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     },
     disconnectNostr: () => identity.disconnect(),
     dismissIdentityError: () => identity.dismissError(),
+    // M9B.1: the extension holds another identity than the remembered one: only a click connects it.
+    connectOtherNostr: () => identity.connectOther(),
+    dismissOtherNostr: () => identity.dismissChanged(),
     releaseKeys: () => keyboard.held.clear(),
     startSeen: seeStart,
     // M8C-A: a private Nostr invite to a pasted npub / nprofile.
@@ -444,6 +447,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   });
   // Idle relays close; nothing stays open for long.
   setInterval(() => relayPool?.sweep(), 10_000);
+  // M9B.1: a remembered, explicit connection is restored by itself (the same signer, the same pubkey, or nothing); once per page.
+  void identity.restore();
   /** What a slot is called: a proven person's name, or null (its slot label). */
   const nameFor = (slot: string): string | null => {
     const r = roster?.[slot];
@@ -856,6 +861,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         },
         connect: () => identity.connect(),
         disconnect: () => identity.disconnect(),
+        restore: () => identity.restore(),
+        connectOther: () => identity.connectOther(),
+        dismissOther: () => identity.dismissChanged(),
       },
       get seq() {
         return seq;

@@ -12,8 +12,8 @@ import type { ClientMessage } from '../net/protocol';
 import { IdentitySession } from './identity';
 
 const URL_ = 'wss://rumble.example/ws';
-function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean } = {}) {
-  const sk = generateSecretKey();
+function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean; sk?: Uint8Array; findDelayMs?: number } = {}) {
+  const sk = opts.sk ?? generateSecretKey();
   const pk = getPublicKey(sk);
   const store = new Map<string, string>();
   if (opts.saved) store.set('rumble:nostr-login', opts.saved);
@@ -30,6 +30,7 @@ function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: 
     send: (m) => (up ? (sent.push(m), true) : false),
     findSigner: async () => {
       asked += 1;
+      if (opts.findDelayMs) await new Promise((r) => setTimeout(r, opts.findDelayMs));
       return signer;
     },
     storage,
@@ -77,7 +78,8 @@ describe('the identity session', () => {
     expect(s.session.verified).toBeNull();
     s.session.onAuth({ t: 'auth', ok: true, pubkey: s.pk });
     expect(s.session.verified).toBe(s.pk);
-    expect(JSON.parse(s.store.get('rumble:nostr-login')!)).toEqual({ v: 1, method: 'nip07', pubkey: s.pk });
+    expect(JSON.parse(s.store.get('rumble:nostr-login')!)).toEqual({ v: 1, method: 'nip07', pubkey: s.pk, auto: true });
+    expect(s.session.state.auto).toBe(true);
     expect([...s.store.values()].join()).not.toMatch(/nsec|[0-9a-f]{64}.*[0-9a-f]{64}/);
   });
 
@@ -186,5 +188,145 @@ describe('the identity session', () => {
     // A late challenge after disconnecting signs nothing.
     await s.session.onChallenge('late');
     expect(s.sent.at(-1)).toEqual({ t: 'logout' });
+  });
+});
+
+/**
+ * Restoring the session (M9B.1): an explicit connection remembers { pubkey,
+ * auto }; the next page asks the same signer for its pubkey (no signature)
+ * and goes on as a click would when it matches; anything else stops it; a
+ * click or Disconnect meanwhile wins; Disconnect ends reconnection; a new
+ * game connection is always proven with a fresh challenge.
+ */
+describe('restoring the session', () => {
+  const saved = (pk: string, auto = true) => JSON.stringify({ v: 1, method: 'nip07', pubkey: pk, auto });
+
+  it('an explicit connection turns reconnection on; a page with that record restores: same signer, same pubkey, then the normal proof', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const page = setup({ sk, saved: saved(pk) });
+    expect(page.session.state).toMatchObject({ phase: 'known', pubkey: pk, auto: true });
+    expect(page.session.connectedSigner).toBeNull();
+    page.session.onWelcome(['nostr-auth']);
+    const p = page.session.restore();
+    expect(page.session.state.phase).toBe('restoring');
+    await p;
+    expect(page.asked()).toBe(1);
+    expect(page.session.state).toMatchObject({ phase: 'proving', pubkey: pk, auto: true, other: null });
+    expect(page.session.connectedSigner).not.toBeNull();
+    expect(page.sent).toEqual([{ t: 'challenge' }]);
+    // The proof is fresh: this connection's challenge, signed now; nothing from any earlier page.
+    await page.session.onChallenge('fresh-1');
+    const auth = page.sent[1] as { t: 'auth'; event: { tags: string[][]; created_at: number } };
+    expect(auth.event.tags).toContainEqual(['challenge', 'fresh-1']);
+    page.session.onAuth({ t: 'auth', ok: true, pubkey: pk });
+    expect(page.session.verified).toBe(pk);
+    // Once per page: a second call does nothing.
+    await page.session.restore();
+    expect(page.asked()).toBe(1);
+  });
+
+  it('a record without the preference (an older one, Not now, a refusal) restores nothing: the hint and a Reconnect button', async () => {
+    const pk = getPublicKey(generateSecretKey());
+    const old = setup({ saved: JSON.stringify({ v: 1, method: 'nip07', pubkey: pk }) });
+    expect(old.session.state).toMatchObject({ phase: 'known', auto: false });
+    await old.session.restore();
+    expect(old.asked()).toBe(0);
+    expect(old.session.state.phase).toBe('known');
+    const off = setup({ saved: saved(pk, false) });
+    await off.session.restore();
+    expect(off.asked()).toBe(0);
+    const guest = setup();
+    await guest.session.restore();
+    expect(guest.asked()).toBe(0);
+    expect(guest.session.state.phase).toBe('guest');
+  });
+
+  it('the extension holds another identity: shown as changed, nothing switched, the saved identity untouched; only "connect as" adopts it', async () => {
+    const remembered = getPublicKey(generateSecretKey());
+    const t = setup({ saved: saved(remembered) });
+    await t.session.restore();
+    expect(t.session.state).toMatchObject({ phase: 'changed', pubkey: remembered, other: t.pk, auto: true });
+    expect(t.session.connectedSigner).toBeNull();
+    expect(JSON.parse(t.store.get('rumble:nostr-login')!).pubkey).toBe(remembered);
+    expect(t.sent).toEqual([]);
+    // Not now: the hint stays, reconnection is off, nothing asked again.
+    t.session.dismissChanged();
+    expect(t.session.state).toMatchObject({ phase: 'known', pubkey: remembered, other: null, auto: false });
+    expect(JSON.parse(t.store.get('rumble:nostr-login')!)).toMatchObject({ pubkey: remembered, auto: false });
+    await t.session.restore();
+    expect(t.asked()).toBe(1);
+    // Connect as the other: a normal connection to that identity, remembered from now on.
+    const u = setup({ saved: saved(remembered) });
+    await u.session.restore();
+    u.session.onWelcome(['nostr-auth']);
+    u.session.connectOther();
+    expect(u.session.state).toMatchObject({ phase: 'proving', pubkey: u.pk, auto: true, other: null });
+    expect(JSON.parse(u.store.get('rumble:nostr-login')!)).toMatchObject({ pubkey: u.pk, auto: true });
+    expect(u.asked()).toBe(1);
+  });
+
+  it('no extension: the hint stays with reconnection on (next time, maybe); a refusal or a time-out keeps the hint but turns reconnection off', async () => {
+    const pk = getPublicKey(generateSecretKey());
+    const none = setup({ saved: saved(pk), signer: null });
+    await none.session.restore();
+    expect(none.session.state).toMatchObject({ phase: 'known', pubkey: pk, auto: true, error: null });
+    expect(JSON.parse(none.store.get('rumble:nostr-login')!).auto).toBe(true);
+    for (const code of ['denied', 'timeout'] as const) {
+      const refusing: NostrSigner = { method: 'nip07', getPublicKey: async () => Promise.reject(new SignerError(code, 'no')), signEvent: async () => Promise.reject(new Error('no')) };
+      const t = setup({ saved: saved(pk), signer: refusing });
+      await t.session.restore();
+      expect(t.session.state).toMatchObject({ phase: 'known', pubkey: pk, auto: false, error: null });
+      expect(JSON.parse(t.store.get('rumble:nostr-login')!)).toMatchObject({ pubkey: pk, auto: false });
+      await t.session.restore();
+      expect(t.asked()).toBe(1);
+    }
+  });
+
+  it('Disconnect ends reconnection: the record goes, the next page restores nothing; a Disconnect during a restore wins over its late answer', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const t = setup({ sk, saved: saved(pk) });
+    await t.session.restore();
+    t.session.disconnect();
+    expect(t.session.state).toMatchObject({ phase: 'guest', pubkey: null, auto: false });
+    expect(t.store.size).toBe(0);
+    const next = setup({ sk, saved: t.store.get('rumble:nostr-login') });
+    await next.session.restore();
+    expect(next.asked()).toBe(0);
+    expect(next.session.state.phase).toBe('guest');
+    // Slow extension, Disconnect meanwhile: the answer is thrown away.
+    const slow = setup({ sk, saved: saved(pk), findDelayMs: 30 });
+    const p = slow.session.restore();
+    slow.session.disconnect();
+    await p;
+    expect(slow.session.state.phase).toBe('guest');
+    expect(slow.session.connectedSigner).toBeNull();
+    expect(slow.store.size).toBe(0);
+  });
+
+  it('a click during a restore wins: one connection, no duplicate; a game reconnect after a restore proves again with the new challenge', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const t = setup({ sk, saved: saved(pk), findDelayMs: 30 });
+    t.session.onWelcome(['nostr-auth']);
+    const p = t.session.restore();
+    await t.session.connect();
+    await p;
+    expect(t.session.state.phase).toBe('proving');
+    expect(t.sent.filter((m) => m.t === 'challenge')).toHaveLength(1);
+    await t.session.onChallenge('c1');
+    t.session.onAuth({ t: 'auth', ok: true, pubkey: pk });
+    const held = t.session.connectedSigner;
+    // The game socket drops (or the room changes): the same signer, a fresh challenge, a fresh signature.
+    t.session.onClose();
+    expect(t.session.connectedSigner).toBe(held);
+    t.sent.length = 0;
+    t.session.onWelcome(['nostr-auth']);
+    expect(t.sent).toEqual([{ t: 'challenge' }]);
+    await t.session.onChallenge('c2');
+    const auth = t.sent[1] as { t: 'auth'; event: { tags: string[][] } };
+    expect(auth.event.tags).toContainEqual(['challenge', 'c2']);
+    expect(auth.event.tags).not.toContainEqual(['challenge', 'c1']);
   });
 });

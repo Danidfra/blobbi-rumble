@@ -70,7 +70,9 @@ describe('what was typed', () => {
     const np = nprofileEncode({ pubkey: bob.pk, relays: ['wss://r.example/'] });
     expect(classifyQuery(np)).toEqual({ kind: 'identifier', recipient: { pubkey: bob.pk, hints: ['wss://r.example/'] } });
     expect(classifyQuery('npub1notvalid')).toEqual({ kind: 'invalid', why: 'bad-identifier' });
-    expect(classifyQuery(`${npubEncode(alice.pk).slice(0, -1)}x`)).toEqual({ kind: 'invalid', why: 'bad-identifier' });
+    // A broken checksum: the last character changed to a different valid bech32 character (never the same one).
+    const npub = npubEncode(alice.pk);
+    expect(classifyQuery(`${npub.slice(0, -1)}${npub.endsWith('x') ? 'q' : 'x'}`)).toEqual({ kind: 'invalid', why: 'bad-identifier' });
   });
 
   it('name@domain and a bare domain are NIP-05 (lowercased, @ prefix allowed); short text is too short; anything else is a name', () => {

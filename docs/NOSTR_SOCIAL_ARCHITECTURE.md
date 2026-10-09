@@ -1505,3 +1505,74 @@ and three hex colours.
 
 Other players' view of the form (M9C), a 3D preview in the picker, a
 geometry cache across swaps (a swap is rare and builds one body).
+
+---
+
+## M9B.1 as built (2026-10-09): Nostr session restoration (pending real validation)
+
+Real M9B testing showed the friction: after a reload the page is a guest
+and the player must click Connect Nostr again before their Blobbi is
+worn. M9B.1 restores an explicitly connected identity by itself.
+
+### What Connect Nostr does (found first)
+
+`IdentitySession.connect()`: find a NIP-07 extension (waiting up to 1.5 s
+for it to inject), ask it for the public key (the extension may prompt),
+remember `{ v, method, pubkey }`, then prove the key to the game server
+with a fresh kind-22242 challenge over the game socket (`proving` →
+`verified`). The inbox, the people finder and the Blobbi picker follow
+`connectedSigner` (a signer in `proving` or `verified`). A new game
+connection proves again; Disconnect clears the record and sends `logout`.
+The remembered record already existed (phase `known`, "Sign in"); what
+was missing was asking the extension without a click.
+
+### Safe to restore by itself, and what is not
+
+- Safe: asking the extension for its **public key** (no signature, no
+  decryption; the extension may show its own one-time access prompt).
+- Never by itself: switching to another identity, signing the game
+  challenge for an identity the page did not confirm, enabling automatic
+  invite checking, publishing anything.
+- The game proof is a fresh challenge per connection as before; nothing
+  from an earlier page is reused.
+
+### As built
+
+- `login.ts`: the record gains `auto` (boolean). `saveLogin(..., auto)`
+  writes it; an older record reads as `auto: false` (no restore until the
+  next explicit connection).
+- `identity.ts`: `restore()` runs once per page from `network.ts`, only
+  with `auto`, from `known`: `restoring` → find the signer → if its method
+  is the remembered one, ask its pubkey →
+  - the remembered pubkey: `adopt()`, the same path a click takes (save
+    with `auto`, `proving`, the normal challenge);
+  - another pubkey: `changed` with `other`; the signer is held only for an
+    explicit **Connect as …** (`connectOther()`); **Not now** keeps the
+    hint with `auto` off; **Forget** is Disconnect. Nothing is applied for
+    the remembered identity (no `connectedSigner`, so no picker, no
+    inbox);
+  - no extension: `known`, `auto` kept (nothing was prompted);
+  - refusal, time-out or malformed answer: `known`, `auto` off.
+  - A generation counter, bumped by `connect()`, `disconnect()`,
+    `connectOther()` and `dismissChanged()`, discards a restore's late
+    answer: a click during a restore makes one connection, a Disconnect
+    during one leaves a guest with no record.
+  - `dismissError()` also turns `auto` off: a failed click never
+    reprompts on the next visit by itself.
+- Everything downstream is unchanged and simply follows: the Blobbi
+  picker (its stored choice loads at connect, so the form is worn with no
+  click), the inbox (its own per-identity consent decides automatic
+  checking; "Not now" stays "Not now"), the people finder, the game
+  proof.
+- Interface: the chip says "Restoring Nostr…", then the name; `known`
+  shows **Reconnect Nostr**; `changed` says "Nostr · another account" and
+  the panel explains it with the three buttons. Guest play never waits.
+
+### Caveats
+
+- With `auto`, a page load may show the extension's prompt(s) once: its
+  public-key access prompt if it has no site permission, and then the
+  game's signing prompt as before (the proof is a signature). Rumble
+  cannot avoid the latter without weakening the proof.
+- The NIP-07 method is the only one; `auto` is stored with the method so a
+  future NIP-46 record is not restored through the wrong signer.

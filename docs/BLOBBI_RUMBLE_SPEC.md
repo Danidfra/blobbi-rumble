@@ -1,10 +1,12 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `d5ab0b4` (M9A) plus the M9B follow-up ·
-**Last major completed milestone:** M9A (the player's Blobbis and a local
-choice, validated for real). M9B (adult Rumble forms: the chosen Blobbi as
-the local fighter's look) is implemented but not yet validated for real.
+**Implementation baseline:** `3686aed` (M9B) plus the M9B.1 follow-up ·
+**Last major completed milestone:** M9A (validated for real). M9B (adult
+Rumble forms) is implemented and partly validated for real (the look
+changes, legacy forms, persistence, manual reconnect); its animation and
+lifecycle checks are still open. M9B.1 (Nostr session restoration) is
+implemented but not yet validated for real.
 
 Read this first. It says what Blobbi Rumble is, what exists, which
 boundaries are deliberate and which decisions are settled. It does not
@@ -394,8 +396,31 @@ Nostr:   identity · profiles · social · invites · (later, maybe) discovery
   - Pictures must be `https`; otherwise a deterministic identicon is shown.
   - Profiles are cached in memory and localStorage with age limits. No
     profile means a short npub.
-- **Remembered identity** is `{ v, method, pubkey }`. It is a hint and
-  proves nothing; "Continue as …" asks the extension again.
+- **Remembered identity** is `{ v, method, pubkey, auto }`. It is a hint
+  and proves nothing; "Reconnect Nostr" asks the extension again.
+- **Session restoration (M9B.1, implemented).** `auto` is set by an
+  explicit connection and only then. On page load, with `auto`, the page
+  asks the same kind of signer for its public key (nothing is signed for
+  this; the extension may prompt once) and:
+  - the remembered pubkey → the normal connected state (`restoring` →
+    `proving`), the same code path as a click, so the game proof, the
+    Blobbi choice, the inbox and its automatic-checking consent follow as
+    for a click;
+  - another pubkey → `changed`: shown with "Connect as …" / "Not now" /
+    "Forget"; nothing switches by itself and the remembered identity's
+    Blobbi choice and invites are not applied;
+  - no extension → `known` with Reconnect, `auto` kept (no prompt
+    involved, so the next visit may try again);
+  - a refusal or a time-out → `known` with Reconnect, `auto` off: no
+    prompt repeats by itself.
+  - Once per page; a click or Disconnect during it wins (a generation
+    guard discards the late answer). **Disconnect Nostr** removes the
+    record, so a reload stays a guest.
+  - What is stored: the pubkey, the method and `auto`. Never a key, a
+    token, a challenge, a signature or a message.
+  - Restoration grants nothing: the game proof is a fresh challenge on
+    every connection as before, and decrypting is the extension's
+    permission plus the identity's own M8C-B.2 consent.
 - **Proof flow.**
   1. The server sends a one-use challenge (32 random bytes, 2 min,
      bounded).
@@ -755,7 +780,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-B.2 | Automatic invite checking | **Real two-identity test** (2026-10-09): consent given, the invite arrived with no click, card and badge shown, Join entered the room; the setting survived reload and reconnect. |
 | M8C-C | Choosing whom to invite | **Real two-identity test** (2026-10-09): Danidfra's follows listed, NotASage found by name and selected, the invite sent, received automatically, Join entered the room. |
 | M9A | The player's Blobbis, a local choice | **Real test** (2026-10-09): owned Blobbis listed, one selected, restored after reload, no leak across identities, default restored, guest play unchanged. |
-| M9B | Adult Rumble forms | Automated tests (native, adult-stage, legacy with own colours, stability across name / care / stage / time / id, a pinned vector, no form for unknown generations, bad colours, physics untouched, one animator, slot planning). **Real browser validation pending** (§15c; the procedure is in the M9B report). |
+| M9B | Adult Rumble forms | Automated tests; **partly validated for real** (2026-10-09): selecting a Blobbi changes the local fighter, V1/V2 Blobbis get their adult forms, the choice persists across reloads and manual reconnection restores it. **Still open**: the animation checks (facing, grab arm pose, carried attachment, throw release, foot contact, transitions), geometry cleanup, room navigation and game reconnect. |
+| M9B.1 | Nostr session restoration | Automated tests (explicit connection, preference, restore, same / other pubkey, no extension, refusal, time-out, Disconnect, reload after Disconnect, click or Disconnect during restore, game reconnect with a fresh challenge). **Real validation pending** (§13; the procedure is in the M9B.1 report). |
 
 ---
 
@@ -802,7 +828,7 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms, the chosen Blobbi as the local fighter's look (§15c) |
+| **In validation** | M9B: adult Rumble forms (§15c; animation and lifecycle checks open) · M9B.1: Nostr session restoration (§13) |
 | **Next** | M9C: showing a player's Rumble form to the other players |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
