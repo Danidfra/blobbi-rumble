@@ -174,8 +174,22 @@ tags: ["p", <friend>] ["r", <room link>] ["b", "blobbi:rumble:invite:v1"] ["expi
 - It needs an extension with NIP-44 (Alby and nos2x have it). Without it,
   identity and play work as before; only invites are unavailable.
 - An invite grants nothing: anyone with the link can join, as with any
-  room link. Receiving invites inside Rumble is not built yet (M8C-B);
-  your friend reads it in their Nostr messaging app.
+  room link.
+
+**Receiving (M8C-B):** a Nostr-connected player can open the session
+panel → **Invites** → **Check invites**. Because NIP-17 hides what a
+private message is, this decrypts a bounded number of recent gift wraps
+(30, newest first, from the player's own kind 10050 inbox) on this device
+with the extension's NIP-44. Only messages carrying the
+`blobbi:rumble:invite:v1` marker become invites; anything else is dropped
+at once and never shown, kept or logged. After the first check new
+invites arrive live while the page is open (a toast and a ✉ badge). Each
+invite shows the sender, room, destination host and server label, and
+time left; **Join** (never automatic) switches room on this server or
+opens the other server's page. The session remembers only the ids of
+wraps it already judged, so a reload does not ask to decrypt them again.
+Without NIP-44, or without a kind 10050 inbox, the panel says why and
+invites still reach the player's Nostr messaging app.
 
 ## The interface
 

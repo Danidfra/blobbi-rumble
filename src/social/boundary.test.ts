@@ -51,7 +51,7 @@ describe('publishing: only gift wraps to inboxes; the identity proof never', () 
       expect(src, f).not.toMatch(/automaticallyAuth|\[\s*['"]EVENT['"]|\[\s*['"]AUTH['"]/);
       if (f.endsWith('/social/inbox.ts')) continue;
       expect(src, f).not.toMatch(/\.publish\(|onauth/);
-      if (!f.endsWith('/rumble/client/inviteSender.ts')) expect(src, f).not.toMatch(/social\/inbox'|social\/nip17'/);
+      if (!f.endsWith('/rumble/client/inviteSender.ts') && !f.endsWith('/rumble/client/inviteInbox.ts')) expect(src, f).not.toMatch(/social\/inbox'|social\/nip17'/);
     }
     // In inbox.ts: one publish call, inside publishGiftWrap, after the kind-1059 and inbox-set checks.
     const inbox = readFileSync(join(__dirname, 'inbox.ts'), 'utf8');

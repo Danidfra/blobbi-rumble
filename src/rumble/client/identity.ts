@@ -80,6 +80,16 @@ export class IdentitySession {
     return this.state.phase === 'verified' ? this.signer : null;
   }
 
+  /**
+   * The signer this page holds for the player's Nostr identity (connected by
+   * a click in this page), whether or not the current game connection has
+   * proven it yet; null once disconnected. For reading the player's own
+   * private invites, which does not involve the game server.
+   */
+  get connectedSigner(): NostrSigner | null {
+    return this.signer && this.state.pubkey && (this.state.phase === 'verified' || this.state.phase === 'proving') ? this.signer : null;
+  }
+
   /** The pubkey this connection has proven to the server, or null. */
   get verified(): string | null {
     return this.state.phase === 'verified' ? this.state.pubkey : null;

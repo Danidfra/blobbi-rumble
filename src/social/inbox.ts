@@ -1,6 +1,7 @@
 /**
- * NIP-17 INBOXES, the sending half: where a private message to someone may
- * go, and the one narrow way this app publishes anything.
+ * NIP-17 INBOXES: where a private message to someone may go, the one
+ * narrow way this app publishes anything, and (M8C-B) reading the gift
+ * wraps addressed to the player from their own inbox.
  *
  *   findInbox     the recipient's kind-10050 list: looked up on the lookup
  *                 relays (and an nprofile's hints), then, if not there, on
@@ -108,4 +109,45 @@ export async function publishGiftWrap(pool: PublishPoolLike, inbox: InboxSet, wr
     else result.failed.push({ relay: relays[i], reason: String((s.reason as Error)?.message ?? s.reason).slice(0, 160) });
   });
   return result;
+}
+
+// ─── Receiving (M8C-B) ──────────────────────────────────────────────────────
+
+/** The part of nostr-tools' SimplePool a gift-wrap subscription needs (and tests fake). */
+export interface SubscribePoolLike {
+  subscribeMany(
+    relays: string[],
+    filter: { kinds: number[]; '#p': string[]; since: number; limit: number },
+    params: { onevent: (e: NostrEvent) => void; oneose?: () => void; onauth?: RelayAuth; maxWait?: number },
+  ): { close: (reason?: string) => void };
+}
+
+export interface GiftWrapSubscription {
+  close(): void;
+}
+
+/**
+ * Subscribe to gift wraps addressed to `me` on `me`'s own inbox (from
+ * their kind-10050 list): kind 1059, #p me, a bounded window and count.
+ * Stored wraps arrive first (then `oneose`), new ones live after. An inbox
+ * relay that requires it gets NIP-42 AUTH through `auth`, signed for that
+ * relay only. Reading only: nothing is published here.
+ */
+export function subscribeGiftWraps(
+  pool: SubscribePoolLike,
+  inbox: InboxSet,
+  me: string,
+  opts: { since: number; limit: number; onevent: (e: NostrEvent) => void; oneose?: () => void; auth: RelayAuth | null; maxWait?: number },
+): GiftWrapSubscription {
+  if (!issued.has(inbox) || inbox.length === 0 || inbox.length > RELAY_LIMITS.inbox) throw new Error('subscribe: not an inbox from a kind-10050 list');
+  const sub = pool.subscribeMany([...inbox], { kinds: [1059], '#p': [me], since: opts.since, limit: opts.limit }, {
+    onevent: (e) => {
+      // Only gift wraps for me get through, whatever a relay sends.
+      if (e && e.kind === 1059 && Array.isArray(e.tags) && e.tags.some((t) => t[0] === 'p' && t[1] === me)) opts.onevent(e);
+    },
+    oneose: opts.oneose,
+    ...(opts.auth ? { onauth: opts.auth } : {}),
+    maxWait: opts.maxWait ?? 6000,
+  });
+  return { close: () => sub.close('done') };
 }

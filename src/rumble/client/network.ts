@@ -42,6 +42,7 @@ import { resolveServerUrl } from '../net/endpoint';
 import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
+import { InviteInbox } from './inviteInbox';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -122,6 +123,46 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let spectators = 0;
   let inviteStatus: InviteStatus | null = null;
   let inviteBusy = false;
+  // M8C-B: the connected identity's invite inbox (decrypts only after "Check invites"; restarted, emptied, on any identity change).
+  let inbox: InviteInbox | null = null;
+  let inboxSigner: unknown = null;
+  let inboxExpiredAt = 0;
+  const sessionStore = (): Storage | null => {
+    try {
+      return window.sessionStorage;
+    } catch {
+      return null;
+    }
+  };
+  const syncInbox = () => {
+    const signer = identity.connectedSigner;
+    if (signer === inboxSigner) return;
+    inbox?.stop();
+    inboxSigner = signer;
+    const me = identity.state.pubkey;
+    inbox =
+      signer && me
+        ? new InviteInbox({
+            signer,
+            me,
+            lookup: (profiles(), relayPool!),
+            subscribePool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
+            lookupRelays: devRelays ?? LOOKUP_RELAYS,
+            storage: sessionStore(),
+            onChange: () => {
+              const pks = inbox?.state.invites.map((i) => i.from) ?? [];
+              if (pks.length) profiles().ask(pks);
+            },
+            onLiveInvite: (i) => shell.toast(`${clip(displayName(profileOf(i.from), i.from), 20)} invited you to room ${i.room} (open the session panel)`, 6000),
+          })
+        : null;
+  };
+  const inviteCards = () =>
+    (inbox?.state.invites ?? []).map((invite) => ({
+      invite,
+      trust: classifyServer(`${invite.origin.replace(/^http/, 'ws')}/ws`, null),
+      sameOrigin: invite.origin === location.origin,
+    }));
   const inviteMode = (): InviteMode => (!identity.provenSigner ? 'guest' : identity.provenSigner.nip44 ? 'ready' : 'no-nip44');
   const useInterp = q.get('interp') !== '0';
   const usePredict = q.get('predict') !== '0';
@@ -269,6 +310,16 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           if ('pubkey' in st) profiles().ask([st.pubkey]);
         },
       }).finally(() => (inviteBusy = false));
+    },
+    checkInvites: () => void inbox?.check(),
+    dismissInvite: (id) => inbox?.dismiss(id),
+    // Join only on a click, only to the validated destination: this server's room in place, or that server's page.
+    joinInvite: (id) => {
+      const i = inbox?.state.invites.find((x) => x.id === id);
+      if (!i) return;
+      inbox!.dismiss(id);
+      if (i.origin === location.origin) switchTo({ kind: 'join', id: i.room });
+      else location.assign(i.url);
     },
   });
   // Idle relays close; nothing stays open for long.
@@ -478,6 +529,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       }
     }
     watchConnection(now);
+    syncInbox();
+    if (inbox && nowMs - inboxExpiredAt > 1000) {
+      inboxExpiredAt = nowMs;
+      inbox.expire();
+    }
     shell.show({
       conn,
       now,
@@ -495,6 +551,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
+      inbox: inbox ? { state: inbox.state, cards: inviteCards() } : null,
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
@@ -616,6 +673,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       join: (id: string) => switchTo({ kind: 'join', id }),
       openRoom: () => switchTo({ kind: 'open' }),
       shell,
+      /** M8C-B invites, for scripted checks (valid invites only; nothing else is held). */
+      get inbox() {
+        return inbox ? { state: inbox.state, cards: inviteCards() } : null;
+      },
+      checkInvites: () => inbox?.check(),
       /** Identity, for scripted checks. */
       identity: {
         get state() {

@@ -982,3 +982,61 @@ identity is untouched and the panel says invites are unavailable.
 verdict on the event object under a symbol, and object spread copies
 symbols, so a modified copy of a verified event would pass. Found by the
 M8C-A tests in new code; M8A/M8B verification was not affected.
+
+---
+
+## M8C-B as built (2026-10-09): receiving private invites (pending real validation)
+
+- **Opt-in.** Nothing is fetched or decrypted until the player clicks
+  **Check invites**. The explanation sits beside the button.
+- **Inbox.** The player's own kind 10050 list (`findInbox`), at most 3
+  `wss://` relays. No list means no check; nothing is published.
+- **Fetch.** `subscribeGiftWraps`: `{kinds:[1059], #p:[me], since: now −
+  (2 days + 30 min + 10 min), limit: 60}`.
+  - Reading only.
+  - Relay AUTH goes through the same `inboxRelayAuth` (exact relay, that
+    relay's challenge), triggered by a `CLOSED auth-required:` from that
+    relay.
+  - Events not addressed to me are filtered out.
+- **Budget.** 30 decryptions in the first check, newest first (by the
+  wrap's own, backdated timestamp), then 30 more for live arrivals while
+  the page is open. Each wrap costs **2** NIP-44 decrypt calls (the wrap,
+  then the seal).
+- **Unwrap** (`unwrapGiftWrap` in `social/nip17.ts`):
+  - wrap: verified on a fresh copy, kind 1059, `p` = me, a NIP-44 payload;
+  - seal: verified, kind 13, no tags;
+  - rumor: well-formed, no `sig`, id = hash, size bounds, author = the
+    seal's signer.
+  - A refusal or timeout by the signer is reported as such (the check
+    stops on a refusal).
+- **Recognition** (`parseInvite`):
+  - kind 14 with exactly one `["b","blobbi:rumble:invite:v1"]`; any other
+    `blobbi:rumble:invite:*` is an unsupported version;
+  - `p` = me, exactly one `r` link;
+  - `receivedLink`: the canonical `/play/<code>`, `https` unless the host
+    is local;
+  - the text names exactly that one link;
+  - not expired (the lifetime is capped at 35 min from creation whatever
+    `expiration` says), at most 10 min in the future, size-bounded.
+- **Privacy.**
+  - An unrelated rumor never leaves the function that opened it.
+  - sessionStorage `rumble:invites-seen:v1:<pubkey>` holds only the ids
+    of wraps already judged that are not live invites (at most 300). A
+    live invite's wrap is opened again after a reload, since its content
+    is not stored.
+- **De-duplication** by wrap id and rumor id (several relays deliver the
+  same wrap).
+- **Identity changes.** A new signer or a disconnect stops the
+  subscription, destroys its pool and forgets all in-memory invite state.
+  A game-socket reconnect does not, because the inbox follows the page's
+  signer, not the game proof.
+- **Join.**
+  - Explicit only.
+  - Same origin: switch room in place.
+  - Other origin: `location.assign` to the validated `/play/<code>` URL,
+    never through `?server=`.
+- **Trust label.** Taken from the destination host only (Local, Official,
+  Unknown). `/.well-known/rumble.json` is **not** fetched before joining,
+  so nothing contacts the destination before the player chooses to go
+  there. As a result a community operator claim is not shown on an
+  invite card.

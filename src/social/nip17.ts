@@ -1,5 +1,5 @@
 /**
- * NIP-17 PRIVATE MESSAGES, the sending half: an unsigned rumor, sealed by
+ * NIP-17 PRIVATE MESSAGES (sending, and since M8C-B receiving): an unsigned rumor, sealed by
  * the sender (NIP-44 to the recipient, signed kind 13), gift-wrapped by a
  * one-time key (NIP-44 to the recipient, signed kind 1059). NIP-59 layers;
  * NIP-44 v2 encryption throughout. Framework-free; no Rumble imports.
@@ -28,7 +28,7 @@ import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, type EventTemplate, type NostrEvent, type UnsignedEvent } from 'nostr-tools/pure';
 import { verifyFresh } from './verify';
 import { isPubkey } from './keys';
-import { SignerError, type NostrSigner } from './signer';
+import { SignerError, isNip44Payload, type NostrSigner } from './signer';
 
 export const NIP17 = Object.freeze({
   /** Seal and wrap timestamps are moved back by up to this, seconds (two days). */
@@ -94,4 +94,88 @@ export async function wrapForRecipient(signer: NostrSigner, sender: string, temp
   const rumor = makeRumor(sender, template);
   const seal = await sealRumor(signer, rumor, recipient, opts);
   return { rumor, wrap: giftWrap(seal, recipient, expiration, opts) };
+}
+
+// ─── Receiving ──────────────────────────────────────────────────────────────
+
+export type UnwrapFailure =
+  | 'wrap-invalid' /** not a verified kind-1059 event */
+  | 'not-for-me' /** its p tag names someone else */
+  | 'undecryptable' /** a layer would not decrypt, or is not JSON */
+  | 'seal-invalid' /** not a verified, tagless kind 13 */
+  | 'rumor-invalid' /** not a well-formed unsigned event whose id is its hash */
+  | 'author-mismatch'; /** the rumor claims another author than the seal's signer */
+
+export class UnwrapError extends Error {
+  constructor(readonly reason: UnwrapFailure) {
+    super(`gift wrap rejected: ${reason}`);
+    this.name = 'UnwrapError';
+  }
+}
+
+/** Largest layer accepted before decryption, characters (a NIP-44 payload is at most 87 472). */
+const MAX_LAYER = 90_000;
+
+const HEX64 = /^[0-9a-f]{64}$/;
+/** A rumor read from untrusted JSON: exactly the unsigned-event fields, sane sizes, id = hash, no signature. */
+function readRumor(v: unknown): Rumor {
+  const r = v as Record<string, unknown>;
+  const ok =
+    !!r &&
+    typeof r === 'object' &&
+    !Array.isArray(r) &&
+    !('sig' in r) &&
+    typeof r.id === 'string' &&
+    HEX64.test(r.id) &&
+    isPubkey(r.pubkey) &&
+    Number.isSafeInteger(r.kind) &&
+    Number.isSafeInteger(r.created_at) &&
+    typeof r.content === 'string' &&
+    r.content.length <= 16_384 &&
+    Array.isArray(r.tags) &&
+    r.tags.length <= 64 &&
+    r.tags.every((t) => Array.isArray(t) && t.length <= 16 && t.every((x) => typeof x === 'string' && x.length <= 1024));
+  if (!ok) throw new UnwrapError('rumor-invalid');
+  const rumor: Rumor = { id: r.id as string, pubkey: r.pubkey as string, created_at: r.created_at as number, kind: r.kind as number, tags: r.tags as string[][], content: r.content as string };
+  const { id, ...unsigned } = rumor;
+  if (getEventHash(unsigned) !== id) throw new UnwrapError('rumor-invalid');
+  return rumor;
+}
+
+/**
+ * Open a gift wrap addressed to `me` with the signer's NIP-44 (two decrypt
+ * calls: the wrap from its one-time key, the seal from its author), with
+ * every NIP-17 / NIP-59 check:
+ *   wrap   verified (on a fresh copy), kind 1059, p-tagged to me, a NIP-44 payload
+ *   seal   verified, kind 13, no tags (NIP-59 MUST), a NIP-44 payload
+ *   rumor  well-formed, unsigned, id = hash, author = the seal's signer (NIP-17 MUST)
+ * Returns the rumor, whatever its kind; what it means is the caller's to
+ * decide (and an unrelated rumor is the caller's to drop at once).
+ */
+export async function unwrapGiftWrap(signer: NostrSigner, wrap: unknown, me: string): Promise<Rumor> {
+  if (!signer.nip44) throw new SignerError('unavailable', 'this signer cannot decrypt (no NIP-44)');
+  if (!verifyFresh(wrap) || wrap.kind !== 1059) throw new UnwrapError('wrap-invalid');
+  if (!wrap.tags.some((t) => t[0] === 'p' && t[1] === me)) throw new UnwrapError('not-for-me');
+  if (wrap.content.length > MAX_LAYER || !isNip44Payload(wrap.content)) throw new UnwrapError('undecryptable');
+  const open = async (from: string, payload: string): Promise<unknown> => {
+    let text: string;
+    try {
+      text = await signer.nip44!.decrypt(from, payload);
+    } catch (e) {
+      // A refusal or a timeout is the signer's to report; anything else is a layer that does not open.
+      if (e instanceof SignerError && (e.code === 'denied' || e.code === 'timeout' || e.code === 'unavailable')) throw e;
+      throw new UnwrapError('undecryptable');
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new UnwrapError('undecryptable');
+    }
+  };
+  const seal = await open(wrap.pubkey, wrap.content);
+  if (!verifyFresh(seal) || seal.kind !== 13 || seal.tags.length !== 0) throw new UnwrapError('seal-invalid');
+  if (seal.content.length > MAX_LAYER || !isNip44Payload(seal.content)) throw new UnwrapError('undecryptable');
+  const rumor = readRumor(await open(seal.pubkey, seal.content));
+  if (rumor.pubkey !== seal.pubkey) throw new UnwrapError('author-mismatch');
+  return rumor;
 }

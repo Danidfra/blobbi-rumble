@@ -31,6 +31,8 @@ import { canCopy, copyShortcut, copyText } from './clipboard';
 import { avatar, button, el, isTyping } from './dom';
 import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
+import type { InboxState } from './inviteInbox';
+import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
 
 export interface ShellActions {
@@ -47,6 +49,18 @@ export interface ShellActions {
   startSeen(): void;
   /** Send a private Nostr invite to an npub / nprofile (M8C-A). */
   sendInvite(recipient: string): void;
+  /** M8C-B: the player asked to check for invites (decrypts a bounded number of recent private messages locally). */
+  checkInvites(): void;
+  joinInvite(id: string): void;
+  dismissInvite(id: string): void;
+}
+
+/** A received invite as the panel shows it. */
+export interface InviteCard {
+  invite: ReceivedInvite;
+  trust: ServerTrust;
+  /** On this page's own server (joining switches room in place) or elsewhere (joining opens that server's page). */
+  sameOrigin: boolean;
 }
 
 /** Whether this player can send private invites: a guest cannot; an extension without NIP-44 cannot. */
@@ -71,6 +85,8 @@ export interface ShellView {
   nameOf: (slot: string) => string | null;
   startCard: boolean;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
+  /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page). */
+  inbox: { state: InboxState; cards: InviteCard[] } | null;
 }
 
 const CSS = `
@@ -107,6 +123,9 @@ const CSS = `
   .rs-input { width: 90px; font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; border: 1px solid #d6dbe6; border-radius: 8px; }
   .rs-err { color: #b0413e; font-size: 12px; }
   .rs-ok { color: #2f7d4f; font-size: 12px; }
+  .rs-warn { color: #9a6200; font-size: 12px; }
+  .rs-invite { margin: 6px 0; padding: 8px 10px; border-radius: 12px; background: #f4f7f2; border: 1px solid #e1e8dc; }
+  .rs-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 999px; background: #e0794f; color: #fff; font: 700 11px ui-sans-serif, system-ui, sans-serif; text-align: center; }
   .rs-sub { color: #6b7082; font-size: 12px; }
   .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
   .rs-btn.go { border-color: #6fc38f; background: #6fc38f; color: #fff; }
@@ -322,6 +341,52 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  const inboxSection = (v: ShellView, ib: NonNullable<ShellView['inbox']>): Node[] => {
+    const st = ib.state;
+    const out: Node[] = [el('h4', undefined, `Invites${ib.cards.length ? ` (${ib.cards.length})` : ''}`)];
+    const explain = 'Checking decrypts a few recent private Nostr messages on this device to find Blobbi Rumble invites. Other messages are not shown or kept.';
+    switch (st.phase) {
+      case 'no-nip44':
+        out.push(el('div', 'rs-sub', 'Your Nostr extension can’t decrypt private messages (NIP-44), so invites can’t be checked here. They still reach you in a Nostr messaging app.'));
+        return out;
+      case 'idle':
+      case 'declined': {
+        out.push(el('div', 'rs-sub', st.phase === 'declined' ? 'Your extension declined, so the check stopped.' : explain));
+        const row = el('div', 'rs-row');
+        row.append(button(st.phase === 'declined' ? 'Check again' : 'Check invites', a.checkInvites, 'rs-btn go'));
+        out.push(row);
+        return out;
+      }
+      case 'locating':
+      case 'checking':
+        out.push(el('div', 'rs-sub', st.phase === 'locating' ? 'Finding your private-message inbox…' : `Checking invites… (${st.checked} looked at; approve the requests in your extension)`));
+        return out;
+      case 'no-inbox':
+        out.push(el('div', 'rs-sub', 'This identity has no private-message inbox (NIP-17 relays, kind 10050), so invites can’t be checked here. Set one up in a Nostr messaging app.'));
+        return out;
+      case 'error':
+        out.push(el('div', 'rs-err', 'Couldn’t check invites.'));
+        return out;
+      case 'live':
+        if (!ib.cards.length) out.push(el('div', 'rs-sub', `No new invites. Listening for new ones while Rumble is open.`));
+    }
+    const nowS = Math.floor(Date.now() / 1000);
+    for (const c of ib.cards) {
+      const i = c.invite;
+      const p = v.profile(i.from);
+      const card = el('div', 'rs-invite');
+      const who = el('div', 'rs-row');
+      who.append(avatar(i.from, p?.picture, 22), el('b', undefined, clip(displayName(p, i.from), 24)), el('span', 'rs-sub', 'invited you to Blobbi Rumble'));
+      card.append(who, el('div', undefined, `Room ${i.room}`), el('div', 'rs-sub', `${c.trust.host} · ${c.trust.label} · ${Math.max(1, Math.ceil((i.expiresAt - nowS) / 60))} min left`));
+      if (!c.sameOrigin) card.append(el('div', 'rs-warn', `Another server: Join opens ${i.origin} (it runs that match, not this server).`));
+      const acts = el('div', 'rs-row');
+      acts.append(button('Join', () => a.joinInvite(i.id), 'rs-btn go'), button('Dismiss', () => a.dismissInvite(i.id)));
+      card.append(acts);
+      out.push(card);
+    }
+    return out;
+  };
+
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
     // Room.
@@ -412,6 +477,7 @@ export function createShell(a: ShellActions) {
       row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
     }
     parts.push(row);
+    if (v.inbox) parts.push(...inboxSection(v, v.inbox));
     // Server.
     parts.push(el('h4', undefined, 'Server'));
     if (v.trust) {
@@ -475,10 +541,11 @@ export function createShell(a: ShellActions) {
       // Identity chip.
       const s = v.identity;
       const own = s.pubkey ? v.profile(s.pubkey) : undefined;
-      const iKey = JSON.stringify([s.phase, s.pubkey, own?.displayName, own?.name, own?.picture]);
+      const invites = v.inbox?.cards.length ?? 0;
+      const iKey = JSON.stringify([s.phase, s.pubkey, own?.displayName, own?.name, own?.picture, invites]);
       if (iKey !== lastId) {
         lastId = iKey;
-        if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'));
+        if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'), ...(invites ? [el('span', 'rs-badge', `✉ ${invites}`)] : []));
         else if (s.phase === 'asking' || s.phase === 'proving') idChip.replaceChildren(el('span', 'dim', 'Nostr · check your extension…'));
         else if (s.phase === 'error') idChip.replaceChildren(el('span', 'dim', 'Nostr · didn’t connect'));
         else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Sign in', a.connectNostr, 'rs-btn go'));
@@ -528,7 +595,8 @@ export function createShell(a: ShellActions) {
       // The session panel, while open.
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
-        const pKey = JSON.stringify([v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const inboxKey = v.inbox ? [v.inbox.state, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
+        const pKey = JSON.stringify([inboxKey, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;

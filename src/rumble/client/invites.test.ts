@@ -114,3 +114,49 @@ describe('sending an invite', () => {
     expect(SignerError).toBeDefined();
   });
 });
+
+describe('recognising a received invite', async () => {
+  const { parseInvite, receivedLink } = await import('./invites');
+  const t = Math.floor(Date.now() / 1000);
+  const rumor = (over: { tags?: string[][]; content?: string; created_at?: number; kind?: number } = {}) => {
+    const tpl = inviteTemplate(B, 'https://rumble.example/play/X3ZH', 'danidfra', over.created_at ?? t);
+    return { id: 'f'.repeat(64), pubkey: A, kind: over.kind ?? 14, created_at: over.created_at ?? t, tags: over.tags ?? tpl.tags, content: over.content ?? tpl.content };
+  };
+  const tags = (replace: Record<string, string[] | null>) => rumor().tags.flatMap((x) => (x[0] in replace ? (replace[x[0]] ? [replace[x[0]]!] : []) : [x]));
+
+  it('reads our own invite: sender from the rumor, room and origin from the link', () => {
+    expect(parseInvite(rumor(), B, t)).toEqual({ ok: true, invite: { id: 'f'.repeat(64), from: A, url: 'https://rumble.example/play/X3ZH', origin: 'https://rumble.example', room: 'X3ZH', createdAt: t, expiresAt: t + 1800 } });
+    const lan = inviteTemplate(B, 'http://192.168.1.4:8080/play/X3ZH', 'd', t);
+    expect(parseInvite({ ...rumor(), tags: lan.tags, content: lan.content }, B, t)).toMatchObject({ ok: true, invite: { origin: 'http://192.168.1.4:8080' } });
+  });
+
+  it('only our marker and version make an invite', () => {
+    expect(parseInvite(rumor({ tags: tags({ b: null }) }), B, t)).toEqual({ ok: false, why: 'not-invite' });
+    expect(parseInvite(rumor({ tags: tags({ b: ['b', 'blobbi:ecosystem:v1'] }) }), B, t)).toEqual({ ok: false, why: 'not-invite' });
+    expect(parseInvite(rumor({ tags: tags({ b: ['b', 'blobbi:rumble:invite:v2'] }) }), B, t)).toEqual({ ok: false, why: 'unsupported-version' });
+    expect(parseInvite(rumor({ tags: [...rumor().tags, ['b', 'blobbi:rumble:invite:v1']] }), B, t)).toEqual({ ok: false, why: 'unsupported-version' });
+    expect(parseInvite(rumor({ kind: 1 }), B, t)).toEqual({ ok: false, why: 'not-invite' });
+    // A plain DM with a /play/ link is not an invite.
+    expect(parseInvite({ ...rumor(), tags: [['p', B]], content: 'join me https://rumble.example/play/X3ZH' }, B, t)).toEqual({ ok: false, why: 'not-invite' });
+  });
+
+  it('rejects other recipients, bad or mismatched destinations, expiry and the future, oversize', () => {
+    expect(parseInvite(rumor(), A, t)).toEqual({ ok: false, why: 'not-for-me' });
+    expect(parseInvite(rumor({ tags: tags({ r: null }) }), B, t)).toEqual({ ok: false, why: 'destination' });
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'blobbi://x/play/X3ZH', 'https://u:p@rumble.example/play/X3ZH', 'https://rumble.example/room/X3ZH', 'https://rumble.example/play/A0F2', 'http://rumble.example/play/X3ZH', `https://${'a'.repeat(300)}.example/play/X3ZH`, 'https://rumble.example/play/X3ZH?ticket=1'])
+      expect(parseInvite(rumor({ tags: tags({ r: ['r', bad] }), content: `danidfra invited you to Blobbi Rumble: ${bad}` }), B, t).ok, bad).toBe(false);
+    expect(parseInvite(rumor({ tags: [...rumor().tags, ['r', 'https://evil.example/play/X3ZH']] }), B, t)).toEqual({ ok: false, why: 'destination' });
+    expect(parseInvite(rumor({ content: 'danidfra invited you to Blobbi Rumble: https://evil.example/play/X3ZH' }), B, t)).toEqual({ ok: false, why: 'mismatch' });
+    expect(parseInvite(rumor({ content: 'danidfra invited you: https://rumble.example/play/X3ZH (or https://evil.example)' }), B, t)).toEqual({ ok: false, why: 'mismatch' });
+    expect(parseInvite(rumor(), B, t + 1800)).toEqual({ ok: false, why: 'expired' });
+    expect(parseInvite(rumor({ tags: tags({ expiration: null }) }), B, t)).toEqual({ ok: false, why: 'expired' });
+    expect(parseInvite(rumor({ tags: tags({ expiration: ['expiration', 'soon'] }) }), B, t)).toEqual({ ok: false, why: 'expired' });
+    // A far-off expiration is capped to the invite lifetime.
+    expect(parseInvite(rumor({ tags: tags({ expiration: ['expiration', String(t + 86400)] }) }), B, t + 3600)).toEqual({ ok: false, why: 'expired' });
+    expect(parseInvite(rumor({ created_at: t + 3600 }), B, t)).toEqual({ ok: false, why: 'future' });
+    expect(parseInvite(rumor({ content: `${'x'.repeat(1001)} https://rumble.example/play/X3ZH` }), B, t)).toEqual({ ok: false, why: 'oversized' });
+    expect(receivedLink('https://rumble.example/play/X3ZH')).toBe('https://rumble.example/play/X3ZH');
+    expect(receivedLink('https://Rumble.Example/play/X3ZH')).toBeNull();
+    expect(receivedLink(42)).toBeNull();
+  });
+});
