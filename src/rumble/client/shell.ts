@@ -27,6 +27,7 @@ import type { MatchSnapshot } from '../sim/snapshot';
 import { npubOf, shortNpub } from '../../social/keys';
 import { clip, displayName, type Profile } from '../../social/profile';
 import { describe, type BannerAction, type ConnectionState } from './connection';
+import { canCopy, copyShortcut, copyText } from './clipboard';
 import { avatar, button, el, isTyping } from './dom';
 import type { IdentityState } from './identity';
 
@@ -35,7 +36,6 @@ export interface ShellActions {
   openRoom(): void;
   hostGame(): void;
   joinGame(code: string): void;
-  copyLink(link: string): Promise<boolean>;
   connectNostr(): void;
   disconnectNostr(): void;
   dismissIdentityError(): void;
@@ -266,12 +266,33 @@ export function createShell(a: ShellActions) {
         const link = el('input', 'rs-link');
         link.readOnly = true;
         link.value = v.share;
-        link.addEventListener('focus', () => link.select());
+        link.addEventListener('focus', () => {
+          link.select();
+          a.releaseKeys();
+        });
+        const hint = el('div', 'rs-sub', 'Anyone with the link or the code joins this room.');
+        // Copied by hand (the shortcut, or the context menu): say so, and give the keyboard back to the game.
+        link.addEventListener('copy', () => {
+          toast('Link copied');
+          setTimeout(() => link.blur(), 0);
+        });
+        link.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Escape' || e.key === 'Enter') link.blur();
+        });
+        /** Where one-click copy is impossible (plain http on a LAN) or refused: select the link and say which keys copy it. */
+        const selectForCopy = () => {
+          link.focus();
+          link.select();
+          hint.textContent = `Link selected: press ${copyShortcut()} to copy it.${canCopy() ? '' : ' (One-click copy needs https or localhost.)'}`;
+        };
         row.append(
           link,
-          button('Copy link', async () => toast((await a.copyLink(v.share!)) ? 'Link copied' : 'Couldn’t copy: select the link and copy it'), 'rs-btn go'),
+          canCopy()
+            ? button('Copy link', async () => ((await copyText(v.share!)) === 'copied' ? toast('Link copied') : selectForCopy()), 'rs-btn go')
+            : button('Select link', selectForCopy, 'rs-btn go'),
         );
-        parts.push(row, el('div', 'rs-sub', 'Anyone with the link or the code joins this room.'));
+        parts.push(row, hint);
       }
       parts.push(el('div', 'rs-row'));
       (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a new game', a.hostGame));

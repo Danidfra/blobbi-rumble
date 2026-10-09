@@ -235,14 +235,6 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     openRoom: () => switchTo({ kind: 'open' }),
     hostGame: () => switchTo({ kind: 'create' }),
     joinGame: (id) => switchTo({ kind: 'join', id }),
-    copyLink: async (link) => {
-      try {
-        await navigator.clipboard.writeText(link);
-        return true;
-      } catch {
-        return false;
-      }
-    },
     connectNostr: () => {
       seeStart();
       void identity.connect();

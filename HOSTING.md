@@ -163,6 +163,12 @@ middle; a struggle bar when you are held. Errors (offline, a missing
 room) are a centred banner with what to do. `H` help, `Esc` closes
 panels, `F3` colliders, `F4` network numbers (the old text HUD).
 
+Copying the share link: browsers allow one-click copy only on https pages
+and localhost. On a plain-http LAN address (`http://192.168.1.4:8080`)
+the button reads **Select link**: it selects the link and says which keys
+copy it (⌘C / Ctrl+C). Behind HTTPS (a tunnel, `PUBLIC_URL=https://…`) it
+is **Copy link**.
+
 ## Test plan to send a friend
 
 1. Open the link the host sends you (`…/play/A7F2`, or the code via
