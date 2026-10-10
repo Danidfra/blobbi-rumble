@@ -19,7 +19,9 @@ import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
 import { FALL_RULES, initialFallState, updateFall, type FallRules, type FallState } from '../respawn';
-import { COMBAT } from '../tuning';
+import { COMBAT, LEDGE } from '../tuning';
+import { catchLedge, climbTarget, createLedgeState, dropLedge, hangAnchor, onLedge, resetLedgeState, restLedge, tickLedge, type LedgeOutcome, type LedgeState } from './ledge';
+import type { Ledge } from '../arena/geometry';
 import {
   controlFactor,
   createCombatState,
@@ -91,6 +93,8 @@ export class FighterSim {
   carry = { x: 0, z: 0 };
   /** M11A: where the fall line is, for this arena. */
   fallRules: FallRules = FALL_RULES;
+  /** M11C: the ledge it holds (one pair of hands), its grip endurance and regrab delay. */
+  readonly ledge: LedgeState = createLedgeState();
   spawn: Vector3;
   spawnYaw: number;
 
@@ -179,6 +183,7 @@ export class FighterSim {
     if (this.restingSteps >= RESTING.steps) this.supported = RESTING.hold;
     else this.supported = probe || v.y < RESTING.fallingVy || this.combat.held ? 0 : Math.max(0, this.supported - dt);
     const grounded = probe || this.supported > 0;
+    restLedge(this.ledge, dt, grounded);
     // Reduced control: the same steering with that much of its authority; carrying slows; neither may jump.
     // Power: a little more walk and run speed (never the jump, never the air share).
     let p = { ...this.profile, walkSpeed: this.profile.walkSpeed * this.speedMultiplier, runSpeed: this.profile.runSpeed * this.speedMultiplier };
@@ -198,6 +203,57 @@ export class FighterSim {
     if (intent.punch) tryPunch(this.combat);
     this.grounded = grounded;
     return { grounded, jumped };
+  }
+
+  /** M11C: hanging from or climbing a ledge. */
+  get onLedge() {
+    return onLedge(this.ledge);
+  }
+
+  /** M11C: catch a ledge: weightless, stopped, facing in. */
+  catchLedge(l: Ledge) {
+    catchLedge(this.ledge, l);
+    this.body.setGravityFactor(0);
+    this.body.body.setLinearVelocity(Vector3.Zero());
+    this.yaw = Math.atan2(l.inX, l.inZ);
+    this.grounded = false;
+    this.supported = 0;
+  }
+
+  /**
+   * M11C: one step on the ledge instead of steering: hanging, the body is
+   * sprung to its anchor; climbing, it is carried to the top in the climb's
+   * time; climbed, it stands there with a step inward; let go or tired, it
+   * falls from where it hangs. Returns what happened.
+   */
+  ledgeStep(dt: number, intent: PlayerIntent): LedgeOutcome {
+    const h = this.ledge.hold!;
+    const out = tickLedge(this.ledge, dt, intent);
+    const p = this.body.position();
+    if (out === 'hanging') {
+      const a = hangAnchor(h.ledge);
+      this.body.body.setLinearVelocity(new Vector3((a.x - p.x) * LEDGE.spring, (a.y - p.y) * LEDGE.spring, (a.z - p.z) * LEDGE.spring));
+    } else if (out === 'climbing') {
+      const target = climbTarget(h.ledge);
+      const left = Math.max(dt, LEDGE.climbTime - h.t);
+      this.body.body.setLinearVelocity(new Vector3((target.x - p.x) / left, (target.y - p.y) / left, (target.z - p.z) / left));
+    } else if (out === 'climbed') {
+      const target = climbTarget(h.ledge);
+      this.body.teleport(new Vector3(target.x, target.y - this.profile.capsuleCenterY, target.z));
+      this.body.setGravityFactor(1);
+      this.body.body.setLinearVelocity(new Vector3(h.ledge.inX * this.profile.walkSpeed * 0.5, 0, h.ledge.inZ * this.profile.walkSpeed * 0.5));
+      this.ledge.hold = null;
+      this.grounded = true;
+    } else this.dropLedge();
+    this.grounded = out === 'climbed';
+    return out;
+  }
+
+  /** M11C: off the ledge (let go, tired, knocked off, the ledge gone): weight again, falling from here. */
+  dropLedge() {
+    if (!this.ledge.hold) return;
+    dropLedge(this.ledge);
+    this.body.setGravityFactor(1);
   }
 
   /** A velocity change, m/s. */
@@ -315,6 +371,7 @@ export class FighterSim {
     this.supported = 0;
     this.grip = 1;
     this.carry.x = this.carry.z = 0;
+    resetLedgeState(this.ledge);
     this.body.setFriction(this.profile.friction);
   }
 

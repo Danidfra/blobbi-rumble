@@ -57,6 +57,8 @@ export interface FighterSnapshot {
   tilt: number;
   /** The impact of the last blow or throw it received, m/s. */
   lastImpact: number;
+  /** M11C: the ledge it hangs from or climbs, with the edge point, the inward direction and its grip left (0..1); null on its feet. */
+  ledge: { phase: 'hang' | 'climb'; x: number; y: number; z: number; inX: number; inZ: number; grip: number } | null;
   /** Blows, throws and sweeper hits received, and jumps made, over the match: compare two snapshots to see one happen. */
   hits: number;
   jumps: number;
@@ -107,7 +109,7 @@ export interface MatchEvent {
   tick: number;
   t: number;
   round: number;
-  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch' | 'piece' | 'arena';
+  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch' | 'piece' | 'arena' | 'ledge';
   /** A piece's index (for a `piece` event). */
   piece?: number;
   /** Who acted (or whom it happened to, for a sweeper hit, a ring-out, a won round); null for nobody (a draw) or the arena. */

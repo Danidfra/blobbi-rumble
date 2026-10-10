@@ -19,6 +19,7 @@ const allow = { powerLevel: 0, carrying: false };
 const at = (x: number, z = 0): Body => ({ x, y: RUMBLE_BODY.capsuleCenterY, z, vx: 0, vy: 0, vz: 0, yaw: 0 });
 const auth = (b: Body, extra: Partial<FighterSnapshot> = {}): FighterSnapshot => ({
   id: 'P1',
+  ledge: null,
   position: { x: b.x, y: b.y, z: b.z },
   rotation: { x: 0, y: 0, z: 0, w: 1 },
   upright: true,

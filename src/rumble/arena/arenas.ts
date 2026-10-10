@@ -74,6 +74,8 @@ export interface ArenaDef {
   spawnSets: Record<2 | 3 | 4, readonly Planar[]>;
   /** Below this height, metres, a body is out (the ring-out line). Lower than every ledge a hanging body may hold. */
   fallY: number;
+  /** M11C: whether a falling fighter can catch and climb this arena's edges (not on ice, and not on the classic island, which plays exactly as it did). */
+  ledges: boolean;
   camera: { bounds: { x: number; z: number }; maxRadius: number };
   /** The friction of ice platforms (the body's own is 0.35). */
   iceFriction: number;
@@ -95,6 +97,7 @@ export const CLASSIC: ArenaDef = Object.freeze({
   orbs: ORBS.points,
   spawnSets: ARENA.spawnSets,
   fallY: -4,
+  ledges: false,
   camera: { bounds: { x: 5, z: 2.5 }, maxRadius: 14 },
   iceFriction: 0.35,
 });
@@ -114,14 +117,14 @@ export const SKYFALL: ArenaDef = Object.freeze({
   platforms: Object.freeze([
     F(0, 0, 5, 4, 0, 'floor', 0.6, 'centre'),
     F(8.6, 1.6, 2, 2, 0.5, 'platform', 0.5, 'east island'),
-    F(5.8, 1.6, 0.8, 0.6, 0, 'bridge', 0.2, 'east bridge'),
+    F(5.8, 1.6, 0.8, 0.85, 0, 'bridge', 0.2, 'east bridge'),
     F(-8.4, -1.2, 2.2, 1.8, -0.5, 'platform', 0.5, 'west island'),
-    F(-6.1, -1.2, 1.1, 0.6, -0.5, 'bridge', 0.2, 'west bridge'),
-    F(0, 5.2, 3, 0.8, -1.2, 'platform', 0.4, 'north ledge'),
+    F(-6.1, -1.2, 1.1, 0.85, -0.5, 'bridge', 0.2, 'west bridge'),
+    F(0, 4.8, 3, 0.8, -1.2, 'platform', 0.4, 'north ledge'),
     F(-1, -4.9, 1.3, 0.9, 0.5, 'platform', 0.5, 'south step'),
     F(-1, -7, 1.6, 1.2, 1, 'platform', 0.5, 'south perch'),
-    F(4.1, 5.2, 1.2, 1.2, 0, 'platform', 0.4, 'north-east pad'),
-    F(-4.1, -5.2, 1.2, 1.2, 0, 'platform', 0.4, 'south-west pad'),
+    F(4.4, 5.2, 1.2, 1.2, 0, 'platform', 0.4, 'north-east pad'),
+    F(-4.4, -5.2, 1.2, 1.2, 0, 'platform', 0.4, 'south-west pad'),
   ]),
   dynamics: Object.freeze([
     D(2, { kind: 'breakable', impacts: 3, after: 28, warn: 1.6, fall: 0.5, back: 0 }),
@@ -154,6 +157,7 @@ export const SKYFALL: ArenaDef = Object.freeze({
     ],
   },
   fallY: -5,
+  ledges: true,
   camera: { bounds: { x: 7.5, z: 5.5 }, maxRadius: 19 },
   iceFriction: 0.35,
 });
@@ -209,6 +213,7 @@ export const FACTORY: ArenaDef = Object.freeze({
     ],
   },
   fallY: -4,
+  ledges: true,
   camera: { bounds: { x: 5.5, z: 3 }, maxRadius: 15 },
   iceFriction: 0.35,
 });
@@ -268,6 +273,7 @@ export const FROZEN: ArenaDef = Object.freeze({
     ],
   },
   fallY: -4,
+  ledges: false,
   camera: { bounds: { x: 5, z: 3.5 }, maxRadius: 15 },
   iceFriction: 0.06,
 });

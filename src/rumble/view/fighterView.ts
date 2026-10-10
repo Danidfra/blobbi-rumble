@@ -43,6 +43,8 @@ export class FighterView {
   /** The struggle wiggle: a rock of the body to one side, decaying. */
   private wiggle = 0;
   private wiggleSide = 1;
+  /** M11C: seconds hanging, for the kick. */
+  private hangTime = 0;
   private debugOn = false;
   private hidden = false;
   private readonly rings: Mesh[] = [];
@@ -234,6 +236,25 @@ export class FighterView {
     } else if (isStunned(c)) {
       rig.body.rotation.x -= 0.3;
       expression = 'surprised';
+    } else if (f.ledge) {
+      // M11C: on a ledge. Hanging: arms straight up to the edge, feet dangling, the body flat to the wall; tiring, it sags and
+      // kicks. Climbing: the arms pull down and the body leans over the top.
+      if (f.ledge.phase === 'hang') {
+        const tired = 1 - f.ledge.grip;
+        const kick = Math.sin(this.hangTime * 7) * 0.25 * tired;
+        this.hangTime += dt;
+        parts.leftArm.pivot.rotation.x = -2.9 + 0.25 * tired;
+        parts.rightArm.pivot.rotation.x = -2.9 + 0.25 * tired;
+        parts.leftFoot.pivot.rotation.x = 0.35 + kick;
+        parts.rightFoot.pivot.rotation.x = 0.35 - kick;
+        rig.body.rotation.x += 0.08 + 0.1 * tired;
+        expression = tired > 0.6 ? 'upset' : 'surprised';
+      } else {
+        parts.leftArm.pivot.rotation.x = -1.4;
+        parts.rightArm.pivot.rotation.x = -1.4;
+        rig.body.rotation.x += 0.35;
+        expression = 'excited';
+      }
     } else if (c.held) {
       // Held up: arms out, feet dangling, a little back; struggling, it rocks side to side and kicks, more as it nears free.
       this.wiggle = Math.max(0, this.wiggle - dt * 6);

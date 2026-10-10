@@ -9,7 +9,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CLASSIC, FACTORY, FROZEN, SKYFALL, arenaSpawns, type ArenaDef } from '../arena/arenas';
 import { FALL_DEPTH } from '../arena/pieces';
 import { RUMBLE_BODY } from '../profile';
-import { ROUND } from '../tuning';
+import { LEDGE, ROUND } from '../tuning';
 import { loadHavokNode } from './havokNode';
 import { SURFACES, createRumbleMatch, type RumbleMatch } from './match';
 import type { HavokInstance } from './physics';
@@ -281,6 +281,176 @@ describe('the frozen lake (M11E)', () => {
     expect(later.map((e) => e.kind)).toContain('newRound');
     expect(m.snapshot().pieces[0].phase).toBe('stable');
     expect(FROZEN.dynamics.some((d) => FROZEN.platforms[d.platform].name === 'middle')).toBe(false);
+    m.dispose();
+  });
+});
+
+describe('ledges (M11C)', () => {
+  /** A fighter walking south off the centre's free south edge (z -4) at x 2: no bridge, no step there. */
+  const walkOff = (m: RumbleMatch, id = 'a') => {
+    m.debugPlace(id, { x: 2, z: -3.3, yaw: Math.PI });
+    m.setInput(id, { x: 0, z: -1 });
+  };
+  /** Walk off, step until caught (the stick still pushed off the edge), then let the stick go. Returns the steps' events. */
+  const catchIt = (m: RumbleMatch, id = 'a') => {
+    walkOff(m, id);
+    const events = [];
+    for (let i = 0; i < 180; i++) {
+      events.push(...m.step(DT));
+      if (events.some((e) => e.kind === 'ledge' && e.who === id)) break;
+    }
+    expect(fighter(m.snapshot(), id).ledge).not.toBeNull();
+    still(m, id);
+    return events;
+  };
+  const ledgeNotes = (events: ReturnType<RumbleMatch['step']>, who = 'a') => events.filter((e) => e.kind === 'ledge' && e.who === who).map((e) => e.note);
+
+  it('walking off an edge on Skyfall catches the ledge: hanging below the top, facing in, stopped, said once', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: -3, z: 2 });
+    still(m, 'b');
+    const events = catchIt(m);
+    expect(ledgeNotes(events)).toEqual(['caught centre']);
+    steps(m, 20);
+    const a = fighter(m.snapshot(), 'a');
+    expect(a.ledge).not.toBeNull();
+    expect(a.ledge!.phase).toBe('hang');
+    expect(a.ledge!.y).toBe(0);
+    expect(a.ledge!.inZ).toBe(1);
+    expect(feetY(a)).toBeCloseTo(-LEDGE.hangDrop, 1);
+    expect(a.position.z).toBeLessThan(-4);
+    expect(a.position.z).toBeGreaterThan(-4.6);
+    expect(Math.hypot(a.velocity.x, a.velocity.y, a.velocity.z)).toBeLessThan(0.3);
+    expect(Math.cos(a.yaw)).toBeCloseTo(1, 1);
+    expect(a.grounded).toBe(false);
+    expect(a.alive).toBe(true);
+    // The stick pushed off the edge for a moment does not undo the catch; held longer, it is a wish to drop.
+    m.setInput('a', { x: 0, z: -1 });
+    secs(m, LEDGE.awayHold - 0.15);
+    expect(fighter(m.snapshot(), 'a').ledge).not.toBeNull();
+    const later = secs(m, 0.3);
+    expect(ledgeNotes(later)).toEqual(['let go']);
+    m.dispose();
+  });
+
+  it('hanging drains grip; with none left the fighter drops and is rung out; grip comes back on the floor', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: -3, z: 2 });
+    still(m, 'b');
+    catchIt(m);
+    let s = m.snapshot();
+    const g0 = fighter(s, 'a').ledge!.grip;
+    secs(m, 1);
+    s = m.snapshot();
+    expect(fighter(s, 'a').ledge!.grip).toBeLessThan(g0 - 0.2);
+    const events = secs(m, LEDGE.endurance + 2);
+    expect(ledgeNotes(events)).toEqual(['tired']);
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
+    m.dispose();
+  });
+
+  it('a jump climbs: the fighter ends standing on top, a step in from the edge, in play, and is not caught again on the way', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: -3, z: 2 });
+    still(m, 'b');
+    catchIt(m);
+    m.setInput('a', { jump: true });
+    const events = secs(m, LEDGE.climbTime + 0.6);
+    expect(ledgeNotes(events)).toEqual(['climbed']);
+    const a = fighter(m.snapshot(), 'a');
+    expect(a.ledge).toBeNull();
+    expect(a.alive).toBe(true);
+    expect(a.grounded).toBe(true);
+    expect(Math.abs(feetY(a))).toBeLessThan(0.1);
+    expect(a.position.z).toBeGreaterThan(-4 + 0.3);
+    expect(a.position.z).toBeLessThan(-2.5);
+    m.dispose();
+  });
+
+  it('a grab lets go; so does pushing away once the hold is a moment old; either falls to the fall line', () => {
+    const m = make(SKYFALL, ['a', 'b', 'c']);
+    m.debugPlace('c', { x: -3, z: 2 });
+    still(m, 'c');
+    catchIt(m, 'a');
+    m.setInput('a', { grab: true });
+    const ev1 = secs(m, 1.6);
+    expect(ledgeNotes(ev1, 'a')).toEqual(['let go']);
+    expect(ev1).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
+    catchIt(m, 'b');
+    m.setInput('b', { x: 0, z: -1 });
+    const ev2 = secs(m, LEDGE.awayHold + 0.3);
+    expect(ledgeNotes(ev2, 'b')).toEqual(['let go']);
+    m.dispose();
+  });
+
+  it('an opponent’s blow knocks a hanging fighter off; a hanging fighter cannot punch or grab', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: -3, z: 2 });
+    still(m, 'b');
+    catchIt(m);
+    // The hanger's punch and grab do nothing.
+    m.setInput('a', { punch: true });
+    const none = secs(m, 0.4);
+    expect(none.filter((e) => e.kind === 'punch' && e.who === 'a')).toEqual([]);
+    expect(fighter(m.snapshot(), 'a').ledge).not.toBeNull();
+    // The one above punches down over the edge.
+    m.debugPlace('b', { x: 2, z: -3.5, yaw: Math.PI, powerLevel: 1 });
+    m.setInput('b', { punch: true });
+    const events = secs(m, 2);
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'punch', who: 'b', on: 'a' }));
+    expect(ledgeNotes(events)).toEqual(['knocked off']);
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
+    m.dispose();
+  });
+
+  it('a tumbling (thrown) body catches nothing; the classic island and the frozen lake have no ledges: walking off is a ring-out as before', () => {
+    for (const arena of [CLASSIC, FROZEN]) {
+      const m = make(arena);
+      m.debugPlace('b', { x: 0, z: arena === FROZEN ? -2.9 : -2 });
+      still(m, 'b');
+      m.debugPlace('a', { x: 0, z: arena === FROZEN ? 3.6 : 3.5, yaw: 0 });
+      m.setInput('a', { x: 0, z: 1 });
+      const events = secs(m, 3);
+      expect(events.filter((e) => e.kind === 'ledge')).toEqual([]);
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
+      m.dispose();
+    }
+    const m = make(SKYFALL);
+    // 'b' grabs 'a' at the south edge and throws it over: no catch for a thrown body.
+    m.debugPlace('a', { x: 2, z: -3.4, yaw: Math.PI });
+    m.debugPlace('b', { x: 2, z: -2.6, yaw: Math.PI });
+    still(m, 'a');
+    still(m, 'b');
+    steps(m, 5);
+    m.setInput('b', { grab: true });
+    secs(m, 0.3);
+    expect(fighter(m.snapshot(), 'a').heldBy).toBe('b');
+    m.setInput('b', { grab: true });
+    const events = secs(m, 3);
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'throw', who: 'b', on: 'a' }));
+    expect(events.filter((e) => e.kind === 'ledge' && e.who === 'a')).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
+    m.dispose();
+  });
+
+  it('a ledge on a pad that falls is lost with it', () => {
+    const m = make(SKYFALL, ['a', 'b', 'c']);
+    const pad = SKYFALL.dynamics[3];
+    const r = SKYFALL.platforms[pad.platform];
+    const rule = pad.rule as Extract<typeof pad.rule, { kind: 'falling' }>;
+    m.debugPlace('c', { x: 0, z: 0 });
+    still(m, 'c');
+    // 'b' stands on the pad (arming it); 'a' walks off its outer (south) edge and hangs there.
+    m.debugPlace('b', { x: r.x, z: r.z });
+    still(m, 'b');
+    m.debugPlace('a', { x: r.x, z: r.z - r.halfDepth + 0.6, yaw: Math.PI });
+    m.setInput('a', { x: 0, z: -1 });
+    secs(m, 0.8);
+    still(m, 'a');
+    expect(fighter(m.snapshot(), 'a').ledge).not.toBeNull();
+    const events = secs(m, rule.arm + rule.warn + 0.3);
+    expect(ledgeNotes(events)).toEqual(['ledge gone']);
+    expect(fighter(m.snapshot(), 'a').ledge).toBeNull();
     m.dispose();
   });
 });

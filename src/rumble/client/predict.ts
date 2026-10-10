@@ -142,7 +142,7 @@ export function advance(b: Body, intent: PlayerIntent, dt: number, allow: Allowa
 /** Whether the server's state leaves the fighter's locomotion to its player (and so to prediction). */
 export function predictable(f: FighterSnapshot, playing: boolean): boolean {
   const c = f.combat;
-  return playing && !f.eliminated && c.tumble < 0 && c.recovering < 0 && c.stun <= 0 && f.heldBy === null;
+  return playing && !f.eliminated && c.tumble < 0 && c.recovering < 0 && c.stun <= 0 && f.heldBy === null && f.ledge === null;
 }
 
 /** One frame of the local input timeline: the input message it was sent under (its seq), how long, and what was held. */

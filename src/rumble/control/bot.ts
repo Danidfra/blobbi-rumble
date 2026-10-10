@@ -38,6 +38,8 @@ export interface BotFighter {
   at: Planar;
   /** M11A: the feet's height (platforms differ in height). */
   y: number;
+  /** M11C: hanging from a ledge. */
+  hanging: boolean;
   facing: Planar;
   /** Still in the round. */
   active: boolean;
@@ -67,6 +69,7 @@ export function botWorldFrom(s: MatchSnapshot, self: string): BotWorld {
   const fighters = s.fighters.map((f) => ({
     at: { x: f.position.x, z: f.position.z },
     y: f.position.y - RUMBLE_BODY.capsuleCenterY,
+    hanging: f.ledge !== null,
     facing: { x: Math.sin(f.yaw), z: Math.cos(f.yaw) },
     active: !f.eliminated,
     combat: combatOf(f),
@@ -105,9 +108,30 @@ export interface BotMemory {
   stallJumps: number;
   avoid: number;
   avoidOrb: number;
+  /** M11C: a leap across a gap: seconds left in it, its direction, and whether it has left the ground. */
+  leap: number;
+  leapDir: Planar;
+  leapAir: boolean;
 }
 
-export const createBotMemory = (seed: number): BotMemory => ({ state: 'SEEK_FIGHTER', stateTime: Infinity, target: -1, retarget: 0, orb: -1, wait: 0, carry: 0, rng: (seed * 2654435761) >>> 0 || 1, heldFor: 0, strokeSide: 1, nextStroke: 0, lastStroke: 0, lastAt: null, moving: false, stalled: 0, stallJumps: 0, avoid: -1, avoidOrb: -1 });
+export const createBotMemory = (seed: number): BotMemory => ({ state: 'SEEK_FIGHTER', stateTime: Infinity, target: -1, retarget: 0, orb: -1, wait: 0, carry: 0, rng: (seed * 2654435761) >>> 0 || 1, heldFor: 0, strokeSide: 1, nextStroke: 0, lastStroke: 0, lastAt: null, moving: false, stalled: 0, stallJumps: 0, avoid: -1, avoidOrb: -1, leap: 0, leapDir: { x: 0, z: 0 }, leapAir: false });
+
+/**
+ * M11C: whether a gap ahead along `dir` is worth a leap: no floor at the
+ * look-ahead, but a platform within reach that is not too high to land on
+ * nor too low to come back from (a ledge catch climbs up to `leapDown`).
+ */
+export function gapAhead(at: Planar, y: number, dir: Planar, arena: ArenaDef, t = BOT): boolean {
+  if (dir.x === 0 && dir.z === 0) return false;
+  if (onAnyFloor(arena.platforms, { x: at.x + dir.x * t.lookAhead, z: at.z + dir.z * t.lookAhead }, t.safeInset)) return false;
+  for (let d = 1.4; d <= t.leapReach + 1e-6; d += 0.2) {
+    const p = { x: at.x + dir.x * d, z: at.z + dir.z * d };
+    if (!onAnyFloor(arena.platforms, p, 0.25)) continue;
+    const under = platformUnder(arena.platforms, p);
+    if (under && under.y - y <= t.leapUp && y - under.y <= t.leapDown) return true;
+  }
+  return false;
+}
 
 /** The middle of what a fighter stands on (M11A: a platform's own centre, not the arena's, which may be a wall or a void away), or the arena's. */
 export function homeOf(at: Planar, arena: ArenaDef): Planar {
@@ -304,6 +328,12 @@ function enter(m: BotMemory, s: BotState) {
 export function think(m: BotMemory, w: BotWorld, dt: number, t = BOT, c = COMBAT): MoveIntent {
   const me = w.fighters[w.self];
   if (!me.active) return NONE;
+  // M11C: on a ledge, climb at once (a bot never dangles).
+  if (me.hanging) {
+    m.stalled = 0;
+    m.lastAt = null;
+    return { ...NONE, jump: true };
+  }
   // M11A: going nowhere while meaning to is a step, a crate or a wall in the way: a jump clears what can be cleared; what cannot is given up on.
   const moved = m.lastAt ? len(me.at.x - m.lastAt.x, me.at.z - m.lastAt.z) : Infinity;
   let stallJump = false;
@@ -387,6 +417,16 @@ function decide(m: BotMemory, w: BotWorld, dt: number, t: typeof BOT, c: typeof 
   }
   m.carry = 0;
 
+  // M11C: mid-leap: keep running the way it was going, jump as the floor ends, and land before anything else matters.
+  if (m.leap > 0) {
+    m.leap -= dt;
+    if (!w.grounded) m.leapAir = true;
+    else if (m.leapAir) m.leap = 0;
+    if (m.leap > 0) {
+      const edge = !onAnyFloor(w.arena.platforms, { x: me.at.x + m.leapDir.x * 0.5, z: me.at.z + m.leapDir.z * 0.5 }, 0.05);
+      return { ...NONE, x: m.leapDir.x, z: m.leapDir.z, run: true, jump: w.grounded && edge };
+    }
+  }
   // Too close to the rim with nothing holding it there: back toward the middle.
   if (rimDistanceOf(w.arena.platforms, me.at) < t.rimPanic) {
     enter(m, 'RECOVER');
@@ -419,15 +459,27 @@ function decide(m: BotMemory, w: BotWorld, dt: number, t: typeof BOT, c: typeof 
   // Close enough to fight now: no waiting out the state timer.
   if (m.state === 'SEEK_FIGHTER' && toTarget < t.engageRange) enter(m, 'ATTACK');
 
+  const leapToward = (want: Planar): MoveIntent | null => {
+    if (!w.grounded || !gapAhead(me.at, me.y, want, w.arena, t)) return null;
+    m.leap = t.leapTime;
+    m.leapDir = want;
+    m.leapAir = false;
+    return { ...NONE, x: want.x, z: want.z, run: true };
+  };
   if (m.state === 'SEEK_ORB' && m.orb >= 0 && w.orbs[m.orb]?.active) {
     const o = w.orbs[m.orb];
     const d = len(o.x - me.at.x, o.z - me.at.z);
-    const dir = safeDirection(me.at, unit(o.x - me.at.x, o.z - me.at.z), t.lookAhead, t, w.arena, me.y);
+    const want = unit(o.x - me.at.x, o.z - me.at.z);
+    const leap = leapToward(want);
+    if (leap) return leap;
+    const dir = safeDirection(me.at, want, t.lookAhead, t, w.arena, me.y);
     return { ...NONE, x: dir.x, z: dir.z, run: d > t.runBeyond, jump };
   }
   if (!target) return { ...NONE, jump };
   const toward = unit(target.at.x - me.at.x, target.at.z - me.at.z);
   if (m.state !== 'ATTACK') {
+    const leap = leapToward(toward);
+    if (leap) return leap;
     const dir = safeDirection(me.at, toward, t.lookAhead, t, w.arena, me.y);
     return { ...NONE, x: dir.x, z: dir.z, run: toTarget > t.runBeyond, jump };
   }

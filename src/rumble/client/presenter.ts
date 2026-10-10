@@ -234,7 +234,14 @@ export class RumblePresenter {
     lines.push('', this.message || (s.phase === 'playing' ? '' : '…'));
     for (const { index, keys } of info.strugglers ?? []) {
       const f = s.fighters[index];
-      if (!f?.heldBy || f.eliminated) continue;
+      if (!f || f.eliminated) continue;
+      if (f.ledge) {
+        // M11C: the grip left, and what the keys do on the ledge.
+        const filled = Math.round(f.ledge.grip * 10);
+        lines.push(`${f.id} ${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · GRIP [${'█'.repeat(filled)}${'-'.repeat(10 - filled)}] jump to climb · grab or push away to let go`);
+        continue;
+      }
+      if (!f.heldBy) continue;
       const filled = Math.round(f.combat.struggle * 10);
       lines.push(`${f.id} GRABBED by ${f.heldBy} · STRUGGLE [${'█'.repeat(filled)}${'-'.repeat(10 - filled)}] alternate ${keys} to break free`);
     }

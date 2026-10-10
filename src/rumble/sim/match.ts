@@ -36,6 +36,7 @@ import { COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
 import { createArenaBody, type ArenaBody } from './arenaBody';
 import { FighterSim, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
+import { canCatch, reachableLedge } from './ledge';
 import { createPhysicsWorld, type HavokInstance, type PhysicsWorld } from './physics';
 import type { MatchEvent, MatchSnapshot } from './snapshot';
 import { SweeperBody } from './sweeperBody';
@@ -248,7 +249,9 @@ export class RumbleMatch {
       const p = this.pending[i];
       const intent = { ...this.intents[i], ...p };
       p.jump = p.punch = p.grab = false;
-      return playing && !f.eliminated ? intent : { ...IDLE_INTENT };
+      if (!playing || f.eliminated) return { ...IDLE_INTENT };
+      // M11C: hanging, the hands are full: the keys steer the hold (jump climbs, grab lets go), never a punch or a grab.
+      return f.onLedge ? { ...intent, punch: false } : intent;
     });
     for (const f of fighters) if (!f.eliminated) tickCombat(f.combat, dt);
 
@@ -264,9 +267,37 @@ export class RumbleMatch {
       }
     });
 
+    // M11C: ledges. A falling body within reach of an edge it may hold catches it; a hold on a piece that has gone is lost.
+    if (this.def.ledges) {
+      const gone = (index: number) => {
+        const k = this.def.dynamics.findIndex((d) => d.platform === index);
+        return k >= 0 && !pieceSolid(this.pieces[k]);
+      };
+      fighters.forEach((f, i) => {
+        if (f.eliminated) return;
+        const h = f.ledge.hold;
+        if (h) {
+          if (gone(h.ledge.platform)) {
+            f.dropLedge();
+            this.emit({ kind: 'ledge', who: this.ids[i], note: 'ledge gone' });
+          }
+          return;
+        }
+        if (!playing || !canCatch(f.ledge, f.combat, f.grounded, f.body.velocity().y)) return;
+        const l = reachableLedge(this.def.platforms, f.body.position(), f.body.feet().y, gone);
+        if (!l) return;
+        f.catchLedge(l);
+        this.emit({ kind: 'ledge', who: this.ids[i], note: `caught ${this.def.platforms[l.platform].name ?? l.platform}` });
+      });
+    }
     // Steering. A shoving match is two touching fighters pushing into each other (read from the last step's intents: one step late, never wrong by much).
     const results: StepResult[] = fighters.map((f, i) => {
       if (f.eliminated) return { grounded: false, jumped: false };
+      if (f.onLedge) {
+        const out = f.ledgeStep(dt, intents[i]);
+        if (out !== 'hanging' && out !== 'climbing') this.emit({ kind: 'ledge', who: this.ids[i], note: out });
+        return { grounded: out === 'climbed', jumped: false };
+      }
       const j = contacts[i];
       if (j < 0) return f.update(dt, intents[i]);
       const a = centres[i]!;
@@ -342,7 +373,7 @@ export class RumbleMatch {
     for (const f of fighters) if (!f.eliminated) f.settle();
     // The facing follows the velocity (a carrier's only by its own steering).
     fighters.forEach((f, i) => {
-      if (!f.eliminated) f.turn(dt, intents[i].x !== 0 || intents[i].z !== 0);
+      if (!f.eliminated && !f.onLedge) f.turn(dt, intents[i].x !== 0 || intents[i].z !== 0);
     });
 
     // Ring-outs: who crossed the fall line this step. Each is out of the round: its holds end, its body leaves play.
@@ -409,6 +440,7 @@ export class RumbleMatch {
           touching: idOf(this.contacts[i]),
           tilt: f.tilt,
           lastImpact: f.lastImpact,
+          ledge: f.ledge.hold ? { phase: f.ledge.hold.phase, x: f.ledge.hold.ledge.x, y: f.ledge.hold.ledge.y, z: f.ledge.hold.ledge.z, inX: f.ledge.hold.ledge.inX, inZ: f.ledge.hold.ledge.inZ, grip: +f.ledge.endurance.toFixed(3) } : null,
           hits: f.hits,
           jumps: f.jumps,
           escapes: f.escapes,
@@ -480,6 +512,11 @@ export class RumbleMatch {
       });
     }
     for (const h of ended) if (by !== h.holder && by !== h.victim) this.emit({ kind: 'interrupt', who: by >= 0 ? this.ids[by] : null, on: this.ids[j], note: `${this.ids[h.holder]} lost ${this.ids[h.victim]}` });
+    // M11C: a blow on a hanging body breaks its grip.
+    if (this.fighters[j].onLedge) {
+      this.fighters[j].dropLedge();
+      this.emit({ kind: 'ledge', who: this.ids[j], note: 'knocked off' });
+    }
     this.fighters[j].react(reaction, (COMBAT.hitSpin * reaction.impact) / COMBAT.tumbleThreshold);
   }
 
@@ -532,7 +569,7 @@ export class RumbleMatch {
         this.emit({ kind: 'throw', who: me.id, on: victim.id, reaction: thrown.kind, impact: thrown.impact });
       } else {
         const j = grabTarget(list, i);
-        if (j >= 0 && tryGrab(me.combat, me.at(), me.facing(), this.fighters[j].combat, this.fighters[j].at(), COMBAT, { grabber: i, victim: j })) {
+        if (j >= 0 && !this.fighters[j].onLedge && tryGrab(me.combat, me.at(), me.facing(), this.fighters[j].combat, this.fighters[j].at(), COMBAT, { grabber: i, victim: j })) {
           me.hold(this.fighters[j]);
           this.emit({ kind: 'grab', who: me.id, on: this.ids[j] });
         }

@@ -10,6 +10,7 @@ import { continuous, extrapolate, interpolate, lerpAngle, NET_VIEW, slerp, Snaps
 
 const fighter = (id: string, x: number, z = 0, extra: Partial<FighterSnapshot> = {}): FighterSnapshot => ({
   id,
+  ledge: null,
   position: { x, y: 0.525, z },
   rotation: { x: 0, y: 0, z: 0, w: 1 },
   upright: true,

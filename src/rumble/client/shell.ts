@@ -229,6 +229,8 @@ const HELP: [string, string][] = [
   ['F / K', 'punch'],
   ['G / L', 'grab, then again to throw'],
   ['← → (A D) fast', 'break free when grabbed'],
+  ['fall past an edge', 'catch the ledge and hang (Skyfall, Factory)'],
+  ['Space / Enter · G / L', 'hanging: climb up · let go (or push away)'],
 ];
 
 export function createShell(a: ShellActions) {

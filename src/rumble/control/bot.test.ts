@@ -5,16 +5,16 @@
  * has (it only ever answers with an intent).
  */
 import { describe, expect, it } from 'vitest';
-import { CLASSIC } from '../arena/arenas';
+import { CLASSIC, FACTORY, SKYFALL } from '../arena/arenas';
 import { onFloor } from '../arena/layout';
 import { createCombatState, startTumble } from '../combat/combat';
 import { createOrbs } from '../pickups/orbs';
 import { BOT, SWEEPER } from '../tuning';
-import { aroundPost, bestOrb, BotInput, clearOfPost, createBotMemory, nearestFighter, nextRandom, safeDirection, sweeperArrival, think, voidDirection, type BotFighter, type BotWorld } from './bot';
+import { aroundPost, bestOrb, BotInput, clearOfPost, createBotMemory, gapAhead, homeOf, nearestFighter, nextRandom, safeDirection, sweeperArrival, think, voidDirection, type BotFighter, type BotWorld } from './bot';
 
 const east = { x: 1, z: 0 };
 const west = { x: -1, z: 0 };
-const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, y: 0, facing, active: true, combat: createCombatState(), powerLevel: 0, holder: -1 });
+const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, y: 0, hanging: false, facing, active: true, combat: createCombatState(), powerLevel: 0, holder: -1 });
 const world = (fighters: BotFighter[], self = 0, orbs = createOrbs().map((o) => ({ ...o, active: false }))): BotWorld => ({ self, fighters, orbs, sweeperAngle: Math.PI / 2, grounded: true, arena: CLASSIC });
 const frames = (m: ReturnType<typeof createBotMemory>, w: BotWorld, n: number) => {
   let out = think(m, w, 1 / 60);
@@ -251,5 +251,104 @@ describe('the test bot', () => {
     // Moving away from it, or far from it: the post is not in the way.
     expect(aroundPost({ x: p.x + 0.66, z: p.z }, east)).toBeNull();
     expect(aroundPost({ x: 0, z: 0 }, east)).toBeNull();
+  });
+});
+
+describe('the bot on other arenas (M11A, M11C)', () => {
+  const skyfall = (fighters: BotFighter[], self = 0): BotWorld => ({ ...world(fighters, self), arena: SKYFALL, sweeperAngle: null, orbs: [] });
+
+  it('its middle is its own platform’s, not the arena’s: knocked onto a lower pad, it recovers toward that pad’s centre', () => {
+    const island = SKYFALL.platforms[1];
+    expect(homeOf({ x: island.x + 0.5, z: island.z }, SKYFALL)).toEqual({ x: island.x, z: island.z });
+    expect(homeOf({ x: 0, z: 0 }, FACTORY)).toEqual({ x: 0, z: 0 });
+    expect(homeOf({ x: 50, z: 50 }, FACTORY)).toEqual({ x: 0, z: 0 });
+  });
+
+  it('never walks down a drop it could not jump back from, but walks down a step; a wall ahead is floor', () => {
+    // On the centre (y 0) heading north: the north ledge is 1.2 below, so the way is turned.
+    const north = { x: 0, z: 1 };
+    const turned = safeDirection({ x: 0, z: 3.2 }, north, BOT.lookAhead, BOT, SKYFALL, 0);
+    expect(turned.z).toBeLessThan(0.9);
+    // Without a height, the old rule: any floor is floor.
+    expect(safeDirection({ x: 0, z: 3.2 }, north, BOT.lookAhead, BOT, SKYFALL)).toEqual(north);
+    // On the east island (y 0.5) heading west onto the bridge (y 0): a step down, taken.
+    expect(safeDirection({ x: 7.2, z: 1.6 }, west, BOT.lookAhead, BOT, SKYFALL, 0.5)).toEqual(west);
+    // On the factory floor heading at the crate (0.6 up): floor ahead (the crate), so no turn; the stall then jumps it.
+    expect(safeDirection({ x: -2.3, z: 0 }, east, BOT.lookAhead, BOT, FACTORY, 0)).toEqual(east);
+  });
+
+  it('going nowhere at a step up, it jumps; going nowhere at a rim, it gives the target up instead of jumping into the void', () => {
+    // Against the crate's west wall, target beyond it.
+    const me = { ...body(-1.85, 0, east), y: 0 };
+    const w: BotWorld = { ...world([me, body(2, 0)]), arena: FACTORY, orbs: [] };
+    const m = createBotMemory(3);
+    let jumped = false;
+    for (let i = 0; i < Math.ceil((BOT.stallAfter + 0.1) * 60) + 2; i++) jumped ||= think(m, w, 1 / 60).jump;
+    expect(m.stallJumps).toBe(1);
+    expect(jumped).toBe(true);
+    // At the centre's north rim on Skyfall, target down on the ledge: no jump; the target is dropped.
+    const rimMe = { ...body(0, 3.3, { x: 0, z: 1 }), y: 0 };
+    const low = { ...body(0, 4.8, west), y: -1.2 };
+    const other = { ...body(-3, -3, east), y: 0 };
+    const w2 = skyfall([rimMe, low, other]);
+    const m2 = createBotMemory(4);
+    m2.target = 1;
+    m2.retarget = 10;
+    let anyJump = false;
+    for (let i = 0; i < 120; i++) anyJump ||= think(m2, w2, 1 / 60).jump;
+    expect(anyJump).toBe(false);
+    expect(m2.target).toBe(2);
+  });
+
+  it('hanging from a ledge, it climbs at once', () => {
+    const me = { ...body(2, -4.5, { x: 0, z: 1 }), y: -0.85, hanging: true };
+    const w = { ...skyfall([me, body(0, 0)]), grounded: false };
+    const intent = think(createBotMemory(1), w, 1 / 60);
+    expect(intent.jump).toBe(true);
+    expect(intent.x).toBe(0);
+    expect(intent.z).toBe(0);
+  });
+
+  it('sees a leapable gap: floor missing ahead but a platform within reach and height; not the void, not a drop too deep', () => {
+    // The centre's east rim with the east bridge gone: the island (y 0.5) is 1.6 m across.
+    const noBridge = { ...SKYFALL, platforms: SKYFALL.platforms.filter((p) => p.name !== 'east bridge') };
+    expect(gapAhead({ x: 4.6, z: 1.6 }, 0, east, noBridge)).toBe(true);
+    // From the island back to the centre: down half a metre, fine.
+    expect(gapAhead({ x: 7.0, z: 1.6 }, 0.5, west, noBridge)).toBe(true);
+    // Floor ahead: no gap to leap.
+    expect(gapAhead({ x: 0, z: 0 }, 0, east, SKYFALL)).toBe(false);
+    // The south rim at x 2: only the void.
+    expect(gapAhead({ x: 2, z: -3.5 }, 0, { x: 0, z: -1 }, SKYFALL)).toBe(false);
+    // Too deep: the classic arena's rim.
+    expect(gapAhead({ x: 0, z: 3.5 }, 0, { x: 0, z: 1 }, CLASSIC)).toBe(false);
+  });
+
+  it('leaps a gap toward its target: runs at the rim, jumps as the floor ends, and lands before it minds the rim again', () => {
+    const noBridge = { ...SKYFALL, platforms: SKYFALL.platforms.filter((p) => p.name !== 'east bridge') };
+    const me = { ...body(4.3, 1.6, east), y: 0 };
+    const far = { ...body(7.5, 1.6, west), y: 0.5 };
+    const w: BotWorld = { ...skyfall([me, far]), arena: noBridge };
+    const m = createBotMemory(2);
+    m.target = 1;
+    m.retarget = 10;
+    m.stateTime = 10;
+    const first = think(m, w, 1 / 60);
+    expect(first.run).toBe(true);
+    expect(first.x).toBeGreaterThan(0.9);
+    expect(m.leap).toBeGreaterThan(0);
+    // At the rim itself: the jump.
+    const atRim = { ...w, fighters: [{ ...me, at: { x: 4.75, z: 1.6 } }, far] };
+    const edge = think(m, atRim, 1 / 60);
+    expect(edge.jump).toBe(true);
+    expect(edge.x).toBeGreaterThan(0.9);
+    // In the air: no panic, still heading over.
+    const air = { ...atRim, grounded: false, fighters: [{ ...me, at: { x: 5.6, z: 1.6 } }, far] };
+    const mid = think(m, air, 1 / 60);
+    expect(mid.x).toBeGreaterThan(0.9);
+    expect(m.leapAir).toBe(true);
+    // Landed: the leap is over.
+    const landed = { ...w, fighters: [{ ...me, at: { x: 7.0, z: 1.6 }, y: 0.5 }, far] };
+    think(m, landed, 1 / 60);
+    expect(m.leap).toBe(0);
   });
 });

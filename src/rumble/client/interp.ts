@@ -102,6 +102,7 @@ function blendFighter(a: FighterSnapshot, b: FighterSnapshot, k: number): Fighte
     rotation: slerp(a.rotation, b.rotation, k),
     yaw: lerpAngle(a.yaw, b.yaw, k),
     tilt: lerp(a.tilt, b.tilt, k),
+    ledge: b.ledge,
     combat: {
       ...a.combat,
       punchTime: timer(a.combat.punchTime, b.combat.punchTime, k),

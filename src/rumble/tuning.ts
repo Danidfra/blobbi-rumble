@@ -280,6 +280,11 @@ export const BOT = Object.freeze({
   stallGiveUp: 2,
   /** M11A: a bot never walks down onto a platform more than this far below its own (a drop it could not jump back from). */
   maxDrop: 0.7,
+  /** M11C: a gap is leapt when floor is missing ahead but a platform lies within `leapReach` metres, no more than `leapUp` above nor `leapDown` below; the leap is run at, the jump taken when the floor ends, and given up after `leapTime` seconds. */
+  leapReach: 2.6,
+  leapUp: 0.6,
+  leapDown: 1.25,
+  leapTime: 1.4,
   /**
    * Held: struggle like a person, not a macro. Start this long after being grabbed (a reaction), then reverse
    * every `strokeTime` seconds (plus up to `strokeJitter`), now and then fumbling a stroke the same way
@@ -296,4 +301,40 @@ export const BOT = Object.freeze({
   hurriedFacingCos: 0.3,
   /** Jump the sweeper when its leading face will reach the capsule within this window, seconds. */
   jumpWindow: { from: 0.03, to: 0.12 },
+});
+
+/**
+ * M11C: LEDGES. A fighter falling past the edge of a platform (where the
+ * arena allows it) catches the ledge within reach and hangs; hanging costs
+ * endurance, which stands back up on the floor; a jump climbs, a grab or a
+ * push away lets go, a blow knocks it off. One hold at a time: the model
+ * is a single pair of hands.
+ */
+export const LEDGE = Object.freeze({
+  /** How far beyond the capsule's radius the hands reach sideways, metres. */
+  reachOut: 0.35,
+  /** The ledge's top may be this far above the feet (hands over the head) and this little below them. */
+  reachUp: 1.3,
+  reachDown: 0.25,
+  /** Falling at least this fast (m/s downward) to catch: a step down is not a fall. */
+  minFallSpeed: 0.5,
+  /** Hanging: the feet this far below the top; the capsule this far clear of the wall. */
+  hangDrop: 0.85,
+  hangOut: 0.08,
+  /** Full endurance lasts this long hanging, seconds; it comes back on the floor at `regain` per second (of the whole). */
+  endurance: 3.5,
+  regain: 0.45,
+  /** Too tired to catch under this share of endurance. */
+  minToCatch: 0.15,
+  /** The climb takes this long, ending this far in from the edge and this far over the top. */
+  climbTime: 0.45,
+  climbIn: 0.25,
+  climbOver: 0.06,
+  /** No new catch for this long after letting go or being knocked off, seconds. */
+  regrab: 0.4,
+  /** The hang is a stiff spring to its anchor (1/s). */
+  spring: 16,
+  /** Pushing the stick away from the wall at least this much, held for `awayHold` seconds, lets go (a push that walked off an edge is over before that). */
+  awayPush: 0.5,
+  awayHold: 0.35,
 });
