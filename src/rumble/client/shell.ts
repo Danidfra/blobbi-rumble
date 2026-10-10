@@ -101,6 +101,8 @@ export interface ShellView {
   trust: ServerTrust | null;
   server: ServerInfo | null;
   identity: IdentityState;
+  /** Development only: the Nostr connection lifecycle, stage by stage (null: off). */
+  diag: string[] | null;
   profile: (pubkey: string) => Profile | null | undefined;
   roster: Record<string, SlotIdentity> | null;
   spectators: number;
@@ -738,6 +740,17 @@ export function createShell(a: ShellActions) {
       row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
     }
     parts.push(row);
+    if (v.diag) {
+      const box = el('details');
+      box.append(el('summary', 'rs-sub', `Nostr diagnostics (${v.diag.length} lines, development only)`));
+      const pre = el('pre', 'rs-sub', v.diag.join('\n'));
+      pre.style.cssText = 'white-space: pre-wrap; margin: 4px 0; max-height: 160px; overflow: auto; font: 11px ui-monospace, Menlo, monospace;';
+      const r = el('div', 'rs-row');
+      const text = v.diag.join('\n');
+      r.append(button('Copy diagnostics', async () => void ((await copyText(text)) === 'copied' && toast('Diagnostics copied'))));
+      box.append(pre, r);
+      parts.push(box);
+    }
     if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note));
     if (v.inbox) parts.push(...inboxSection(v, v.inbox));
     // Server.
@@ -860,7 +873,7 @@ export function createShell(a: ShellActions) {
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
         const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([inboxKey, v.blobbis, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const pKey = JSON.stringify([inboxKey, v.blobbis, v.diag?.length, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;

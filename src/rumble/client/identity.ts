@@ -64,6 +64,8 @@ export interface IdentityDeps {
   /** How long a restore waits for the extension, ms (tests shorten it). */
   restoreMs?: number;
   onChange?: () => void;
+  /** Development diagnostics: the stage a connection or restore reached and why (never a key, a signature, a challenge or a message). */
+  diag?: (stage: string, detail?: string) => void;
 }
 
 const SIGNER_WORDS: Record<string, string> = {
@@ -128,16 +130,20 @@ export class IdentitySession {
     if (this.state.phase === 'asking') return;
     const g = ++this.gen;
     this.pending = null;
+    this.d.diag?.('connect:start', `gen ${g}, from ${this.state.phase}`);
     this.set({ phase: 'asking', error: null, other: null });
     try {
       const signer = await this.d.findSigner();
+      this.d.diag?.('connect:signer', signer ? signer.method : 'none');
       if (!signer) throw new SignerError('unavailable', 'no signer');
       const pubkey = await signer.getPublicKey();
-      if (g !== this.gen) return;
+      this.d.diag?.('connect:pubkey', `${pubkey.slice(0, 8)}…`);
+      if (g !== this.gen) return this.d.diag?.('connect:superseded', `gen ${g} → ${this.gen}`);
       this.adopt(signer, pubkey);
     } catch (e) {
-      if (g !== this.gen) return;
+      if (g !== this.gen) return this.d.diag?.('connect:superseded', `gen ${g} → ${this.gen}`);
       const code = e instanceof SignerError ? e.code : 'failed';
+      this.d.diag?.('connect:failed', code);
       this.set({ phase: 'error', error: SIGNER_WORDS[code] ?? SIGNER_WORDS.failed });
     }
   }
@@ -149,6 +155,7 @@ export class IdentitySession {
     saveLogin(this.d.storage, this.key, signer.method, pubkey, true);
     this.set({ pubkey, method: signer.method, auto: true, other: null });
     this.retried = false;
+    this.d.diag?.('adopted', `${pubkey.slice(0, 8)}… → proving (game ${this.connected ? 'connected' : 'not connected yet'})`);
     this.prove();
   }
 
@@ -160,6 +167,7 @@ export class IdentitySession {
    */
   async restore(): Promise<void> {
     const saved = loadLogin(this.d.storage, this.key);
+    this.d.diag?.('restore:start', !saved ? 'no remembered login' : !saved.auto ? 'remembered, auto off' : this.state.phase !== 'known' ? `phase ${this.state.phase}, not known` : `remembered ${saved.pubkey.slice(0, 8)}…, auto on`);
     if (!saved?.auto || this.state.phase !== 'known') return;
     const g = ++this.gen;
     this.set({ phase: 'restoring', error: null });
@@ -168,24 +176,39 @@ export class IdentitySession {
     let why: SignerErrorCode | 'other' = 'unavailable';
     // Bounded, whatever the extension does: a restore must settle, and it is silent work, not a prompt the player is answering.
     const wait = this.d.restoreMs ?? RESTORE.waitMs;
+    const t0 = Date.now();
     try {
       signer = await withTimeout(this.d.findSigner(), wait, 'restore');
-      if (signer && signer.method === saved.method) pubkey = await withTimeout(signer.getPublicKey(), wait, 'restore');
+      this.d.diag?.('restore:signer', `${signer ? `found (${signer.method})` : 'NOT FOUND (no NIP-07 provider within the detection window)'} after ${Date.now() - t0} ms`);
+      if (signer && signer.method !== saved.method) this.d.diag?.('restore:method', `remembered ${saved.method}, found ${signer.method}: not asked`);
+      if (signer && signer.method === saved.method) {
+        const t1 = Date.now();
+        try {
+          pubkey = await withTimeout(signer.getPublicKey(), wait, 'restore');
+          this.d.diag?.('restore:pubkey', `answered after ${Date.now() - t1} ms: ${pubkey.slice(0, 8)}… (${pubkey === saved.pubkey ? 'the remembered one' : 'ANOTHER identity'})`);
+        } catch (e) {
+          this.d.diag?.('restore:pubkey', `${e instanceof SignerError ? e.code : 'failed'} after ${Date.now() - t1} ms`);
+          throw e;
+        }
+      }
     } catch (e) {
       why = e instanceof SignerError ? e.code : 'failed';
+      if (!signer) this.d.diag?.('restore:signer', `${why} after ${Date.now() - t0} ms`);
       signer = null;
     }
-    if (g !== this.gen) return;
+    if (g !== this.gen) return this.d.diag?.('restore:superseded', `gen ${g} → ${this.gen} (a click or Disconnect meanwhile)`);
     if (signer && pubkey === saved.pubkey) return this.adopt(signer, pubkey);
     if (signer && pubkey) {
       // The extension holds another identity: shown, never switched to by itself.
       this.pending = { signer, pubkey };
+      this.d.diag?.('restore:end', 'changed (another identity in the extension)');
       this.set({ phase: 'changed', other: pubkey });
       return;
     }
     // No extension (yet), or no usable answer: back to the hint. A refusal or a time-out also turns reconnection off, so no prompt repeats by itself.
     const keep = why === 'unavailable';
     if (!keep) saveLogin(this.d.storage, this.key, saved.method, saved.pubkey, false);
+    this.d.diag?.('restore:end', `known (${why}); auto ${keep ? 'kept' : 'turned off'}`);
     this.set({ phase: 'known', auto: keep });
   }
 
@@ -220,6 +243,7 @@ export class IdentitySession {
   /** A new game connection said welcome. */
   onWelcome(features: readonly string[] | undefined) {
     this.connected = true;
+    this.d.diag?.('game:welcome', `nostr-auth ${features?.includes('nostr-auth') ? 'offered' : 'NOT offered'}; identity ${this.state.phase}`);
     this.state = { ...this.state, serverSupports: !!features?.includes('nostr-auth') };
     // Connected in this page before: prove it again on the new connection.
     if (this.signer && (this.state.phase === 'proving' || this.state.phase === 'verified')) {
@@ -238,12 +262,15 @@ export class IdentitySession {
   async onChallenge(challenge: string) {
     const signer = this.signer;
     if (!signer || this.state.phase !== 'proving') return;
+    this.d.diag?.('game:challenge', 'received; asking the extension to sign');
     try {
       const event = await signer.signEvent(authTemplate(this.d.url, challenge));
-      if (this.signer !== signer || this.state.phase !== 'proving') return;
-      if (!this.d.send({ t: 'auth', event: event as unknown as Record<string, unknown> })) return;
+      if (this.signer !== signer || this.state.phase !== 'proving') return this.d.diag?.('game:proof', 'signed, but the identity moved on meanwhile');
+      const sent = this.d.send({ t: 'auth', event: event as unknown as Record<string, unknown> });
+      this.d.diag?.('game:proof', sent ? 'signed and sent' : 'signed, but the game connection is down');
     } catch (e) {
       const code = e instanceof SignerError ? e.code : 'failed';
+      this.d.diag?.('game:proof', `signing ${code}`);
       this.set({ phase: 'error', error: SIGNER_WORDS[code] ?? SIGNER_WORDS.failed });
     }
   }
@@ -251,6 +278,7 @@ export class IdentitySession {
   /** The server's verdict on a proof. */
   onAuth(r: AuthReply) {
     if (r.reason === 'logged-out') return;
+    this.d.diag?.('game:auth', r.ok ? 'accepted' : `refused (${r.reason ?? 'unknown'})`);
     if (this.state.phase !== 'proving') return;
     if (r.ok && r.pubkey === this.state.pubkey) {
       this.set({ phase: 'verified', error: null });

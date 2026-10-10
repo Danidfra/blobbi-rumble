@@ -64,7 +64,7 @@ import { ProfileDirectory } from '../../social/directory';
 import { BoundedPool } from '../../social/pool';
 import { clip, displayName } from '../../social/profile';
 import { LOOKUP_RELAYS, relayUrl } from '../../social/relays';
-import { findNip07, nip07Signer } from '../../social/signer';
+import { findNip07, nip07From, nip07Signer } from '../../social/signer';
 import type { SlotIdentity } from '../net/protocol';
 import { IdentitySession } from './identity';
 
@@ -77,6 +77,8 @@ const safeStorage = (): Storage | null => {
   }
 };
 const START_SEEN = 'rumble:start-seen';
+/** How many times this page started the network client (diagnostics: more than once means a duplicate initialisation). */
+let startups = 0;
 
 const NET_BINDINGS: KeyBindings = {
   forward: ['KeyW', 'ArrowUp'],
@@ -319,15 +321,44 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       // Not remembered: shown again next visit.
     }
   };
+  // Development-only diagnostics of the Nostr connection lifecycle (dev builds; `?nostr-diag=1` too): stages and timings,
+  // never a key, a signature, a challenge or a message. Shown in the session panel with a Copy button, and on the console.
+  const diagOn = import.meta.env.DEV || q.get('nostr-diag') === '1';
+  const diagLines: string[] = [];
+  const pageT0 = performance.now();
+  const diag = (stage: string, detail?: string) => {
+    if (!diagOn) return;
+    const line = `${(performance.now() - pageT0).toFixed(0).padStart(6)} ms  ${stage}${detail ? `  ${detail}` : ''}`;
+    diagLines.push(line);
+    if (diagLines.length > 80) diagLines.shift();
+    console.info(`[rumble:nostr] ${line}`);
+  };
+  diag('page', `startNetwork #${++startups}${startups > 1 ? ' (DUPLICATE start-up in this page)' : ''}; document ${document.readyState}; window.nostr ${nip07From(window) ? 'PRESENT' : 'absent'} at start`);
+  window.addEventListener('load', () => diag('page', `window load; window.nostr ${nip07From(window) ? 'present' : 'absent'}`), { once: true });
+  let findCalls = 0;
   const identity = new IdentitySession({
     url,
     send,
     findSigner: async () => {
+      const n = ++findCalls;
+      const t0 = performance.now();
+      const before = nip07From(window);
       const ext = await findNip07(window);
+      diag('provider', `findSigner #${n}: window.nostr ${before ? 'already there' : ext ? `appeared after ${(performance.now() - t0).toFixed(0)} ms` : `absent for the whole ${(performance.now() - t0).toFixed(0)} ms detection window`}`);
+      if (!ext && diagOn) {
+        // Keep watching (diagnostics only): if a provider turns up later, the detection window, not the extension, is the limit.
+        const watchT0 = performance.now();
+        const watch = setInterval(() => {
+          const late = nip07From(window);
+          if (late) diag('provider', `window.nostr appeared LATE, ${(performance.now() - watchT0).toFixed(0)} ms after the window closed (getPublicKey ${typeof late.getPublicKey}, nip44 ${late.nip44 ? 'yes' : 'no'})`);
+          if (late || performance.now() - watchT0 > 20_000) clearInterval(watch);
+        }, 100);
+      }
       return ext ? nip07Signer(ext) : null;
     },
     storage,
     onChange: () => wantProfiles(),
+    diag,
   });
   /** Go to another room in place: a new connection, the same page (and the same Nostr signer, which proves itself again). */
   const switchTo = (next: RoomIntent) => {
@@ -672,6 +703,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       trust,
       server: serverInfo,
       identity: identity.state,
+      diag: diagOn ? diagLines : null,
       profile: (pk) => profileOf(pk),
       roster,
       spectators,
@@ -862,6 +894,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         connect: () => identity.connect(),
         disconnect: () => identity.disconnect(),
         restore: () => identity.restore(),
+        get diag() {
+          return [...diagLines];
+        },
         connectOther: () => identity.connectOther(),
         dismissOther: () => identity.dismissChanged(),
       },
