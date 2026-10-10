@@ -571,15 +571,25 @@ export function createShell(a: ShellActions) {
       case 'loading':
         out.push(el('div', 'rs-sub', 'Looking for your Blobbis…'));
         return out;
-      case 'none': {
-        out.push(el('div', 'rs-sub', ps.dropped ? 'The Blobbi you had chosen is no longer found, so Rumble uses its default fighter.' : 'No Blobbis found for this identity (or the Blobbi relay didn’t answer). Rumble uses its default fighter.'));
+      case 'unreachable': {
+        // Nothing answered: nothing is concluded, and the choice is kept.
+        out.push(el('div', 'rs-warn', ps.selected ? 'Your selected Blobbi couldn’t be loaded right now (the Blobbi relay didn’t answer). Your selection is saved; the default fighter plays meanwhile.' : 'The Blobbi relay didn’t answer, so your Blobbis couldn’t be listed right now.'));
         const r = el('div', 'rs-row');
-        r.append(button('Look again', a.reloadBlobbis));
+        r.append(button('Try again', a.reloadBlobbis));
+        if (ps.selected) r.append(button('Use the default fighter', a.defaultBlobbi));
+        out.push(r);
+        return out;
+      }
+      case 'none': {
+        out.push(el('div', 'rs-sub', ps.missing ? 'Your selected Blobbi couldn’t be loaded right now: the relay answered without it. Your selection is saved; the default fighter plays meanwhile.' : 'No Blobbis found for this identity. Rumble uses its default fighter.'));
+        const r = el('div', 'rs-row');
+        r.append(button(ps.missing ? 'Try again' : 'Look again', a.reloadBlobbis));
+        if (ps.selected) r.append(button('Use the default fighter', a.defaultBlobbi));
         out.push(r);
         return out;
       }
     }
-    if (ps.dropped) out.push(el('div', 'rs-warn', 'The Blobbi you had chosen is no longer found: back to the default fighter.'));
+    if (ps.missing) out.push(el('div', 'rs-warn', 'Your selected Blobbi couldn’t be loaded right now: the relay answered without it. Your selection is saved; the default fighter plays meanwhile. Try again, or pick another.'));
     for (const b of ps.blobbis) {
       const sel = b.d === ps.selected;
       const row = el('div', `rs-blobbi${sel ? ' sel' : ''}`);
@@ -613,8 +623,9 @@ export function createShell(a: ShellActions) {
       else if (form.derivation === 'adult-stage') out.push(el('div', 'rs-sub', 'Your Blobbi is temporarily taking an adult form to play. Its actual life stage is unchanged.'));
       if (note === 'refused') out.push(el('div', 'rs-warn', 'This form couldn’t be built here, so your fighter keeps the default look.'));
       else out.push(el('div', 'rs-sub', note === 'worn' ? 'Your fighter wears this form now. Only you see it for the moment; other players still see the default.' : 'Your fighter takes this form as soon as the match is on screen.'));
-    } else if (ps.selected && !form) out.push(el('div', 'rs-warn', 'This Blobbi has no Rumble form here, so your fighter keeps the default look.'));
+    } else if (ps.selected && !form && !ps.missing) out.push(el('div', 'rs-warn', 'This Blobbi has no Rumble form here, so your fighter keeps the default look.'));
     const r = el('div', 'rs-row');
+    if (ps.missing) r.append(button('Try again', a.reloadBlobbis));
     if (ps.selected) r.append(button('Use the default fighter', a.defaultBlobbi));
     else r.append(el('span', 'rs-sub', 'Using the default fighter.'));
     out.push(r);
@@ -798,7 +809,7 @@ export function createShell(a: ShellActions) {
         lastId = iKey;
         if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'), ...(invites ? [el('span', 'rs-badge', `✉ ${invites}`)] : []));
         else if (s.phase === 'asking' || s.phase === 'proving') idChip.replaceChildren(el('span', 'dim', 'Nostr · check your extension…'));
-        else if (s.phase === 'restoring') idChip.replaceChildren(el('span', 'dim', 'Restoring Nostr…'));
+        else if (s.phase === 'restoring') idChip.replaceChildren(el('span', 'dim', 'Restoring Nostr… ·'), button('Connect Nostr', a.connectNostr));
         else if (s.phase === 'changed') idChip.replaceChildren(el('span', 'dim', 'Nostr · another account'), button('Session', () => togglePanel(true)));
         else if (s.phase === 'error') idChip.replaceChildren(el('span', 'dim', 'Nostr · didn’t connect'));
         else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'));

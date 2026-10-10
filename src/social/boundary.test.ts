@@ -68,12 +68,17 @@ describe('publishing: only gift wraps to inboxes and the player’s own inbox li
     expect(listFn.indexOf("list.kind !== 10050")).toBeGreaterThan(0);
     expect(listFn.indexOf('list.pubkey !== me')).toBeGreaterThan(0);
     expect(listFn.indexOf('publishTo(')).toBeGreaterThan(listFn.indexOf('list.pubkey !== me'));
-    // The pool interface the app uses has reads and closes, nothing else.
+    // The pool interface the app uses has reads (a query, and since the M9B.1 hotfix a reporting subscription) and closes: no publish, no AUTH.
     const pool = readFileSync(join(__dirname, 'pool.ts'), 'utf8');
     const iface = pool.slice(pool.indexOf('export interface PoolLike'), pool.indexOf('\n}', pool.indexOf('export interface PoolLike')));
     expect(iface).toMatch(/querySync/);
     expect(iface).toMatch(/close/);
-    expect(iface).not.toMatch(/publish|subscribe/);
+    expect(iface).not.toMatch(/publish|auth/i);
+    expect(iface.match(/subscribeMany\?\(/g)).toHaveLength(1);
+    // The reporting query hands the pool no signer and no AUTH callback, and publishes nothing (the loop above forbids `.publish(` and `onauth` in pool.ts too).
+    const report = pool.slice(pool.indexOf('async queryReport('), pool.indexOf('\n  sweep()'));
+    expect(report).toMatch(/subscribeMany/);
+    expect(report).not.toMatch(/onauth|\.publish\(|signer/i);
   });
 
   it('the identity session sends the signed proof only through the game connection it is given', () => {

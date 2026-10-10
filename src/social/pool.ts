@@ -15,11 +15,24 @@ import type { Filter } from 'nostr-tools/filter';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { RELAY_LIMITS, relayUrl } from './relays';
 
-/** The part of nostr-tools' SimplePool this needs (and tests fake). */
+/** The part of nostr-tools' SimplePool this needs (and tests fake). `subscribeMany` is what a reporting query needs; without it the report is conservative. */
 export interface PoolLike {
   querySync(relays: string[], filter: Filter, params?: { maxWait?: number }): Promise<NostrEvent[]>;
+  subscribeMany?(relays: string[], filter: Filter, params: { onevent: (e: NostrEvent) => void; oneose?: () => void; onclose?: (reasons: { url: string; reason: string }[]) => void; maxWait?: number }): { close: (reason?: string) => void };
   close(relays: string[]): void;
 }
+
+/** A query's answer with what it is worth: `answered` are the relays that sent their complete stored answer (EOSE) in time. */
+export interface QueryReport {
+  events: NostrEvent[];
+  /** Relays whose stored answer arrived complete. Empty: nothing can be concluded from an empty `events`. */
+  answered: string[];
+  /** Relays this query went to (admitted); [] when none could be. */
+  asked: string[];
+}
+
+/** The longest any reporting query may wait, ms. */
+export const REPORT_MAX_WAIT = 12_000;
 
 export interface BoundedPoolOptions {
   maxOpen?: number;
@@ -92,6 +105,64 @@ export class BoundedPool {
       return await this.pool.querySync(use, filter, { maxWait: Math.min(opts.maxWait ?? this.maxWait, this.maxWait) });
     } catch {
       return [];
+    } finally {
+      const t = this.now();
+      for (const u of use) {
+        const s = this.open.get(u);
+        if (s) {
+          s.busy = Math.max(0, s.busy - 1);
+          s.used = t;
+        }
+      }
+    }
+  }
+
+  /**
+   * Like `query`, and says which relays ANSWERED: a relay counts only when
+   * it sent its complete stored answer (EOSE) within `maxWait`; a relay that
+   * was down, refused, timed out or is still sending does not. So an empty
+   * `events` with no `answered` relay means "unknown", never "none".
+   * Never throws.
+   */
+  async queryReport(relays: readonly string[], filter: Filter, opts: { maxWait?: number } = {}): Promise<QueryReport> {
+    const use = this.admit(relays);
+    if (!use.length) return { events: [], answered: [], asked: [] };
+    const wait = Math.min(opts.maxWait ?? this.maxWait, REPORT_MAX_WAIT);
+    this.queries += 1;
+    for (const u of use) this.open.get(u)!.busy += 1;
+    try {
+      if (!this.pool.subscribeMany) {
+        // No per-relay report possible: an answer with events is taken as answered, an empty one as unknown.
+        const events = await this.pool.querySync(use, filter, { maxWait: wait });
+        return { events, answered: events.length ? [...use] : [], asked: [...use] };
+      }
+      return await new Promise<QueryReport>((resolve) => {
+        const events: NostrEvent[] = [];
+        let settled = false;
+        let sub: { close: (reason?: string) => void } | null = null;
+        const settle = (reasons: { url: string; reason: string }[]) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try {
+            sub?.close('done');
+          } catch {
+            // Already closed.
+          }
+          resolve({ events, answered: reasons.filter((r) => r.reason === 'done').map((r) => r.url), asked: [...use] });
+        };
+        // Our own clock decides: a relay still silent when it fires has not answered (nostr-tools' own EOSE timeout is set later than this).
+        const timer = setTimeout(() => settle([]), wait);
+        sub = this.pool.subscribeMany!(use, filter, {
+          onevent: (e) => void events.push(e),
+          // Every relay sent EOSE (or closed): close with our own reason, which marks the ones that really answered.
+          oneose: () => void sub?.close('done'),
+          onclose: (reasons) => settle(reasons),
+          maxWait: wait + 2000,
+        });
+      });
+    } catch {
+      return { events: [], answered: [], asked: [...use] };
     } finally {
       const t = this.now();
       for (const u of use) {

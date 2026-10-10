@@ -33,21 +33,53 @@ function blobbi(sk: Uint8Array, petId: string, opts: { name?: string; stage?: 'e
 }
 const PET = ['0123456789', 'abcdefabcd', 'fedcba0987', '1111111111'];
 
-function network(holds: Record<string, NostrEvent[]>, down: string[] = []) {
+/**
+ * A fake network that reports like nostr-tools: a relay that holds events sends them and EOSE; a `down` relay closes with an
+ * error; a `silent` relay never answers (the query's own clock settles it); a `partial` relay sends its events and never EOSE.
+ */
+function network(holds: Record<string, NostrEvent[]>, opts: { down?: string[]; silent?: string[]; partial?: string[] } = {}) {
   const asked: { relays: string[]; filter: Filter }[] = [];
+  const matching = (r: string, filter: Filter) => (holds[r] ?? []).filter((ev) => filter.kinds?.includes(ev.kind) && filter.authors?.includes(ev.pubkey));
   const pool: PoolLike = {
     async querySync(relays, filter) {
       asked.push({ relays, filter });
-      const out: NostrEvent[] = [];
-      for (const r of relays) {
-        if (down.includes(r)) continue;
-        for (const ev of holds[r] ?? []) if (filter.kinds?.includes(ev.kind) && filter.authors?.includes(ev.pubkey)) out.push(ev);
-      }
-      return out;
+      return relays.flatMap((r) => (opts.down?.includes(r) || opts.silent?.includes(r) ? [] : matching(r, filter)));
+    },
+    subscribeMany(relays, filter, params) {
+      asked.push({ relays, filter });
+      const reasons: { url: string; reason: string }[] = [];
+      let closed = false;
+      let eoses = 0;
+      const finishClose = () => {
+        if (!closed && reasons.length === relays.length) {
+          closed = true;
+          params.onclose?.(reasons);
+        }
+      };
+      setTimeout(() => {
+        for (const r of relays) {
+          if (opts.silent?.includes(r)) continue;
+          if (opts.down?.includes(r)) {
+            reasons.push({ url: r, reason: 'connection errored' });
+            eoses++;
+            continue;
+          }
+          for (const ev of matching(r, filter)) params.onevent(ev);
+          if (!opts.partial?.includes(r)) eoses++;
+        }
+        if (eoses === relays.length) params.oneose?.();
+        finishClose();
+      }, 0);
+      return {
+        close: (reason = 'closed') => {
+          for (const r of relays) if (!reasons.some((x) => x.url === r)) reasons.push({ url: r, reason });
+          finishClose();
+        },
+      };
     },
     close() {},
   };
-  return { pool: new BoundedPool(pool), asked };
+  return { pool: new BoundedPool(pool, { maxWait: 40 }), asked };
 }
 const memory = () => {
   const m = new Map<string, string>();
@@ -135,14 +167,29 @@ describe('collecting the Blobbis an identity owns', () => {
     expect(got[0].name).not.toContain('‮');
   });
 
-  it('asks the Blobbi relays for kind 31124 by this author with the ecosystem marker, bounded; nothing, or relays down, is an empty list', async () => {
+  it('asks the Blobbi relays for kind 31124 by this author with the ecosystem marker, bounded; an answered empty list is "none"', async () => {
     const n = network({ [RELAYS[0]]: [blobbi(me, PET[0]), blobbi(other, PET[1])] });
     const got = await findBlobbis(n.pool, ME, { relays: RELAYS });
-    expect(got).toHaveLength(1);
+    expect(got.blobbis).toHaveLength(1);
+    expect(got.answered).toBe(true);
     expect(n.asked[0].filter).toEqual({ kinds: [31124], authors: [ME], '#b': ['blobbi:ecosystem:v1'], limit: BLOBBIS.fetchLimit });
-    expect(await findBlobbis(network({}).pool, ME, { relays: RELAYS })).toEqual([]);
-    expect(await findBlobbis(network({ [RELAYS[0]]: [blobbi(me, PET[0])] }, RELAYS).pool, ME, { relays: RELAYS })).toEqual([]);
-    expect(await findBlobbis(network({}).pool, 'not a pubkey', { relays: RELAYS })).toEqual([]);
+    expect(await findBlobbis(network({}).pool, ME, { relays: RELAYS })).toEqual({ blobbis: [], answered: true });
+    expect(await findBlobbis(network({}).pool, 'not a pubkey', { relays: RELAYS })).toEqual({ blobbis: [], answered: true });
+  });
+
+  it('a relay that is down, silent (a time-out) or still sending (a partial answer) has NOT answered: the empty list means nothing', async () => {
+    const stored = [blobbi(me, PET[0])];
+    const W = { relays: RELAYS, waitMs: 40 };
+    expect(await findBlobbis(network({ [RELAYS[0]]: stored }, { down: RELAYS }).pool, ME, W)).toEqual({ blobbis: [], answered: false });
+    expect(await findBlobbis(network({ [RELAYS[0]]: stored }, { silent: RELAYS }).pool, ME, W)).toEqual({ blobbis: [], answered: false });
+    const partial = await findBlobbis(network({ [RELAYS[0]]: stored }, { partial: RELAYS }).pool, ME, W);
+    expect(partial.answered).toBe(false);
+    expect(partial.blobbis).toHaveLength(1);
+    // Two relays, one down: not a complete answer either (what arrived is still shown).
+    const two = ['wss://a.example/', 'wss://b.example/'];
+    const mixed = await findBlobbis(network({ [two[0]]: stored, [two[1]]: stored }, { down: [two[1]] }).pool, ME, { relays: two, waitMs: 40 });
+    expect(mixed).toMatchObject({ answered: false });
+    expect(mixed.blobbis).toHaveLength(1);
   });
 });
 
@@ -159,21 +206,23 @@ describe('the small picture', () => {
 });
 
 describe('choosing a Blobbi for Rumble', () => {
-  const setup = (events: NostrEvent[], storage = memory(), pk = ME, down: string[] = []) => {
-    const n = network({ [RELAYS[0]]: events }, down);
+  const setup = (events: NostrEvent[], storage = memory(), pk = ME, opts: { down?: string[]; silent?: string[]; partial?: string[] } = {}) => {
+    const n = network({ [RELAYS[0]]: events }, opts);
     let changes = 0;
-    const picker = new BlobbiPicker({ me: pk, lookup: n.pool, relays: RELAYS, storage, preview: async (b) => (b.generation === 'v3' ? `data:${b.d}` : null), onChange: () => changes++ });
+    const picker = new BlobbiPicker({ me: pk, lookup: n.pool, relays: RELAYS, storage, preview: async (b) => (b.generation === 'v3' ? `data:${b.d}` : null), retryMs: 1, waitMs: 40, onChange: () => changes++ });
     return { picker, storage, n, changes: () => changes };
   };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
 
   it('nothing is read until asked; then the list, no choice by default; one Blobbi selected is remembered for this identity', async () => {
     const t = setup([blobbi(me, PET[0], { name: 'Puck' }), blobbi(me, PET[1], { name: 'Mara', gen: 'v2' })]);
-    await settle();
+    await tick();
     expect(t.n.asked).toHaveLength(0);
     expect(t.picker.state).toMatchObject({ phase: 'idle', selected: null });
-    t.picker.load();
-    t.picker.load();
-    await until(() => t.picker.state.phase === 'ready');
+    const p = t.picker.load();
+    await t.picker.load();
+    await p;
+    expect(t.picker.state.phase).toBe('ready');
     expect(t.n.asked).toHaveLength(1);
     expect(t.picker.state.blobbis.map((b) => b.name)).toEqual(['Mara', 'Puck']);
     expect(t.picker.chosen).toBeNull();
@@ -182,38 +231,89 @@ describe('choosing a Blobbi for Rumble', () => {
     expect(t.picker.state.selected).toBe(d);
     expect(t.picker.chosen?.name).toBe('Puck');
     expect(t.storage.raw.get(`rumble:blobbi:v1:${ME}`)).toBe(d);
-    // Pictures arrive as they are made, only where the kit can draw one.
     await until(() => !!t.picker.state.previews[d]);
     expect(t.picker.state.previews[getCanonicalBlobbiD(ME, PET[1])]).toBeUndefined();
-    // Only a listed Blobbi can be chosen.
     t.picker.select(getCanonicalBlobbiD(ME, PET[3]));
     expect(t.picker.state.selected).toBe(d);
   });
 
-  it('a reload restores the choice while that Blobbi is still listed; a Blobbi that disappeared drops it, says so, and clears the memory', async () => {
+  it('a reload restores the choice while that Blobbi is listed; an answered list without it keeps the choice, says so, and plays the default meanwhile', async () => {
     const storage = memory();
     const events = [blobbi(me, PET[0], { name: 'Puck' })];
     const first = setup(events, storage);
-    first.picker.load();
-    await until(() => first.picker.state.phase === 'ready');
+    await first.picker.load();
     const d = getCanonicalBlobbiD(ME, PET[0]);
     first.picker.select(d);
     first.picker.stop();
     const again = setup(events, storage);
     expect(again.picker.state.selected).toBe(d);
-    again.picker.load();
-    await until(() => again.picker.state.phase === 'ready');
-    expect(again.picker.state).toMatchObject({ selected: d, dropped: false });
+    await again.picker.load();
+    expect(again.picker.state).toMatchObject({ phase: 'ready', selected: d, missing: false });
     expect(again.picker.chosen?.name).toBe('Puck');
     again.picker.stop();
+    // The relay answers, but without this Blobbi: not proof of anything. The choice stays stored; the form waits.
     const gone = setup([], storage);
-    gone.picker.load();
-    await until(() => gone.picker.state.phase === 'none');
-    expect(gone.picker.state).toMatchObject({ selected: null, dropped: true, blobbis: [] });
-    expect(gone.storage.raw.has(`rumble:blobbi:v1:${ME}`)).toBe(false);
+    await gone.picker.load();
+    expect(gone.picker.state).toMatchObject({ phase: 'none', selected: d, missing: true, blobbis: [] });
+    expect(gone.picker.chosen).toBeNull();
+    expect(gone.storage.raw.get(`rumble:blobbi:v1:${ME}`)).toBe(d);
+    // Another Blobbi listed, the chosen one not: likewise.
+    const others = setup([blobbi(me, PET[1])], storage);
+    await others.picker.load();
+    expect(others.picker.state).toMatchObject({ phase: 'ready', selected: d, missing: true });
+    expect(others.picker.chosen).toBeNull();
   });
 
-  it('another identity never sees this one’s choice; a corrupt memory is ignored; stop() ends updates', async () => {
+  it('a relay that is down or silent concludes nothing: the choice stays, nothing is listed as absent, one retry comes by itself, then Look again', async () => {
+    const storage = memory();
+    const d = getCanonicalBlobbiD(ME, PET[0]);
+    storage.raw.set(`rumble:blobbi:v1:${ME}`, d);
+    for (const how of [{ down: RELAYS }, { silent: RELAYS }]) {
+      const t = setup([blobbi(me, PET[0])], storage, ME, how);
+      await t.picker.load();
+      expect(t.picker.state).toMatchObject({ phase: 'unreachable', selected: d, missing: false, blobbis: [] });
+      expect(t.picker.chosen).toBeNull();
+      expect(t.storage.raw.get(`rumble:blobbi:v1:${ME}`)).toBe(d);
+      // The one automatic retry (still unanswered here), then no more by itself.
+      await until(() => t.n.asked.length === 2);
+      await until(() => t.picker.state.phase === 'unreachable');
+      await tick();
+      await tick();
+      expect(t.n.asked).toHaveLength(2);
+      t.picker.stop();
+    }
+    // A partial answer (events without EOSE) is shown but not trusted as complete: the choice is not marked missing.
+    const partial = setup([blobbi(me, PET[1])], storage, ME, { partial: RELAYS });
+    await partial.picker.load();
+    expect(partial.picker.state).toMatchObject({ phase: 'unreachable', selected: d, missing: false });
+    partial.picker.stop();
+  });
+
+  it('when the relay recovers, Look again lists the chosen Blobbi and the form returns by itself, the same one, without selecting again', async () => {
+    const storage = memory();
+    const d = getCanonicalBlobbiD(ME, PET[0]);
+    storage.raw.set(`rumble:blobbi:v1:${ME}`, d);
+    const events = [blobbi(me, PET[0], { name: 'Puck' })];
+    const down = new Set(RELAYS);
+    const n = network({ [RELAYS[0]]: events }, { down: [...down] });
+    const picker = new BlobbiPicker({ me: ME, lookup: n.pool, relays: RELAYS, storage, retryMs: 100_000, waitMs: 40 });
+    await picker.load();
+    expect(picker.state.phase).toBe('unreachable');
+    expect(picker.chosen).toBeNull();
+    // The relay is back (the fake's `down` list is read at each query).
+    down.clear();
+    (n as unknown as { pool: BoundedPool }).pool = n.pool;
+    const back = network({ [RELAYS[0]]: events });
+    const picker2 = new BlobbiPicker({ me: ME, lookup: back.pool, relays: RELAYS, storage, retryMs: 100_000, waitMs: 40 });
+    await picker2.load();
+    expect(picker2.state).toMatchObject({ phase: 'ready', selected: d, missing: false });
+    expect(picker2.chosen?.name).toBe('Puck');
+    expect(picker2.chosen?.d).toBe(d);
+    picker.stop();
+    picker2.stop();
+  });
+
+  it('another identity never sees this one’s choice; a corrupt memory is ignored; stop() ends updates and the retry', async () => {
     const storage = memory();
     const d = getCanonicalBlobbiD(ME, PET[0]);
     storage.raw.set(`rumble:blobbi:v1:${ME}`, d);
@@ -222,36 +322,31 @@ describe('choosing a Blobbi for Rumble', () => {
     expect(mine.picker.state.selected).toBe(d);
     const theirs = setup([blobbi(other, PET[0])], storage, OTHER);
     expect(theirs.picker.state.selected).toBeNull();
-    theirs.picker.load();
-    await until(() => theirs.picker.state.phase === 'ready');
+    await theirs.picker.load();
     expect(theirs.picker.state.selected).toBeNull();
     expect(theirs.picker.state.blobbis[0].d).toBe(getCanonicalBlobbiD(OTHER, PET[0]));
-    const stopped = setup([blobbi(me, PET[0])], storage);
-    stopped.picker.load();
+    const stopped = setup([blobbi(me, PET[0])], storage, ME, { down: RELAYS });
+    const p = stopped.picker.load();
     stopped.picker.stop();
-    await settle();
-    await settle();
+    await p;
+    await tick();
+    await tick();
     expect(stopped.picker.state.phase).toBe('loading');
+    expect(stopped.n.asked).toHaveLength(1);
     expect(stopped.changes()).toBe(1);
   });
 
-  it('back to the default fighter clears the memory; an unsupported generation cannot be chosen; a relay down lists nothing but breaks nothing', async () => {
+  it('back to the default fighter is the one way the memory goes; an unsupported generation cannot be chosen', async () => {
     const storage = memory();
     const t = setup([blobbi(me, PET[0]), blobbi(me, PET[1], { gen: 'v1', tags: [['visual_generation', 'v9']] })], storage);
-    t.picker.load();
-    await until(() => t.picker.state.phase === 'ready');
+    await t.picker.load();
     const d = getCanonicalBlobbiD(ME, PET[0]);
     t.picker.select(d);
+    expect(storage.raw.size).toBe(1);
     t.picker.useDefault();
     expect(t.picker.state.selected).toBeNull();
     expect(storage.raw.size).toBe(0);
     t.picker.select(getCanonicalBlobbiD(ME, PET[1]));
     expect(t.picker.state.selected).toBeNull();
-    const down = setup([blobbi(me, PET[0])], memory(), ME, RELAYS);
-    down.picker.load();
-    await until(() => down.picker.state.phase === 'none');
-    expect(down.picker.state.blobbis).toEqual([]);
-    down.picker.load(true);
-    expect(down.picker.state.phase).toBe('loading');
   });
 });

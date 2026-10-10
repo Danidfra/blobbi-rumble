@@ -29,7 +29,12 @@
 import type { ClientMessage, AuthReply } from '../net/protocol';
 import { authTemplate } from '../../social/auth';
 import { clearLogin, loadLogin, saveLogin } from '../../social/login';
-import { SignerError, type NostrSigner, type SignerErrorCode, type SignerMethod } from '../../social/signer';
+import { SignerError, withTimeout, type NostrSigner, type SignerErrorCode, type SignerMethod } from '../../social/signer';
+
+export const RESTORE = Object.freeze({
+  /** How long a restore waits for the extension to be found and to answer with its public key, ms (a click waits longer: it may be a prompt). */
+  waitMs: 15_000,
+});
 
 export type IdentityPhase = 'guest' | 'known' | 'restoring' | 'changed' | 'asking' | 'proving' | 'verified' | 'error';
 
@@ -56,6 +61,8 @@ export interface IdentityDeps {
   findSigner: () => Promise<NostrSigner | null>;
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null;
   storageKey?: string;
+  /** How long a restore waits for the extension, ms (tests shorten it). */
+  restoreMs?: number;
   onChange?: () => void;
 }
 
@@ -159,9 +166,11 @@ export class IdentitySession {
     let signer: NostrSigner | null = null;
     let pubkey: string | null = null;
     let why: SignerErrorCode | 'other' = 'unavailable';
+    // Bounded, whatever the extension does: a restore must settle, and it is silent work, not a prompt the player is answering.
+    const wait = this.d.restoreMs ?? RESTORE.waitMs;
     try {
-      signer = await this.d.findSigner();
-      if (signer && signer.method === saved.method) pubkey = await signer.getPublicKey();
+      signer = await withTimeout(this.d.findSigner(), wait, 'restore');
+      if (signer && signer.method === saved.method) pubkey = await withTimeout(signer.getPublicKey(), wait, 'restore');
     } catch (e) {
       why = e instanceof SignerError ? e.code : 'failed';
       signer = null;

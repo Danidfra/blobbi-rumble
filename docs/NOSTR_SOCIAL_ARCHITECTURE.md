@@ -1576,3 +1576,68 @@ was missing was asking the extension without a click.
   cannot avoid the latter without weakening the proof.
 - The NIP-07 method is the only one; `auto` is stored with the method so a
   future NIP-46 record is not restored through the wrong signer.
+
+---
+
+## M9B.1 hotfix (2026-10-09): a restore that settles, a choice that survives
+
+Real browser testing of M9B.1 found two intermittent failures. Both had
+concrete causes in the lifecycle; neither was browser caching.
+
+### Bug 1: "Restoring Nostr…" that did not end
+
+`restore()` asked the extension for its public key through the same
+signer a click uses, whose every call waits up to `SIGNER.promptMs`
+(60 s) for a prompt the player might be answering. A normal refresh
+sometimes meets an extension whose `window.nostr` is injected but whose
+background is not yet answering; the restore then sat for a minute
+before settling, which reads as "indefinitely". (A hard refresh loads
+slower, so the extension was ready first.) Finding the extension was
+bounded (1.5 s), but the public-key call was not bounded for silent work.
+
+Fix: a restore has its own wait, `RESTORE.waitMs` (15 s), applied to both
+finding the extension and asking its key. The end states are enumerated
+and each clears `restoring`: `proving` (connected; `verified` only once
+the game answers, so a game server that is down never shows a false
+session), `known` with Reconnect (`auto` kept when nothing was prompted,
+off after a refusal or a time-out), or `changed`. A late answer after the
+wait changes nothing (the generation guard). While restoring, the chip
+offers Connect Nostr to take over. Tests: a never-answering key, a
+never-found extension, a late answer, the game down during a restore.
+
+### Bug 2: "The Blobbi you had chosen is no longer found"
+
+`BoundedPool.query` wraps nostr-tools' `querySync`, which resolves with
+whatever arrived when every relay has closed or the wait ran out: an
+empty array for "no events" and for "the relay never answered" alike.
+The picker took any list without the chosen `d` as proof the Blobbi was
+gone and deleted the saved choice. On a reload, discovery starts while
+the relay socket is still cold; with a 4 s wait a slow handshake produced
+an empty list, and the player's intent was erased.
+
+Fix, at the layer the brief names:
+- `BoundedPool.queryReport` returns `{ events, answered, asked }`:
+  `answered` are the relays that sent their complete stored answer (EOSE)
+  within OUR wait. It subscribes, closes with its own reason when every
+  relay has EOSE'd, and classifies the close reasons; a relay that was
+  down, refused, timed out or is still sending is not `answered`.
+  nostr-tools' own EOSE timeout is set past our wait so it cannot
+  masquerade as an answer. A fake pool without `subscribeMany` reports
+  conservatively (events: answered; empty: unknown).
+- `findBlobbis` returns `{ blobbis, answered }`, with an 8 s wait of its
+  own (a cold connection included).
+- `BlobbiPicker` never removes a choice by itself. Unanswered: phase
+  `unreachable`, what was known stays, one automatic retry after 5 s, then
+  Try again. Answered without the chosen Blobbi: `missing` (the choice
+  kept, the default fighter meanwhile, Try again); an answered empty list
+  is "none" only without a choice. When a later answer lists the chosen
+  Blobbi, `chosen` is set again and the page's look planner wears the
+  form by itself, the same key, no new selection and no rebuild for an
+  unchanged key. Only **Use the default fighter** removes the record.
+- Relays: discovery still asks `relay.ditto.pub` alone (the one relay the
+  ecosystem's audit found serving kind 31124; the others index none of
+  it). A per-relay report makes a future second relay safe to add.
+
+Wording: "Your selected Blobbi couldn't be loaded right now … Your
+selection is saved; the default fighter plays meanwhile." Nothing says
+the Blobbi was deleted.

@@ -1,7 +1,7 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `3686aed` (M9B) plus the M9B.1 follow-up ·
+**Implementation baseline:** `fc56028` (M9B.1) plus its hotfix ·
 **Last major completed milestone:** M9A (validated for real). M9B (adult
 Rumble forms) is implemented and partly validated for real (the look
 changes, legacy forms, persistence, manual reconnect); its animation and
@@ -416,6 +416,14 @@ Nostr:   identity · profiles · social · invites · (later, maybe) discovery
   - Once per page; a click or Disconnect during it wins (a generation
     guard discards the late answer). **Disconnect Nostr** removes the
     record, so a reload stays a guest.
+  - **It always settles** (hotfix): finding the extension and asking its
+    public key are each bounded by the restore's own wait (15 s, not the
+    60 s a click allows for a prompt). The end states are: connected
+    (`proving`, then `verified` once the game answers; a game server that
+    is down leaves `proving`, never a false `verified`), `known` with
+    Reconnect (no extension, with `auto` kept; a refusal or a time-out,
+    with `auto` off), or `changed`. While restoring, the chip offers
+    Connect Nostr to take over.
   - What is stored: the pubkey, the method and `auto`. Never a key, a
     token, a challenge, a signature or a message.
   - Restoration grants nothing: the game proof is a fresh challenge on
@@ -664,9 +672,17 @@ the budget.
   the only one Rumble's 3D fighter can be built from); an unknown
   `visual_generation` is shown but cannot be chosen.
 - **The choice is local**: one `d` in this browser's storage under the
-  identity's pubkey; restored on reload while that Blobbi is still listed,
-  otherwise dropped and said so; **Use the default fighter** clears it; a
-  new identity never sees another's. No event is published to remember it.
+  identity's pubkey; **Use the default fighter** is the only thing that
+  removes it; a new identity never sees another's. No event is published
+  to remember it.
+- **Discovery failure is not absence** (hotfix). A query reports which
+  relays sent their complete answer. Unanswered (down, timed out, still
+  sending): nothing is concluded, what was known stays, the choice stays,
+  one automatic retry, then Try again. Answered without the chosen Blobbi:
+  the choice is kept and said to be unloadable right now (a bounded query
+  on one relay proves no deletion); the default fighter plays meanwhile
+  and the form returns by itself when the Blobbi is listed again, the same
+  form, with no new selection.
 - **Nothing in play changes**: the collider, mass, speeds, jump, punch,
   grab and every gameplay number are untouched; the choice is not sent to
   other players (M9C). Guests and players with no Blobbis play exactly as
@@ -781,7 +797,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-C | Choosing whom to invite | **Real two-identity test** (2026-10-09): Danidfra's follows listed, NotASage found by name and selected, the invite sent, received automatically, Join entered the room. |
 | M9A | The player's Blobbis, a local choice | **Real test** (2026-10-09): owned Blobbis listed, one selected, restored after reload, no leak across identities, default restored, guest play unchanged. |
 | M9B | Adult Rumble forms | Automated tests; **partly validated for real** (2026-10-09): selecting a Blobbi changes the local fighter, V1/V2 Blobbis get their adult forms, the choice persists across reloads and manual reconnection restores it. **Still open**: the animation checks (facing, grab arm pose, carried attachment, throw release, foot contact, transitions), geometry cleanup, room navigation and game reconnect. |
-| M9B.1 | Nostr session restoration | Automated tests (explicit connection, preference, restore, same / other pubkey, no extension, refusal, time-out, Disconnect, reload after Disconnect, click or Disconnect during restore, game reconnect with a fresh challenge). **Real validation pending** (§13; the procedure is in the M9B.1 report). |
+| M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
 

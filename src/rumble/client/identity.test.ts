@@ -12,7 +12,7 @@ import type { ClientMessage } from '../net/protocol';
 import { IdentitySession } from './identity';
 
 const URL_ = 'wss://rumble.example/ws';
-function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean; sk?: Uint8Array; findDelayMs?: number } = {}) {
+function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean; sk?: Uint8Array; findDelayMs?: number; findHangs?: boolean; restoreMs?: number } = {}) {
   const sk = opts.sk ?? generateSecretKey();
   const pk = getPublicKey(sk);
   const store = new Map<string, string>();
@@ -30,10 +30,12 @@ function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: 
     send: (m) => (up ? (sent.push(m), true) : false),
     findSigner: async () => {
       asked += 1;
+      if (opts.findHangs) await new Promise(() => {});
       if (opts.findDelayMs) await new Promise((r) => setTimeout(r, opts.findDelayMs));
       return signer;
     },
     storage,
+    ...(opts.restoreMs ? { restoreMs: opts.restoreMs } : {}),
   });
   return { session, sent, store, pk, sk, setUp: (v: boolean) => (up = v), asked: () => asked };
 }
@@ -328,5 +330,60 @@ describe('restoring the session', () => {
     const auth = t.sent[1] as { t: 'auth'; event: { tags: string[][] } };
     expect(auth.event.tags).toContainEqual(['challenge', 'c2']);
     expect(auth.event.tags).not.toContainEqual(['challenge', 'c1']);
+  });
+});
+
+/** The M9B.1 hotfix: a restore always settles, whatever the extension does, within its own bounded wait. */
+describe('a restore always settles', () => {
+  const saved = (pk: string) => JSON.stringify({ v: 1, method: 'nip07', pubkey: pk, auto: true });
+
+  it('an extension that never answers for its public key: the restore times out, the hint stays, reconnection is off, and a click still works', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const hanging: NostrSigner = { method: 'nip07', getPublicKey: () => new Promise(() => {}), signEvent: async () => Promise.reject(new Error('no')) };
+    const t = setup({ sk, saved: saved(pk), signer: hanging, restoreMs: 20 });
+    const p = t.session.restore();
+    expect(t.session.state.phase).toBe('restoring');
+    await p;
+    expect(t.session.state).toMatchObject({ phase: 'known', pubkey: pk, auto: false, error: null });
+    expect(t.session.connectedSigner).toBeNull();
+    // Not a loop: nothing asks again by itself.
+    await t.session.restore();
+    expect(t.asked()).toBe(1);
+  });
+
+  it('an extension that is never found (the finder hangs): the same bounded settle, with reconnection kept (nothing was prompted)', async () => {
+    const pk = getPublicKey(generateSecretKey());
+    const t = setup({ saved: saved(pk), findHangs: true, restoreMs: 20 });
+    await t.session.restore();
+    expect(t.session.state).toMatchObject({ phase: 'known', pubkey: pk, auto: false });
+  });
+
+  it('a late answer after the wait changes nothing: the state the restore settled to stays', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    let resolveKey: ((pk: string) => void) | null = null;
+    const late: NostrSigner = { method: 'nip07', getPublicKey: () => new Promise((r) => (resolveKey = r)), signEvent: async () => Promise.reject(new Error('no')) };
+    const t = setup({ sk, saved: saved(pk), signer: late, restoreMs: 20 });
+    await t.session.restore();
+    expect(t.session.state.phase).toBe('known');
+    resolveKey!(pk);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.session.state.phase).toBe('known');
+    expect(t.session.connectedSigner).toBeNull();
+  });
+
+  it('the game server is down while an identity is restored: "proving" waits for the game connection and never pretends to be verified', async () => {
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const t = setup({ sk, saved: saved(pk), connected: false });
+    await t.session.restore();
+    expect(t.session.state.phase).toBe('proving');
+    expect(t.session.verified).toBeNull();
+    expect(t.sent).toEqual([]);
+    // The game comes up: the proof is asked for now, with a fresh challenge.
+    t.setUp(true);
+    t.session.onWelcome(['nostr-auth']);
+    expect(t.sent).toEqual([{ t: 'challenge' }]);
   });
 });

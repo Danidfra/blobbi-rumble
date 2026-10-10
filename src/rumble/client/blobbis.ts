@@ -23,8 +23,12 @@
  * MODERN (legacy and invalid events are hidden, never migrated), keep the
  * newest per d, parse. Every event is signature-checked again here.
  *
- * The choice is one `d` in localStorage under this identity's pubkey; it is
- * kept only while that Blobbi is still in the list.
+ * The choice is one `d` in localStorage under this identity's pubkey. It
+ * is the player's intent, and only the player removes it (Use the default
+ * fighter): a relay that is down, slow, partial or simply does not hold the
+ * event proves nothing about the Blobbi, so a choice that cannot be
+ * resolved right now is kept, said so, and tried again (once by itself,
+ * then on Look again); the form returns by itself when it is found.
  */
 import { BLOBBI_ECOSYSTEM_NAMESPACE, KIND_BLOBBI_STATE, getBlobbiVisualIdentity, isModernBlobbiEvent, parseModernBlobbiEvent, type BlobbiStage, type BlobbiVisualGeneration, type BlobbiVisualIdentity } from '@blobbi-kit/core';
 import type { NostrEvent } from 'nostr-tools/pure';
@@ -38,6 +42,10 @@ export const BLOBBIS = Object.freeze({
   fetchLimit: 200,
   /** Longest kept name, code points. */
   maxName: 32,
+  /** How long discovery waits for the Blobbi relay's complete answer, ms (a cold connection included). */
+  waitMs: 8000,
+  /** One automatic retry after an unanswered discovery, after this long, ms; then only Look again. */
+  retryMs: 5000,
 });
 
 /**
@@ -97,24 +105,31 @@ export function collectBlobbis(events: readonly unknown[], me: string): OwnedBlo
   return out.sort((a, b) => a.name.localeCompare(b.name) || (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
 }
 
-/** The connected identity's Blobbis from the Blobbi relays. Read only; [] when none or no relay answered. */
-export async function findBlobbis(pool: BoundedPool, me: string, opts: { relays?: readonly string[] } = {}): Promise<OwnedBlobbi[]> {
-  if (!isPubkey(me)) return [];
-  const events = await pool.query(opts.relays ?? BLOBBI_RELAYS, { kinds: [KIND_BLOBBI_STATE], authors: [me], '#b': [BLOBBI_ECOSYSTEM_NAMESPACE], limit: BLOBBIS.fetchLimit });
-  return collectBlobbis(events, me);
+export interface Discovery {
+  blobbis: OwnedBlobbi[];
+  /** Whether every relay asked sent its complete answer: only then does an empty list mean "none there". */
+  answered: boolean;
+}
+
+/** The connected identity's Blobbis from the Blobbi relays. Read only. An unanswered query is not an empty answer. */
+export async function findBlobbis(pool: BoundedPool, me: string, opts: { relays?: readonly string[]; waitMs?: number } = {}): Promise<Discovery> {
+  if (!isPubkey(me)) return { blobbis: [], answered: true };
+  const r = await pool.queryReport(opts.relays ?? BLOBBI_RELAYS, { kinds: [KIND_BLOBBI_STATE], authors: [me], '#b': [BLOBBI_ECOSYSTEM_NAMESPACE], limit: BLOBBIS.fetchLimit }, { maxWait: opts.waitMs ?? BLOBBIS.waitMs });
+  return { blobbis: collectBlobbis(r.events, me), answered: r.asked.length > 0 && r.answered.length === r.asked.length };
 }
 
 // ─── The choice ─────────────────────────────────────────────────────────────
 
-export type PickerPhase = 'idle' | 'loading' | 'ready' | 'none';
+export type PickerPhase = 'idle' | 'loading' | 'ready' | 'none' | 'unreachable';
 
 export interface PickerState {
   phase: PickerPhase;
+  /** What the last complete answer listed (kept through an unanswered retry). */
   blobbis: OwnedBlobbi[];
-  /** The chosen Blobbi's d, or null: the default Rumble fighter. */
+  /** The chosen Blobbi's d, or null: the default Rumble fighter. Removed only by the player. */
   selected: string | null;
-  /** The remembered choice named a Blobbi that is no longer listed: back to the default. */
-  dropped: boolean;
+  /** The relays answered and the chosen Blobbi was not among them: the default fighter for now, the choice kept. */
+  missing: boolean;
   /** Small pictures by d (data: URLs of the kit's SVG), as they are made. */
   previews: Record<string, string>;
 }
@@ -128,6 +143,10 @@ export interface PickerDeps {
   storage: Store | null;
   /** Make a small picture for a Blobbi (null: no previews). */
   preview?: ((b: OwnedBlobbi) => Promise<string | null>) | null;
+  /** The one automatic retry's delay, ms. */
+  retryMs?: number;
+  /** How long a discovery waits for the relays' complete answer, ms. */
+  waitMs?: number;
   onChange?: () => void;
 }
 
@@ -138,9 +157,11 @@ export class BlobbiPicker {
   state: PickerState;
   private stopped = false;
   private gen = 0;
+  private retried = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly d: PickerDeps) {
-    this.state = { phase: 'idle', blobbis: [], selected: this.loadChoice(), dropped: false, previews: {} };
+    this.state = { phase: 'idle', blobbis: [], selected: this.loadChoice(), missing: false, previews: {} };
   }
 
   private set(patch: Partial<PickerState>) {
@@ -149,33 +170,42 @@ export class BlobbiPicker {
     this.d.onChange?.();
   }
 
-  /** Read the list once (the first time My Blobbis is on screen); `again` re-reads. */
-  load(again = false) {
+  /** Read the list once (the first time My Blobbis is on screen, or at once with a remembered choice); `again` re-reads (Look again). */
+  async load(again = false): Promise<void> {
     if (this.stopped || (this.state.phase !== 'idle' && !again) || this.state.phase === 'loading') return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     const g = ++this.gen;
     this.set({ phase: 'loading' });
-    void findBlobbis(this.d.lookup, this.d.me, { relays: this.d.relays }).then((blobbis) => {
-      if (this.stopped || g !== this.gen) return;
-      const chosen = this.state.selected;
-      const stillThere = chosen !== null && blobbis.some((b) => b.d === chosen && !b.unsupported);
-      if (chosen !== null && !stillThere) this.saveChoice(null);
-      this.set({ phase: blobbis.length ? 'ready' : 'none', blobbis, selected: stillThere ? chosen : null, dropped: chosen !== null && !stillThere });
-      void this.makePreviews(blobbis, g);
-    });
+    const r = await findBlobbis(this.d.lookup, this.d.me, { relays: this.d.relays, waitMs: this.d.waitMs });
+    if (this.stopped || g !== this.gen) return;
+    if (!r.answered) {
+      // Nothing can be concluded: what was known stays, the choice stays, and one retry comes by itself.
+      this.set({ phase: 'unreachable' });
+      if (!this.retried) {
+        this.retried = true;
+        this.retryTimer = setTimeout(() => void this.load(true), this.d.retryMs ?? BLOBBIS.retryMs);
+      }
+      return;
+    }
+    const chosen = this.state.selected;
+    const listed = chosen !== null && r.blobbis.some((b) => b.d === chosen && !b.unsupported);
+    this.set({ phase: r.blobbis.length ? 'ready' : 'none', blobbis: r.blobbis, missing: chosen !== null && !listed });
+    void this.makePreviews(r.blobbis, g);
   }
 
   /** Use this Blobbi (one of the listed ones) as the preferred Rumble character: local to this browser and identity. */
   select(d: string) {
     if (this.stopped || !this.state.blobbis.some((b) => b.d === d && !b.unsupported)) return;
     this.saveChoice(d);
-    this.set({ selected: d, dropped: false });
+    this.set({ selected: d, missing: false });
   }
 
-  /** Back to the default Rumble fighter. */
+  /** Back to the default Rumble fighter: the one way a remembered choice goes. */
   useDefault() {
     if (this.stopped) return;
     this.saveChoice(null);
-    this.set({ selected: null, dropped: false });
+    this.set({ selected: null, missing: false });
   }
 
   /** The chosen Blobbi, if it is listed. */
@@ -219,5 +249,7 @@ export class BlobbiPicker {
   stop() {
     this.stopped = true;
     this.gen++;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 }
