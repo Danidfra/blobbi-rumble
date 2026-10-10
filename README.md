@@ -46,8 +46,19 @@ npm run dev          # http://127.0.0.1:5177/rumble.html            local: the m
 npm run server       # ws://127.0.0.1:8787                          the authoritative server (the open room + private rooms)
                      # http://127.0.0.1:5177/rumble.html?network=1  a network client (open several)
 npm run serve        # http://<this machine>:8080/                    hosted: built game + WebSocket on one port (LAN / behind HTTPS)
-npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60)
+npm run headless     # bot-only matches in plain Node, no browser (MATCHES=3 PLAYERS=4 HZ=60 ARENA=<id> ROTATE=1)
+npm run bench        # rooms × ticks on this machine (ROOMS=8 SECONDS=10 ARENA=<id>)
 ```
+
+ARENAS (M11, implemented — awaiting manual validation): `?arena=<id>` on
+the local page, the arena select when hosting a room (and `?rotate=1` /
+the checkbox to rotate arenas between matches). The ids: `floating-islands-classic`
+(the default, unchanged), `floating-islands-skyfall` (islands at several
+heights, bridges that break, pads that fall, ledges to catch and climb),
+`blobbi-factory` (conveyor belts, a crate, a rotating arm, ledges),
+`frozen-lake` (everything slides; the corner tiles crack and fall). Out of
+the round, you aim and throw banana peels. See
+[docs/BLOBBI_RUMBLE_SPEC.md](docs/BLOBBI_RUMBLE_SPEC.md) §5 and §15f.
 
 PLAYING WITH OTHER MACHINES (M7D): see [HOSTING.md](HOSTING.md). In short,
 `npm run serve` builds the game and runs one Node process that serves it
@@ -176,6 +187,22 @@ sweeper's circle on the half that sends you back toward the centre, one
 deep in the left wing 0.6 m from the rim. Three, whatever the number of
 fighters: scarcity is the point.
 
+THE OTHER ARENAS (`src/rumble/arena/arenas.ts`, M11) are definitions over
+the same machinery: platforms at their own heights (`arena/geometry.ts`
+answers what is under a point, how far the rim is, where a ledge is),
+dynamic pieces (`arena/pieces.ts`: stable → warning → falling → gone → back;
+pads armed by weight, bridges by heavy blows or the clock; their colliders
+go down and stop colliding), conveyors (a bounded nudge toward the belt's
+speed, the steering relative to the belt), ice (lower friction and weaker
+steering, nothing global), each arena's own sweeper, orbs, spawns, fall line
+and camera. Ledges (`sim/ledge.ts`): falling past an edge that can be held,
+a fighter catches it and hangs; jump climbs, grab or pushing away for a
+moment lets go, grip endurance drains hanging and returns on the floor, a
+blow knocks a hanger off; one pair of hands (no independent hands). Banana
+peels (`pickups/bananas.ts`): a player out of the round throws up to three
+a round onto solid floor while three or more still play; running over one
+tumbles you; the server judges every throw.
+
 | | P1 | P2 |
 | --- | --- | --- |
 | move | WASD | arrows |
@@ -184,6 +211,9 @@ fighters: scarcity is the point.
 | punch | F | K |
 | grab / throw | G | L |
 | take an orb | walk into it | walk into it |
+| catch a ledge (Skyfall, Factory) | fall past an edge | fall past an edge |
+| hanging: climb · let go | Space · G (or push away) | Enter · L (or push away) |
+| out of the round: aim · throw a peel | WASD · F or G | arrows · K or L |
 
 ```
 physics body (Havok capsule) ──► position / velocity / ground contact ──► visual Blobbi
@@ -268,6 +298,8 @@ src/rumble/
     physics.ts          Havok on a never-drawn NullEngine scene, stepped explicitly
     arenaBody.ts        the floor's collision
     sweeperBody.ts      the sweeper's animated bar and post
+    arenaBody.ts        M11: colliders from an arena definition; pieces as animated bodies that drop and stop colliding
+    ledge.ts            M11C: the ledge hold (catch, hang, climb, let go, grip endurance; pure)
     read.ts             reading a snapshot back into combat predicates
     havokNode.ts        Havok's wasm from the package file, for Node
   net/                the network boundary (M7B):
@@ -318,11 +350,16 @@ src/rumble/
   rounds.ts           elimination, last Blobbi standing, rounds, the match (pure)
   arena/layout.ts     the floor's shape: slabs, rim, spawns (pure)
   arena/sweeper.ts    the sweeper: its angle, whom its bar strikes, the blow (pure)
+  arena/arenas.ts     M11A: the arena registry (Classic, Skyfall, Factory, Frozen Lake), selection and rotation
+  arena/geometry.ts   M11A: platforms at heights: what is under a point, the rim, ledges (pure)
+  arena/pieces.ts     M11B: the dynamic pieces' state machine (pure)
+  pickups/bananas.ts  M11F: banana peels: the throw judged, peels ageing, who slips (pure)
   respawn.ts          fallen / wait (pure)
   view/               presentation only, drawn from snapshots and events:
     fighterView.ts      the visual Blobbi, its feedback, reach and power rings, name tag
     arenaView.ts        the lawn, rim trim, soil sides, rock undersides, sweeper patch, decoration
     sweeperView.ts      the garden spinner: candy pole, padded striped bar, spinning flower
+    bananaView.ts       M11F: the peels, the slip burst, the thrower's reticle
     orbView.ts          spheres, discs, a burst when taken
     camera.ts           one shared camera: the box around the living, bounded distance, smooth follow (pure)
     theme.ts            an arena theme: colours only (GARDEN, a floating lawn in a bright sky)

@@ -156,6 +156,17 @@ code is an **address, not a secret**: anyone who has it joins, as before.
 Privacy here means "not browsable", not access control; invitations grant
 nothing (see the spec, §16).
 
+## Arenas (M11A)
+
+A room is made with an arena: `?create=1&arena=<id>` (the ids are in
+`src/rumble/arena/arenas.ts`; unknown or absent means the classic island)
+and `&rotate=1` to move to another arena with each new match. The welcome
+carries `arena: { id, rotate }` for players, late joiners and spectators;
+the public listing names each room's arena; the page's host form offers
+both. Nothing of an arena's geometry is sent: clients know it by id. A
+player out of the round may send `{ t: 'throw', x, z }` (a banana peel);
+the server judges it and refuses silently (see the spec, §15f).
+
 ## Links (M10C)
 
 A room link is `https://<server>/play/<CODE>` on the server's `PUBLIC_URL`
@@ -232,9 +243,10 @@ same 60 Hz beat whether or not anyone is in it (a bot match plays on), and
 empty private rooms close after 120 s. Spectators cost sends, not
 simulation. `npm run bench` measures it here (`ROOMS=16 SECONDS=10`): on
 the development machine this was written on, 16 rooms with four players
-each took **0.39 ms per tick for all rooms together** (0.025 ms per room),
-against a 16.7 ms budget; a state message is about 2.6 KB, so a full room
-of 8 connections receives about 0.42 Mbit/s. That is one machine's
+each took **0.42 ms per tick for all rooms together** (0.026 ms per room)
+on the classic island and 0.44–0.45 ms on the M11 arenas (`ARENA=<id>`),
+against a 16.7 ms budget; a state message is about 2.9 KB (2.6 KB before
+M11), so a full room of 8 connections receives about 0.46 Mbit/s. That is one machine's
 number, not a promise: run the benchmark where you deploy, and size
 `MAX_ROOMS` / `MAX_CONNECTIONS` from it, leaving the sockets and the
 operating system their share.

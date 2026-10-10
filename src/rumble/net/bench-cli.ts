@@ -7,20 +7,24 @@
  * room. A tick budget at 60 Hz is 16.7 ms for ALL rooms together: the
  * printed total per tick must stay well under it, with headroom for the
  * sockets. Capacity is what this says on the machine it runs on, nothing
- * promised beyond it.
+ * promised beyond it. ARENA (M11A) names the arena the rooms play (the
+ * classic island by default), so the cost of pieces, belts and ledges shows.
  */
+import { arenaById } from '../arena/arenas';
 import { loadHavokNode } from '../sim/havokNode';
 import { RoomManager } from './rooms';
 
 const roomsWanted = Number(process.env.ROOMS ?? 8);
 const seconds = Number(process.env.SECONDS ?? 10);
+const arena = arenaById(process.env.ARENA) ?? undefined;
 const havok = await loadHavokNode();
-const manager = new RoomManager({ havok, maxRooms: Math.max(roomsWanted, 1) + 1 });
-const rooms = [manager.open];
-for (let i = 1; i < roomsWanted; i++) {
-  const r = manager.create({ listed: true });
+const manager = new RoomManager({ havok, maxRooms: Math.max(roomsWanted, 1) + 2 });
+const rooms = [];
+for (let i = 0; i < roomsWanted; i++) {
+  const r = manager.create({ listed: true, ...(arena ? { arena } : {}) });
   if (r) rooms.push(r);
 }
+console.log(`arena: ${rooms[0]?.host.arena.id ?? '-'}`);
 let conn = 1;
 for (const r of rooms) for (let p = 0; p < 4; p++) r.host.connect(conn++);
 const ticks = Math.round(seconds * 60);

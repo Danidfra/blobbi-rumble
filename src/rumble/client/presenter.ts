@@ -238,7 +238,8 @@ export class RumblePresenter {
 
     // The camera frames whoever is still in the round and on the arena.
     const wanted = this.subjects(s);
-    const camRules = { ...CAMERA, bounds: this.def.camera.bounds, maxRadius: this.def.camera.maxRadius };
+    // M11C: an arena with lower platforms and ledges keeps a body in view further down (a hanger is a subject too).
+    const camRules = { ...CAMERA, bounds: this.def.camera.bounds, maxRadius: this.def.camera.maxRadius, dropBelow: this.def.camera.dropBelow ?? CAMERA.dropBelow };
     if (!this.cameraPose) this.cameraPose = wantedCamera(wanted, camRules);
     else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted, camRules), dt);
     applyCamera(this.env.camera, this.cameraPose);
@@ -322,7 +323,7 @@ export class RumblePresenter {
   private subjects(s: MatchSnapshot) {
     return s.fighters
       .map((f) => ({ x: f.position.x, y: f.position.y - RUMBLE_BODY.capsuleCenterY, z: f.position.z, alive: !f.eliminated }))
-      .filter((f) => framed(f, f.alive))
+      .filter((f) => framed(f, f.alive, { ...CAMERA, dropBelow: this.def.camera.dropBelow ?? CAMERA.dropBelow }))
       .map(({ x, y, z }) => ({ x, y, z }));
   }
 

@@ -142,7 +142,10 @@ until real playtests show otherwise.
 
 ### 5. Arenas
 
-**Arena 1 (the only arena)** is deliberately **small, fast and dangerous**:
+**Arena 1, Floating Islands Classic**, is deliberately **small, fast and
+dangerous**, and is kept exactly as it was (M11A preserves it to the
+metre: the same three slabs at one height, the same sweeper, orbs and
+spawns, no ledges to catch, no pieces that move):
 - a wide, safe centre slab (8 × 8 m) where everyone spawns;
 - two narrower wings (3.5 × 6 m) closer to the rim;
 - a void all round.
@@ -162,8 +165,24 @@ inside the sweeper's circle, one deep in the left wing near the rim.
 
 - Arena 1 **MUST NOT be resized** merely because a future mode might want
   more space. Its size is part of its pace.
-- A larger or different layout, if ever needed, is an **Arena 2**
-  exploration.
+
+**The other arenas (M11, implemented — awaiting manual validation)** are
+definitions in the same registry (`src/rumble/arena/arenas.ts`), not a
+second system: each is a list of platforms at their own heights, with
+optional dynamic pieces, conveyors, a sweeper of its own, orbs, spawns, a
+fall line, camera bounds, and whether its edges can be held (§15f).
+
+| Arena | id | What makes it |
+| --- | --- | --- |
+| Floating Islands Classic | `floating-islands-classic` | The island above, unchanged. The default. |
+| Floating Islands: Skyfall | `floating-islands-skyfall` | Islands at several heights joined by two rope bridges that break (three heavy blows on a body over one, or the round's clock at 28 / 34 s), two pads that fall under weight and come back, a low ledge under the centre's north wall, a step and a perch to the south. No sweeper. Edges can be held. Fall line −5. |
+| Blobbi Factory | `blobbi-factory` | A plated floor with two conveyor belts running opposite ways, a crate in the middle (an orb on it), a rotating arm on the west pad (the sweeper's rules at its own pivot). Edges can be held. |
+| Frozen Lake | `frozen-lake` | Nine ice tiles and two lobes: everything slides (low friction, weak steering, almost no braking), the four corner tiles crack under weight and fall, then freeze over again. Ice cannot be held. |
+
+A room is made with an arena (`?arena=<id>`; unknown or absent: Classic)
+and optionally rotates to another with each new match (`?rotate=1`); every
+welcome names the room's arena, every state names the arena in play, and
+nothing of the geometry rides a snapshot (§15f).
 
 ---
 
@@ -804,6 +823,97 @@ stage, generation and 2D look are unchanged, and nothing is published.
   existence, access control, browser-hosted servers (nothing here
   precludes an authoritative host elsewhere later).
 
+### 15f. Arena chaos, vertical survival and the eliminated (M11, IMPLEMENTED — AWAITING MANUAL VALIDATION)
+
+- **Registry, selection, rotation (M11A).** `ArenaDef` is the one shape
+  every arena has; the match builds its colliders from it
+  (`sim/arenaBody.ts`), the view its lawn, plates or ice (`view/arenaView.ts`,
+  themes `garden` / `factory` / `frozen`), the bots their picture of the
+  floor (`control/bot.ts`), and the debug overlay its boxes. The host plays
+  the arena its room was made with, rotates to another at each new match
+  when asked (`nextArena`, never the same twice running, the random number
+  injectable), and tells every connection — players, late joiners,
+  spectators — `arena: { id, rotate }` in the welcome; the public listing
+  names each room's arena; links carry `arena` and `rotate`; the panel
+  offers both when hosting and shows them in the room. Local and headless
+  play take `?arena=` / `ARENA=` (`ROTATE=1` headless).
+- **Protocol.** One field in the welcome and the listing; in each state:
+  `arena` (an id), `pieces` (phase, seconds, drop per dynamic piece),
+  `roundTime`, `bananas`, and per fighter `ledge` and `bananas`. No
+  platform geometry is ever sent: a client's registry has it by id. One
+  new client message, `{ t: 'throw', x, z }`. A state message grew from
+  about 2.6 KB to about 2.9 KB.
+- **Dynamic pieces (M11B).** `arena/pieces.ts`: stable → warning → falling
+  → gone (→ stable after `back` seconds, or never). A falling pad is armed
+  by seconds of weight (draining while empty); a breakable bridge by heavy
+  blows (tumble reactions) on bodies over it or by the round's clock. The
+  collider is an animated Havok body that goes down with the piece and
+  stops colliding when gone (`filterCollideMask = 0`), so a fighter on it
+  falls through where the floor was; a round reset puts every piece back.
+  The view shakes a warning piece, drops it, and hides it; ice cracks.
+- **Ledges (M11C).** On arenas whose edges can be held, a fighter falling
+  past an edge (airborne, falling faster than 0.5 m/s, free, upright, not
+  tumbling, not just off a ledge) catches it within its hands' reach
+  (0.75 m sideways, the top up to 1.3 m above the feet) and hangs below
+  the top, facing in, weightless, sprung to its anchor. **Controls:** jump
+  climbs (0.45 s, ends standing a step in from the edge); grab, or the
+  stick held away from the wall for 0.35 s, lets go (the push that walked
+  off the edge is over before that); nothing else moves a hanger. **Grip
+  endurance** lasts 3.5 s hanging and returns on the floor (about 2 s to
+  full); below 15 % no catch. A blow from above knocks the hanger off; a
+  ledge on a piece that falls is lost with it; a hanger cannot punch, grab
+  or be grabbed. **Elimination** is each arena's own fall line (`fallY`),
+  not the classic −4 m: Skyfall's is −5, so its low ledge and its hangers
+  are in play. **One pair of hands:** the hold is a single state on the
+  fighter (`sim/ledge.ts`); two independent hands (one on a ledge, one on
+  a fighter; hand-over-hand along an edge) would need a hand model through
+  grabs, carries and struggles, which is out of scope and documented as
+  such; the state is shaped so a second hold could sit beside it. Prediction
+  hands a hanging fighter to the server; interpolation takes the hold from
+  the newer state; the Blobbi hangs with its arms up, sags and kicks as it
+  tires, and pulls itself over the top.
+- **Factory (M11D).** Conveyors are bounded per-step velocity nudges
+  toward the belt's speed on a fighter standing on one (never a launch),
+  and the fighter's steering is relative to the belt, so standing still
+  rides along and walking against it is slower; the arm is the sweeper's
+  own state machine with the factory's pivot, reach and speed.
+- **Frozen lake (M11E).** Ice tiles give the body a lower friction
+  (0.06) and the steering less grip (acceleration × 0.3, braking × 0.03):
+  a fighter slides on past where it stopped pushing, and turns slowly.
+  The fragile corner tiles are the falling-piece system with a return.
+  Nothing of the physics is changed globally; a fighter off the ice has
+  its usual friction back the next step.
+- **Banana peels (M11F).** A player out of the round may throw up to three
+  peels a round, one every 2.5 s, onto solid floor (never a fallen piece),
+  with at most four on the arena at once, each lying 12 s; never while
+  fewer than three fighters are still in the round, so an out player never
+  decides a duel. The server judges every throw and refuses silently
+  (`pickups/bananas.ts`: `phase`, `in play`, `few alive`, `cooldown`,
+  `spent`, `crowded`, `off floor`, `bad target`). A fighter running over a
+  peel (feet within 0.45 m, moving at 0.6 m/s or more, on its feet, free)
+  tumbles along its way through the ordinary strike path; the peel is
+  gone. New rounds clear peels and budgets. Out at a keyboard, the
+  movement keys aim a reticle over the floor and punch or grab throws; the
+  HUD says what is left. Bots do not throw.
+- **Bots on the new arenas.** A bot's "middle" is its own platform's; it
+  never walks down a drop it could not come back from (> 0.7 m); going
+  nowhere at a step up it jumps, at a rim it gives the target up; it runs
+  and jumps a short gap (≤ 2.6 m) to a platform it can land on; hanging, it
+  climbs at once. Bot-only matches finish on all four arenas headless.
+- **Performance.** `npm run bench` (16 rooms, 10 s, 4 players): before
+  M11 (`8b1ef14`) 0.42 ms per tick for all rooms; after, 0.42 ms on
+  Classic, 0.44–0.45 ms on the other three (pieces, belts, ledges); state
+  messages 2.6 → 2.9 KB. Headless: about 0.03–0.05 ms per tick, 350–560×
+  real time.
+- **Not changed:** M10's hosting configuration, the classic island's
+  numbers, combat's grab / carry / throw / punch / tumble rules.
+- **To validate by hand:** the arena choice and rotation from the panel in
+  a real room with a late joiner and a spectator; bridges breaking and
+  pads falling under real players; catching, climbing, tiring and being
+  knocked off a ledge; the belts and the arm; the slide and the cracking
+  ice; aiming and throwing peels while out, and slipping on one; the
+  camera on each arena; frame times with the new views.
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -887,6 +997,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M9B | Adult Rumble forms | Automated tests; **partly validated for real** (2026-10-09): selecting a Blobbi changes the local fighter, V1/V2 Blobbis get their adult forms, the choice persists across reloads and manual reconnection restores it. **Still open**: the animation checks (facing, grab arm pose, carried attachment, throw release, foot contact, transitions), geometry cleanup, room navigation and game reconnect. |
 | M9C–M9F | Looks for everyone, identity presentation, picker, lifecycle | Automated tests, and a **real two-browser test** (2026-10-10): two proven players with different Blobbis saw each other's forms, a change mid-match and the default were followed, a guest played beside them, Nostr disconnect / reconnect behaved. **Not yet tested for real**: spectators, a late joiner, room switching with a form, the server restarting. |
 | M10A–M10E | Online play: servers, public rooms, links, deployment, UX | Automated tests (endpoints, official / own / community servers, the choice and links, protocol version and incompatibility, origin refusal, listed / unlisted rooms, the listing over the socket and its rate limit, full rooms, server-aware links); the container builds from the Dockerfile here only as a file (not run). **Awaiting real online validation**; nothing deployed. |
+| M11A–M11F | Arena chaos, vertical survival, eliminated-player interactions | Automated tests (registry, geometry, pieces, the match on every arena, host rotation, the socket, links and listings, ledges, belts, ice, peels, bots), headless bot matches finishing on all four arenas, `npm run bench` before and after, and a visual check of each arena in Chrome. **IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15f). |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -897,7 +1008,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 testing, correctness, security or product requirements. It does not mean
 immutable forever.
 
-- **Arena 1's size and layout**, and the sweeper's role.
+- **Arena 1's size and layout**, and the sweeper's role (the other M11 arenas are not frozen: tune them on evidence).
 - **The current grab struggle** (6 reversals, about 1.2 s, 0.6 s
   immunity, no throw windup).
 - **The authoritative WebSocket architecture** (intent in, 60 Hz server,
@@ -934,7 +1045,7 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) |
+| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) |
 | **Next** | A first official server, deployed from the compose file, and the real online validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |

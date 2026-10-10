@@ -76,7 +76,8 @@ export interface ArenaDef {
   fallY: number;
   /** M11C: whether a falling fighter can catch and climb this arena's edges (not on ice, and not on the classic island, which plays exactly as it did). */
   ledges: boolean;
-  camera: { bounds: { x: number; z: number }; maxRadius: number };
+  /** The camera's bounds and distance limit, and (M11C) how far below the main floor a body stays in view (the default is tuning's). */
+  camera: { bounds: { x: number; z: number }; maxRadius: number; dropBelow?: number };
   /** The friction of ice platforms (the body's own is 0.35). */
   iceFriction: number;
 }
@@ -158,7 +159,7 @@ export const SKYFALL: ArenaDef = Object.freeze({
   },
   fallY: -5,
   ledges: true,
-  camera: { bounds: { x: 7.5, z: 5.5 }, maxRadius: 19 },
+  camera: { bounds: { x: 7.5, z: 5.5 }, maxRadius: 19, dropBelow: -2.4 },
   iceFriction: 0.35,
 });
 
@@ -214,7 +215,7 @@ export const FACTORY: ArenaDef = Object.freeze({
   },
   fallY: -4,
   ledges: true,
-  camera: { bounds: { x: 5.5, z: 3 }, maxRadius: 15 },
+  camera: { bounds: { x: 5.5, z: 3 }, maxRadius: 15, dropBelow: -1.4 },
   iceFriction: 0.35,
 });
 
