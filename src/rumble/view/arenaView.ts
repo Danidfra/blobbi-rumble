@@ -577,8 +577,12 @@ export function createArena(scene: Scene, shadows?: ShadowGenerator, def: ArenaD
   const trims: Mesh[] = [];
   for (const y of heights) {
     const level = def.platforms.filter((r) => r.y === y && r.kind !== 'bridge' && dynamicOf.get(def.platforms.indexOf(r)) === undefined);
-    const inside = (p: { x: number; z: number }) => level.some((r) => Math.abs(p.x - r.x) <= r.halfWidth + 1e-6 && Math.abs(p.z - r.z) <= r.halfDepth + 1e-6);
-    rimSegmentsOf(level).forEach(([from, to], i) => {
+    // M11.1: a bridge at this height is part of the outline (a platform's edge is no rim where a bridge leaves it), but gets no trim of its own.
+    const bridges = def.platforms.filter((r) => r.y === y && r.kind === 'bridge');
+    const onBridge = (p: { x: number; z: number }) => bridges.some((b) => Math.abs(p.x - b.x) <= b.halfWidth + 1e-6 && Math.abs(p.z - b.z) <= b.halfDepth + 1e-6);
+    const inside = (p: { x: number; z: number }) => level.some((r) => Math.abs(p.x - r.x) <= r.halfWidth + 1e-6 && Math.abs(p.z - r.z) <= r.halfDepth + 1e-6) || onBridge(p);
+    rimSegmentsOf([...level, ...bridges]).forEach(([from, to], i) => {
+      if (onBridge(from) && onBridge(to) && onBridge({ x: (from.x + to.x) / 2, z: (from.z + to.z) / 2 })) return;
       bands.push(rimStrip(scene, `rim-band-${y}-${i}`, from, to, 0.1, 0.32, y + 0.002, inside));
       trims.push(rimStrip(scene, `rim-trim-${y}-${i}`, from, to, 0, 0.1, y + 0.004, inside));
     });

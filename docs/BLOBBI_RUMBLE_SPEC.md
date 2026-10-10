@@ -914,6 +914,87 @@ stage, generation and 2D look are unchanged, and nothing is published.
   ice; aiming and throwing peels while out, and slipping on one; the
   camera on each arena; frame times with the new views.
 
+### 15g. Gameplay polish and balance (M11.1, IMPLEMENTED — AWAITING MANUAL GAMEPLAY VALIDATION)
+
+The first manual playtest of M11 found Skyfall's bridges meeting their
+islands at different heights (and a deck poking into an island's
+underside), ledges catching unreliably around the bridges, the new arenas
+small and dull, and the grab one-sided. M11.1 is the pass over those,
+with no new mechanics.
+
+- **Root causes.** (1) A carrier could RUN with its load (2.7 m/s) and a
+  throw off a run travelled 4.6 m, so a grab anywhere on an 8 m slab was
+  a ring-out before the 1.2 s a good struggle takes; the struggle's inputs
+  themselves registered (0.9 s at the cap, 1.2 s at five strokes a second,
+  2.0 s at three), but in network play the only hint was in the text HUD,
+  which is hidden. (2) Skyfall's bridges were at the centre's height while
+  their islands were half a metre up or down, so each bridge end met a
+  wall or a drop, and the lower deck ran into the island's underside.
+  (3) A half-metre step down counted as a fall to catch, so stepping off a
+  bridge onto a lower island "caught" the edge. (4) Platforms were sized
+  for walking, not for a carry-and-throw exchange.
+- **Geometry (Skyfall).** One height for the centre, the bridges and the
+  islands: centre 12 × 9 m (was 10 × 8), islands 5 × 5 and 5 × 4.6 m (were
+  4 × 4 and 4.4 × 3.6) over 2 × 2 m bridges (were 1.6 × 1.7 and 2.2 × 1.7),
+  the north ledge 6 × 1.6 m at −1.2 along the centre's wall, the south step
+  (3.2 × 2, +0.5) and perch (3.6 × 1.8, +1.0), the falling pads 2.8 × 2.4 at
+  the north-east and south-west corners. Every bridge end is flush with a
+  platform of its height inside that platform's edge; nothing overlaps a
+  bridge; the collider boxes and the drawn decks share the same tops.
+  Useful fighting area at one height: about 108 m² of centre plus 48 m² of
+  islands (was 80 + 32 at three heights).
+- **Geometry (Factory).** Floor 12 × 8 m (was 9.5 × 7.2) with the belts
+  along its north and south edges (1.6 m lanes) feeding 3.6 × 8 m pads
+  (were 3 × 4.4 and 3.5 × 4.4) flush with the floor, the crate 3.2 × 2 m,
+  the arm in the middle of the west pad (reach 1.7 m, 1.6 rad/s) with the
+  pad's corners out of its reach. Fighting area about 96 + 58 m² (was 68 + 29).
+- **Geometry (Frozen Lake).** Nine 3.6 m tiles (were 2.9 m): a 10.8 m
+  sheet (was 8.7) with two 2.8 × 5.2 m lobes; the four corner tiles fragile
+  with 1.8 s of weight to arm and 1.8 s of warning (were 1.4 / 1.4). The
+  slide: from a walk 0.63 m, from a run 1.96 m, a 90° turn in 0.12 / 0.23 s.
+- **Spawns** are at least two metres from any rim and from each other, on
+  solid floor, never on a piece that can fall (the classic island's
+  three-player spawn stays 1.55 m from its rim, as designed).
+- **Grab, struggle, throw.** A carrier walks at 0.75 of walk speed and
+  never runs (1.2 m/s), slower still as its load struggles (up to half);
+  a hold ends by itself after 2.5 s (was 4); the throw's gain is 1.0 (was
+  1.3): a standing carrier's throw lands 1.3 m away, a walking one's about
+  2 m (was 2.7, and 4.6 off a run); a freed fighter cannot be grabbed for
+  1.2 s (was 0.6) and a thrown one for 1.6 s (it lands, rights itself and
+  has a moment; before, at once). The struggle itself is unchanged (six
+  reversals, capped at 6.7 a second). Grabbed in the middle of the classic
+  centre by a carrier walking for the rim, a fighter at five strokes a
+  second is free in 1.2 s, 1.5 m short of the rim; at three a second,
+  within the hold's longest time. The classic island's layout is unchanged;
+  these rules make it fairer without touching it.
+- **Feedback.** A cue under the action in every mode (local and network,
+  whatever the text HUD): grabbed (by whom, the keys, the progress bar),
+  holding (the throw key and the load's progress), hanging (grip and keys),
+  out of the round (the aim).
+- **Ledges.** A ledge must be at least 0.55 m above the feet (a step down
+  is not a fall); the hands reach 0.5 m beyond the capsule (was 0.35); a
+  hang that would sit inside a neighbouring slab (an edge behind a wall) is
+  no ledge; for 0.3 s after a climb the keys do not move the fighter, so a
+  stick still pushed off the edge does not walk it straight back off (a
+  later fall is caught again, never rung out); a ledge on a fallen piece
+  stays invalid. Still one hold, one pair of hands (§15f).
+- **Bots** cross the flat bridges on foot, leap a broken bridge's 2 m gap
+  (the reach is 2.8 m), and finish matches on all four arenas headless.
+- **Tests added.** Bridge endpoint alignment and overlap rules, spawn
+  safety, fighting-area minimums, walkable transitions on foot (Skyfall's
+  bridges both ways, the factory's belt onto a pad), the carrier's walk,
+  the struggle's drag, the hold's end, the escape under normal conditions,
+  immunities after an escape and a throw, the struggle through the host's
+  numbered input path, no catch on a step down, no re-fall after a climb,
+  hangs clear of neighbouring slabs.
+- **Performance.** 16 rooms: 0.46 ms per tick (Classic) and 0.47 ms
+  (Skyfall), states 2.9–3.0 KB: within noise of M11.
+- **Known limitations.** One hold at a time (no independent hands, by
+  design); bots do not throw peels; the struggle is still a keyboard
+  rhythm (a gamepad stick works the same way through movement); the
+  perch and step are reached by a jump, deliberately; the lake's slide is
+  tuned by numbers, not yet by hands.
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -998,6 +1079,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M9C–M9F | Looks for everyone, identity presentation, picker, lifecycle | Automated tests, and a **real two-browser test** (2026-10-10): two proven players with different Blobbis saw each other's forms, a change mid-match and the default were followed, a guest played beside them, Nostr disconnect / reconnect behaved. **Not yet tested for real**: spectators, a late joiner, room switching with a form, the server restarting. |
 | M10A–M10E | Online play: servers, public rooms, links, deployment, UX | Automated tests (endpoints, official / own / community servers, the choice and links, protocol version and incompatibility, origin refusal, listed / unlisted rooms, the listing over the socket and its rate limit, full rooms, server-aware links); the container builds from the Dockerfile here only as a file (not run). **Awaiting real online validation**; nothing deployed. |
 | M11A–M11F | Arena chaos, vertical survival, eliminated-player interactions | Automated tests (registry, geometry, pieces, the match on every arena, host rotation, the socket, links and listings, ledges, belts, ice, peels, bots), headless bot matches finishing on all four arenas, `npm run bench` before and after, and a visual check of each arena in Chrome. **IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15f). |
+| M11.1 | Gameplay polish and balance: geometry, scale, grab, ledges | Automated tests (geometry rules, walkable transitions, the grab exchange, escapes, immunities, ledges), headless matches on all arenas with escapes happening, bench, Chrome screenshots of the flat bridges and the cue. **M11.1 IMPLEMENTED — AWAITING MANUAL GAMEPLAY VALIDATION** (§15g). |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -1009,8 +1091,9 @@ testing, correctness, security or product requirements. It does not mean
 immutable forever.
 
 - **Arena 1's size and layout**, and the sweeper's role (the other M11 arenas are not frozen: tune them on evidence).
-- **The current grab struggle** (6 reversals, about 1.2 s, 0.6 s
-  immunity, no throw windup).
+- **The current grab struggle** (6 reversals, about 1.2 s, no throw
+  windup; M11.1 set the immunities to 1.2 s freed / 1.6 s thrown, the
+  carrier to a walk, the hold to 2.5 s at most).
 - **The authoritative WebSocket architecture** (intent in, 60 Hz server,
   20 Hz snapshots, prediction and interpolation).
 - **No preventive lag compensation.**
@@ -1045,7 +1128,7 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) |
+| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) · M11.1: gameplay polish and balance (§15g; implemented, awaiting manual gameplay validation) |
 | **Next** | A first official server, deployed from the compose file, and the real online validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |

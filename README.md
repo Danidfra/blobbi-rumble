@@ -187,8 +187,11 @@ sweeper's circle on the half that sends you back toward the centre, one
 deep in the left wing 0.6 m from the rim. Three, whatever the number of
 fighters: scarcity is the point.
 
-THE OTHER ARENAS (`src/rumble/arena/arenas.ts`, M11) are definitions over
-the same machinery: platforms at their own heights (`arena/geometry.ts`
+THE OTHER ARENAS (`src/rumble/arena/arenas.ts`, M11; laid out again in
+M11.1: Skyfall's centre 12 × 9 m with 5 m islands over 2 m bridges all at
+one height, the factory's 12 × 8 m floor with belts along its edges and
+3.6 × 8 m pads, the lake's nine 3.6 m tiles) are definitions over the same
+machinery: platforms at their own heights (`arena/geometry.ts`
 answers what is under a point, how far the rim is, where a ledge is),
 dynamic pieces (`arena/pieces.ts`: stable → warning → falling → gone → back;
 pads armed by weight, bridges by heavy blows or the clock; their colliders
@@ -224,7 +227,10 @@ facing along its velocity, animator fed from the body's state) and never
 feeds back. Punches, holds and throws are bounded velocity changes on the
 bodies. A grab lifts the victim to a hold point in front of the grabber
 that turns with the grabber at a bounded rate, so reversing direction
-swings the held body around rather than through the carrier. A throw, or a
+swings the held body around rather than through the carrier. A carrier
+walks (never runs), slower as its load struggles, and a hold ends by itself
+after 2.5 s; a freed or thrown body cannot be grabbed again for a moment
+(M11.1). A throw, or a
 hard enough hit, frees the victim's capsule to tumble (a real rotation of
 the body, not a ragdoll) with little steering authority, then a short
 recovery rights it and hands control back; a lighter hit is a brief stun.

@@ -243,8 +243,8 @@ same 60 Hz beat whether or not anyone is in it (a bot match plays on), and
 empty private rooms close after 120 s. Spectators cost sends, not
 simulation. `npm run bench` measures it here (`ROOMS=16 SECONDS=10`): on
 the development machine this was written on, 16 rooms with four players
-each took **0.42 ms per tick for all rooms together** (0.026 ms per room)
-on the classic island and 0.44–0.45 ms on the M11 arenas (`ARENA=<id>`),
+each took **0.42–0.46 ms per tick for all rooms together** (0.026–0.029 ms
+per room) on the classic island and 0.44–0.47 ms on the M11 arenas (`ARENA=<id>`),
 against a 16.7 ms budget; a state message is about 2.9 KB (2.6 KB before
 M11), so a full room of 8 connections receives about 0.46 Mbit/s. That is one machine's
 number, not a promise: run the benchmark where you deploy, and size
