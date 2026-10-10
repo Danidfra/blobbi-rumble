@@ -17,6 +17,7 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import type { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import type { Scene } from '@babylonjs/core/scene';
 import { SWEEPER } from '../tuning';
+import type { SweeperTuning } from '../arena/sweeper';
 import { SWEEPER_POST } from '../sim/sweeperBody';
 import { GARDEN, type ArenaTheme } from './theme';
 
@@ -45,8 +46,7 @@ export class SweeperView {
   private readonly reachRing: Mesh;
   private readonly disposables: { dispose(): void }[] = [];
 
-  constructor(scene: Scene, shadows?: ShadowGenerator, theme: ArenaTheme = GARDEN) {
-    const t = SWEEPER;
+  constructor(scene: Scene, shadows?: ShadowGenerator, theme: ArenaTheme = GARDEN, t: SweeperTuning = SWEEPER) {
     const radius = 0.11;
     this.spinner = new TransformNode('sweeper-spinner', scene);
     this.spinner.position.set(t.pivot.x, 0, t.pivot.z);

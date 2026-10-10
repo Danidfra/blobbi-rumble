@@ -77,7 +77,8 @@ describe('rooms over the socket', () => {
     server = await startRumbleServer({ havok, port: 0, manual: true });
     const base = `ws://127.0.0.1:${server.port}`;
     const plain = await open(base);
-    expect(plain.welcome!.room).toEqual({ id: 'OPEN', kind: 'open', mode: 'casual', listed: true });
+    expect(plain.welcome!.room).toEqual({ id: 'OPEN', kind: 'open', mode: 'casual', listed: true, arena: 'floating-islands-classic', rotate: false });
+    expect(plain.welcome!.arena).toEqual({ id: 'floating-islands-classic', rotate: false });
     expect(plain.welcome!.you).toBe('P1');
     const host = await open(`${base}/?create=1`);
     const id = host.welcome!.room!.id;

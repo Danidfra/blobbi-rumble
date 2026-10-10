@@ -26,7 +26,10 @@ import { createWorld } from '../view/world';
 import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from '../view/camera';
 import { PhysicsDebug } from '../view/debug';
 import type { BlobbiIdentityInput } from '@blobbi-kit/3d';
+import { CLASSIC, arenaById, type ArenaDef } from '../arena/arenas';
+import { themeFor } from '../view/theme';
 import { FighterView } from '../view/fighterView';
+import type { Arena } from '../view/arenaView';
 import { OrbView } from '../view/orbView';
 import { SweeperView } from '../view/sweeperView';
 
@@ -66,8 +69,11 @@ export class RumblePresenter {
   private readonly worn = new Map<string, string | null>();
   private readonly env;
   private readonly debug: PhysicsDebug;
-  private readonly orbView: OrbView;
-  private readonly sweeperView: SweeperView;
+  private orbView: OrbView;
+  private sweeperView: SweeperView | null = null;
+  /** M11A: the arena drawn, and its definition; rebuilt when the snapshot names another. */
+  private arenaView: Arena;
+  private def: ArenaDef;
   private cameraPose: CameraPose | null = null;
   private previous: MatchSnapshot | null = null;
   private message = '';
@@ -78,6 +84,7 @@ export class RumblePresenter {
     private readonly hud: HTMLElement,
     fighters: readonly PresentedFighter[],
     orbs: MatchSnapshot['orbs'],
+    arenaId: string = CLASSIC.id,
   ) {
     this.engine = new Engine(canvas, true, { adaptToDeviceRatio: true, stencil: true });
     this.scene = new Scene(this.engine);
@@ -89,18 +96,20 @@ export class RumblePresenter {
     cam.upperRadiusLimit = CAMERA.maxRadius;
     cam.alpha = CAMERA.alpha;
     cam.beta = CAMERA.beta;
-    createArena(this.scene, this.env.shadows);
-    this.debug = new PhysicsDebug(this.scene, hud);
+    this.def = arenaById(arenaId) ?? CLASSIC;
+    this.arenaView = createArena(this.scene, this.env.shadows, this.def);
+    this.debug = new PhysicsDebug(this.scene, hud, this.def);
     this.defaults = new Map(fighters.map((f) => [f.id, seedFromLabel(f.identity)]));
     this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows));
     this.orbView = new OrbView(this.scene, orbs, this.env.shadows);
-    this.sweeperView = new SweeperView(this.scene, this.env.shadows);
+    if (this.def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(this.def.theme), this.def.sweeper);
+    cam.upperRadiusLimit = this.def.camera.maxRadius;
     window.addEventListener('keydown', (e) => {
       if (e.code !== 'F3') return;
       this.debug.toggle();
       for (const v of this.views) v.showDebug(this.debug.on);
       this.orbView.showDebug(this.debug.on);
-      this.sweeperView.showDebug(this.debug.on);
+      this.sweeperView?.showDebug(this.debug.on);
       e.preventDefault();
     });
     window.addEventListener('resize', () => this.engine.resize());
@@ -163,7 +172,33 @@ export class RumblePresenter {
     view?.setTag(name ?? id, name === null);
   }
 
+  /** M11A: the arena the snapshot names: rebuilt when it changes (a rotation, another room). */
+  private syncArena(s: MatchSnapshot) {
+    if (s.arena === this.def.id) return;
+    const def = arenaById(s.arena);
+    if (!def) return;
+    this.arenaView.dispose();
+    this.sweeperView?.dispose();
+    this.sweeperView = null;
+    this.orbView.dispose();
+    this.def = def;
+    this.arenaView = createArena(this.scene, this.env.shadows, def);
+    this.orbView = new OrbView(this.scene, s.orbs, this.env.shadows);
+    if (def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(def.theme), def.sweeper);
+    this.debug.build(def);
+    this.orbView.showDebug(this.debug.on);
+    this.sweeperView?.showDebug(this.debug.on);
+    this.env.camera.upperRadiusLimit = def.camera.maxRadius;
+    this.cameraPose = null;
+  }
+
+  /** The arena in play, by name. */
+  get arenaName(): string {
+    return this.def.name;
+  }
+
   present(s: MatchSnapshot, dt: number, info: HudInfo, own?: { id: string; jumped: boolean }) {
+    this.syncArena(s);
     const prev = this.previous;
     const fresh = prev === null || s.tick !== prev.tick;
     const jumped = new Set<string>();
@@ -175,17 +210,20 @@ export class RumblePresenter {
     this.previous = s;
     s.fighters.forEach((f, i) => this.views[i].apply(f, dt, jumped.has(f.id)));
     this.orbView.update(dt, s.orbs);
-    this.sweeperView.apply(s.sweeper.angle);
+    if (this.sweeperView && s.sweeper) this.sweeperView.apply(s.sweeper.angle);
+    this.arenaView.applyPieces(s.pieces, s.time);
+    this.arenaView.applyTime(s.time);
     this.debug.sync(s);
     if (s.phase === 'matchOver' && s.matchWinner) this.message = `${s.matchWinner} WINS THE MATCH · ${info.matchOverHint}`;
 
     // The camera frames whoever is still in the round and on the arena.
     const wanted = this.subjects(s);
-    if (!this.cameraPose) this.cameraPose = wantedCamera(wanted);
-    else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted), dt);
+    const camRules = { ...CAMERA, bounds: this.def.camera.bounds, maxRadius: this.def.camera.maxRadius };
+    if (!this.cameraPose) this.cameraPose = wantedCamera(wanted, camRules);
+    else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted, camRules), dt);
     applyCamera(this.env.camera, this.cameraPose);
 
-    const lines = [...(info.status ?? []), `round ${s.round} · first to ${ROUND.target} · last Blobbi standing`, ''];
+    const lines = [...(info.status ?? []), `${this.def.name} · round ${s.round} · first to ${ROUND.target} · last Blobbi standing`, ''];
     s.fighters.forEach((f, i) => {
       const who = `${f.id} ${info.driver(i).padEnd(5)}`;
       const state = f.alive ? (f.eliminated ? 'OUT' : 'in ') : 'OUT';
@@ -267,7 +305,7 @@ export class RumblePresenter {
       ...s.fighters.map((_, i) => state(i)),
       `${holds}grab ${COMBAT.grabRange} m (blue) · punch ${COMBAT.punchRange} m (red) · cam r ${this.cameraPose?.radius.toFixed(1)}`,
       `orbs ${orbLine} · reach ${ORBS.collectRadius} m (yellow)`,
-      `sweeper ${((s.sweeper.angle * 180) / Math.PI).toFixed(0)}° · ${SWEEPER.angularSpeed} rad/s · reach ${SWEEPER.reach} m (ring) · tick ${s.tick}`,
+      s.sweeper && this.def.sweeper ? `sweeper ${((s.sweeper.angle * 180) / Math.PI).toFixed(0)}° · ${this.def.sweeper.angularSpeed} rad/s · reach ${this.def.sweeper.reach} m (ring) · tick ${s.tick}` : `no sweeper · tick ${s.tick}`,
       ...s.fighters.map((f) => `${f.id} power ${f.powerLevel}: push ×${pushAuthority(f.powerLevel).toFixed(2)} speed ×${speedMultiplier(f.powerLevel).toFixed(2)} · last impact ${this.lastHazard[f.id] ?? '0.00'}`),
     ];
   }

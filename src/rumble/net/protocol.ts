@@ -116,6 +116,8 @@ export interface WelcomeMessage {
   server?: ServerInfo;
   /** M10A: the wire protocol version (absent: a pre-M10 server, 0). */
   protocol?: number;
+  /** M11A: the room's arena, and whether it rotates between matches (absent: a pre-M11 server, the classic island). */
+  arena?: { id: string; rotate: boolean };
 }
 export interface RoomInfo {
   id: string;
@@ -125,6 +127,9 @@ export interface RoomInfo {
   url?: string;
   /** M10B: whether the room appears in the public listing (the open room always does; a code room as it was made). */
   listed?: boolean;
+  /** M11A: the arena the room was made with (absent: the classic island). */
+  arena?: string;
+  rotate?: boolean;
 }
 /** M10B: one public room as the listing shows it: counts, never who. */
 export interface RoomListing {
@@ -143,6 +148,8 @@ export interface RoomListing {
   joinable: boolean;
   /** Seconds since the room was made. */
   age: number;
+  /** M11A: the arena in play now. */
+  arena: string;
 }
 export interface RoomsMessage {
   t: 'rooms';

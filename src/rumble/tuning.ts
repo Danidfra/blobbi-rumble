@@ -274,6 +274,12 @@ export const BOT = Object.freeze({
   safeInset: 0.35,
   /** Closer than this to a rim with nothing to do there: back toward the middle. */
   rimPanic: 0.5,
+  /** M11A: walking yet going nowhere (under `stallSpeed` m/s) for `stallAfter` seconds is a step or a wall: jump it; after `stallGiveUp` jumps, go for something else. */
+  stallAfter: 0.6,
+  stallDistance: 0.3,
+  stallGiveUp: 2,
+  /** M11A: a bot never walks down onto a platform more than this far below its own (a drop it could not jump back from). */
+  maxDrop: 0.7,
   /**
    * Held: struggle like a person, not a macro. Start this long after being grabbed (a reaction), then reverse
    * every `strokeTime` seconds (plus up to `strokeJitter`), now and then fumbling a stroke the same way

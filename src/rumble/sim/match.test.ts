@@ -13,6 +13,7 @@ import { runHeadless } from '../headless';
 import { BLOBBI_GAMEPLAY_PROFILE } from '@blobbi-kit/3d';
 import { GAMEPLAY_PROFILE, RUMBLE_BODY } from '../profile';
 import { ORBS, ROUND, SWEEPER } from '../tuning';
+void SWEEPER;
 import { loadHavokNode } from './havokNode';
 import { createRumbleMatch, type RumbleMatch } from './match';
 import type { HavokInstance } from './physics';
@@ -191,10 +192,10 @@ describe('the authoritative match', () => {
 
   it('the sweeper: its angle advances with the steps and shows in the snapshot; its hit is the match\'s', () => {
     const m = make(['a', 'b']);
-    expect(m.snapshot().sweeper.angle).toBe(0);
+    expect(m.snapshot().sweeper!.angle).toBe(0);
     steps(m, 60);
-    expect(m.snapshot().sweeper.angle).toBeCloseTo(SWEEPER.angularSpeed * 60 * DT, 6);
-    expect(m.snapshot().sweeper.angularSpeed).toBe(SWEEPER.angularSpeed);
+    expect(m.snapshot().sweeper!.angle).toBeCloseTo(SWEEPER.angularSpeed * 60 * DT, 6);
+    expect(m.snapshot().sweeper!.angularSpeed).toBe(SWEEPER.angularSpeed);
     // Stand in the bar's path near the tip: struck within a turn.
     const r = 1.7;
     m.debugPlace('a', { x: SWEEPER.pivot.x + r * Math.cos(-2), z: SWEEPER.pivot.z + r * Math.sin(-2) });

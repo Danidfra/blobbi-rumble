@@ -21,8 +21,10 @@
  * named by stable match-local ids; roster order is an internal detail.
  */
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { spawnPoints, type FighterCount } from '../arena/layout';
-import { createSweeper, resetSweeper, sweeperHit, tickSweeper } from '../arena/sweeper';
+import { CLASSIC, arenaSpawns, type ArenaDef } from '../arena/arenas';
+import { inPlatform, platformUnder } from '../arena/geometry';
+import { createPieces, drop as pieceDrop, pieceImpact, pieceSolid, resetPieces, tickPiece, type PieceState } from '../arena/pieces';
+import { createSweeper, resetSweeper, sweeperHit, tickSweeper, type SweeperState } from '../arena/sweeper';
 import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
 import { freeHolds, grabTarget, holdsConsistent, punchTarget, settleHolds, type Combatant, type Hold } from '../combat/melee';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from '../pickups/orbs';
@@ -30,8 +32,8 @@ import { nearestContacts } from '../physics/contact';
 import { RUMBLE_BODY } from '../profile';
 import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch, type MatchState } from '../rounds';
 import { stepStruggle } from '../combat/struggle';
-import { COMBAT, PUSH, ROUND, STRUGGLE, SWEEPER } from '../tuning';
-import { createArenaBody } from './arenaBody';
+import { COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
+import { createArenaBody, type ArenaBody } from './arenaBody';
 import { FighterSim, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
 import { createPhysicsWorld, type HavokInstance, type PhysicsWorld } from './physics';
@@ -42,7 +44,18 @@ export interface RumbleMatchConfig {
   havok: HavokInstance;
   /** 2 to 4 players, in roster order (which decides the spawn). Ids must be unique. */
   players: readonly { id: PlayerId }[];
+  /** M11A: which arena (the classic island by default). */
+  arena?: ArenaDef;
 }
+
+/** M11D / M11E: how a belt and ice act on a body standing on them. */
+export const SURFACES = Object.freeze({
+  /** A belt closes the body's velocity on its own at this rate, 1/s (a drag, never a launch), capped per step. */
+  conveyorGain: 6,
+  conveyorMaxDv: 0.25,
+  /** The steering grip on ice (of 1). */
+  iceGrip: 0.3,
+});
 
 export class RumbleMatch {
   readonly ids: readonly PlayerId[];
@@ -51,10 +64,14 @@ export class RumbleMatch {
   private readonly fighters: FighterSim[];
   private readonly index = new Map<PlayerId, number>();
   private readonly match: MatchState;
-  private readonly orbs = createOrbs();
-  private readonly sweeper;
-  private readonly sweeperBody: SweeperBody;
-  private readonly arena: { dispose(): void };
+  private orbs;
+  private sweeper: SweeperState | null = null;
+  private sweeperBody: SweeperBody | null = null;
+  private arenaBody: ArenaBody;
+  /** M11A: the arena in play, and (M11B) its dynamic pieces' state. */
+  private def: ArenaDef;
+  private pieces: PieceState[];
+  private roundTime = 0;
   /** Each player's current movement intent, and the action requests waiting for the next step. */
   private readonly intents: PlayerIntent[];
   private readonly pending: { jump: boolean; punch: boolean; grab: boolean }[];
@@ -74,11 +91,17 @@ export class RumbleMatch {
       this.index.set(id, i);
     });
     this.world = createPhysicsWorld(config.havok, RUMBLE_BODY.gravity);
-    this.arena = createArenaBody(this.world.scene);
-    const spawns = spawnPoints(n as FighterCount);
-    this.fighters = this.ids.map((id, i) => new FighterSim(id, this.world.scene, new Vector3(spawns[i].x, 0, spawns[i].z), spawns[i].yaw));
-    this.sweeper = createSweeper(n);
-    this.sweeperBody = new SweeperBody(this.world.scene);
+    this.def = config.arena ?? CLASSIC;
+    this.arenaBody = createArenaBody(this.world.scene, this.def);
+    const spawns = arenaSpawns(this.def, n as 2 | 3 | 4);
+    this.fighters = this.ids.map((id, i) => new FighterSim(id, this.world.scene, new Vector3(spawns[i].x, spawns[i].y, spawns[i].z), spawns[i].yaw));
+    for (const f of this.fighters) f.fallRules = { floorY: this.def.fallY, respawnDelay: 0.8 };
+    this.orbs = createOrbs({ ...ORBS, points: this.def.orbs });
+    this.pieces = createPieces(this.def.dynamics);
+    if (this.def.sweeper) {
+      this.sweeper = createSweeper(n);
+      this.sweeperBody = new SweeperBody(this.world.scene, this.def.sweeper);
+    }
     this.match = createMatch(n);
     this.intents = this.ids.map(() => ({ ...IDLE_INTENT }));
     this.pending = this.ids.map(() => ({ jump: false, punch: false, grab: false }));
@@ -92,6 +115,39 @@ export class RumbleMatch {
   }
   get time() {
     return this.clock;
+  }
+  /** M11A: the arena in play. */
+  get arena(): ArenaDef {
+    return this.def;
+  }
+
+  /**
+   * M11A: play on another arena. The old colliders, sweeper and pieces go;
+   * the new ones are built; the fighters are moved to the new spawns and
+   * the round restarts (scores stay: this is for a rotation between
+   * matches, or a host's choice before play). Nothing of any fighter's body
+   * is leaked: the same Havok world and capsules go on.
+   */
+  switchArena(def: ArenaDef): MatchEvent[] {
+    this.events = [];
+    if (def.id === this.def.id) return this.events;
+    this.sweeperBody?.dispose();
+    this.sweeperBody = null;
+    this.sweeper = null;
+    this.arenaBody.dispose();
+    this.def = def;
+    this.arenaBody = createArenaBody(this.world.scene, def);
+    const spawns = arenaSpawns(def, this.fighters.length as 2 | 3 | 4);
+    this.fighters.forEach((f, i) => f.relocate(new Vector3(spawns[i].x, spawns[i].y, spawns[i].z), spawns[i].yaw, { floorY: def.fallY, respawnDelay: 0.8 }));
+    this.orbs = createOrbs({ ...ORBS, points: def.orbs });
+    this.pieces = createPieces(def.dynamics);
+    if (def.sweeper) {
+      this.sweeper = createSweeper(this.fighters.length);
+      this.sweeperBody = new SweeperBody(this.world.scene, def.sweeper);
+    }
+    this.resetRound();
+    this.emit({ kind: 'arena', who: null, note: def.id });
+    return this.events;
   }
 
   /**
@@ -136,9 +192,9 @@ export class RumbleMatch {
    * somewhere, upright and at rest, facing `yaw`, optionally with a power
    * level.
    */
-  debugPlace(id: PlayerId, at: { x: number; z: number; yaw?: number; powerLevel?: number }) {
+  debugPlace(id: PlayerId, at: { x: number; y?: number; z: number; yaw?: number; powerLevel?: number }) {
     const f = this.fighters[this.indexOf(id)];
-    f.body.teleport(new Vector3(at.x, 0, at.z));
+    f.body.teleport(new Vector3(at.x, at.y ?? 0, at.z));
     if (at.yaw !== undefined) f.yaw = at.yaw;
     if (at.powerLevel !== undefined) f.powerLevel = at.powerLevel;
   }
@@ -156,6 +212,37 @@ export class RumbleMatch {
     const fighters = this.fighters;
     const n = fighters.length;
     const playing = this.match.phase === 'playing';
+    if (playing) this.roundTime += dt;
+    // M11D / M11E: what each fighter stands on this step: a belt carries it, ice lets it slide (the floor's part is the collider's own friction).
+    fighters.forEach((f, i) => {
+      if (f.eliminated) return;
+      const feet = f.body.feet();
+      const under = f.grounded ? platformUnder(this.def.platforms, { x: feet.x, z: feet.z }) : null;
+      const onIce = !!under && under.kind === 'ice' && Math.abs(feet.y - under.y) < 0.3;
+      const grip = onIce ? SURFACES.iceGrip : 1;
+      if (grip !== f.grip) {
+        f.grip = grip;
+        if (!this.wasTouching[i]) f.body.setFriction(onIce ? this.def.iceFriction : RUMBLE_BODY.friction);
+      }
+      const belt = under && under.kind === 'conveyor' && Math.abs(feet.y - under.y) < 0.3 ? this.def.conveyors.find((c) => this.def.platforms[c.platform] === under) : undefined;
+      f.carry.x = belt?.vx ?? 0;
+      f.carry.z = belt?.vz ?? 0;
+      {
+        if (belt) {
+          const v = f.body.velocity();
+          const k = Math.min(1, SURFACES.conveyorGain * dt);
+          let dvx = (belt.vx - v.x) * k;
+          let dvz = (belt.vz - v.z) * k;
+          const len = Math.hypot(dvx, dvz);
+          if (len > SURFACES.conveyorMaxDv) {
+            dvx *= SURFACES.conveyorMaxDv / len;
+            dvz *= SURFACES.conveyorMaxDv / len;
+          }
+          // Carried along, never launched: a bounded nudge toward the belt's speed, under the body's own steering.
+          f.push(dvx, 0, dvz);
+        }
+      }
+    });
     // This step's intents: the held movement plus the waiting requests, which are taken now whether or not they may act.
     const intents = fighters.map((f, i) => {
       const p = this.pending[i];
@@ -173,7 +260,7 @@ export class RumbleMatch {
       const touching = contacts[i] >= 0;
       if (touching !== this.wasTouching[i]) {
         this.wasTouching[i] = touching;
-        f.body.setFriction(touching ? PUSH.contactFriction : RUMBLE_BODY.friction);
+        f.body.setFriction(touching ? PUSH.contactFriction : f.grip < 1 ? this.def.iceFriction : RUMBLE_BODY.friction);
       }
     });
 
@@ -228,18 +315,30 @@ export class RumbleMatch {
     tickOrbs(this.orbs, dt, bodies);
 
     // The sweeper turns; a fighter under its leading face takes its blow, through the same reaction as a punch (no player power in it).
-    tickSweeper(this.sweeper, dt);
-    this.sweeperBody.apply(this.sweeper);
-    if (playing) {
-      const list = this.combatants();
-      fighters.forEach((f, i) => {
-        if (f.eliminated) return;
-        const hit = sweeperHit(this.sweeper, i, f.body.position(), RUMBLE_BODY.capsuleRadius, RUMBLE_BODY.capsuleCenterY);
-        if (!hit) return;
-        this.strike(list, i, hit.reaction, -1);
-        this.emit({ kind: 'sweeper', who: this.ids[i], reaction: hit.reaction.kind, impact: hit.reaction.impact, note: `at ${hit.along.toFixed(2)} m (${hit.speed.toFixed(2)} m/s)` });
-      });
+    if (this.sweeper && this.sweeperBody && this.def.sweeper) {
+      const tuning = this.def.sweeper;
+      tickSweeper(this.sweeper, dt, tuning);
+      this.sweeperBody.apply(this.sweeper);
+      if (playing) {
+        const list = this.combatants();
+        fighters.forEach((f, i) => {
+          if (f.eliminated) return;
+          const hit = sweeperHit(this.sweeper!, i, f.body.position(), RUMBLE_BODY.capsuleRadius, RUMBLE_BODY.capsuleCenterY, tuning);
+          if (!hit) return;
+          this.strike(list, i, hit.reaction, -1);
+          this.emit({ kind: 'sweeper', who: this.ids[i], reaction: hit.reaction.kind, impact: hit.reaction.impact, note: `at ${hit.along.toFixed(2)} m (${hit.speed.toFixed(2)} m/s)` });
+        });
+      }
     }
+    // M11B: the dynamic pieces: weight arms a falling pad, heavy impacts (counted in `strike`) and time arm a bridge; the collider follows.
+    this.def.dynamics.forEach((d, k) => {
+      const piece = this.pieces[k];
+      const r = this.def.platforms[d.platform];
+      const loaded = playing && fighters.some((f) => !f.eliminated && f.grounded && inPlatform(r, f.at(), 0) && Math.abs(f.body.feet().y - r.y) < 0.3);
+      const entered = tickPiece(piece, d.rule, playing ? dt : 0, loaded, this.roundTime);
+      this.arenaBody.setPiece(k, pieceDrop(piece, d.rule), pieceSolid(piece) || piece.phase === 'falling');
+      if (entered) this.emit({ kind: 'piece', who: null, piece: k, note: entered });
+    });
     for (const f of fighters) if (!f.eliminated) f.settle();
     // The facing follows the velocity (a carrier's only by its own steering).
     fighters.forEach((f, i) => {
@@ -322,14 +421,17 @@ export class RumbleMatch {
       lastRoundWinner: idOf(m.lastWinner ?? -1),
       matchWinner: winner === null ? null : this.ids[winner],
       orbs: this.orbs.map((o) => ({ x: o.x, y: o.y, z: o.z, active: o.active, timer: o.timer })),
-      sweeper: { angle: this.sweeper.angle, angularSpeed: SWEEPER.angularSpeed },
+      sweeper: this.sweeper && this.def.sweeper ? { angle: this.sweeper.angle, angularSpeed: this.def.sweeper.angularSpeed } : null,
+      arena: this.def.id,
+      pieces: this.pieces.map((p, k) => ({ phase: p.phase, t: +p.t.toFixed(3), drop: +pieceDrop(p, this.def.dynamics[k].rule).toFixed(3) })),
+      roundTime: +this.roundTime.toFixed(3),
     };
   }
 
   dispose() {
     for (const f of this.fighters) f.dispose();
-    this.sweeperBody.dispose();
-    this.arena.dispose();
+    this.sweeperBody?.dispose();
+    this.arenaBody.dispose();
     this.world.dispose();
   }
 
@@ -346,9 +448,15 @@ export class RumbleMatch {
   private resetRound() {
     for (const f of this.fighters) f.reset();
     for (const f of this.fighters) f.body.setGravityFactor(1);
+    this.wasTouching.fill(false);
     resetOrbs(this.orbs);
-    resetSweeper(this.sweeper);
-    this.sweeperBody.apply(this.sweeper);
+    if (this.sweeper && this.sweeperBody) {
+      resetSweeper(this.sweeper);
+      this.sweeperBody.apply(this.sweeper);
+    }
+    resetPieces(this.pieces);
+    this.pieces.forEach((_, k) => this.arenaBody.setPiece(k, 0, true));
+    this.roundTime = 0;
   }
 
   private combatants(): Combatant[] {
@@ -364,6 +472,13 @@ export class RumbleMatch {
   private strike(list: Combatant[], j: number, reaction: Reaction, by: number) {
     const ended = freeHolds(list, j);
     this.dropped(ended);
+    // M11B: a heavy blow on a body over a breakable piece weakens it.
+    if (reaction.kind === 'tumble') {
+      const at = this.fighters[j].at();
+      this.def.dynamics.forEach((d, k) => {
+        if (inPlatform(this.def.platforms[d.platform], at, 0)) pieceImpact(this.pieces[k], d.rule);
+      });
+    }
     for (const h of ended) if (by !== h.holder && by !== h.victim) this.emit({ kind: 'interrupt', who: by >= 0 ? this.ids[by] : null, on: this.ids[j], note: `${this.ids[h.holder]} lost ${this.ids[h.victim]}` });
     this.fighters[j].react(reaction, (COMBAT.hitSpin * reaction.impact) / COMBAT.tumbleThreshold);
   }

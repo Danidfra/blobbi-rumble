@@ -68,6 +68,10 @@ describe('public rooms and server-aware links (M10)', () => {
     expect(roomIntent({ pathname: '/rumble.html', search: '?create=1' })).toEqual({ kind: 'create', listed: false });
     expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1');
     expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1');
+    // M11A: the arena and rotation ride the same address, and never leak into a join or the open room.
+    expect(roomIntent({ pathname: '/rumble.html', search: '?create=1&arena=blobbi-factory&rotate=1' })).toEqual({ kind: 'create', listed: false, arena: 'blobbi-factory', rotate: true });
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true, arena: 'frozen-lake', rotate: true })).toBe('wss://s.example/ws?create=1&public=1&arena=frozen-lake&rotate=1');
+    expect(socketUrl('wss://s.example/ws?arena=frozen-lake&rotate=1', { kind: 'join', id: 'ABCDE' })).toBe('wss://s.example/ws?room=ABCDE');
     expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2');
   });
   it('a share link names the server when the page is not served by it (and has no public address); the server’s own address needs nothing', () => {

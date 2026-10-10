@@ -475,7 +475,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
     },
     openRoom: () => switchTo({ kind: 'open' }),
-    hostGame: (listed) => switchTo({ kind: 'create', listed }),
+    hostGame: (listed, arena, rotate) => switchTo({ kind: 'create', listed, ...(arena ? { arena } : {}), rotate }),
     // M10A / M10B: servers and public rooms.
     useServer,
     addServer: (input) => {
@@ -866,7 +866,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       (drawn[i] ??= []).push({ x: f.position.x, z: f.position.z, t: now });
       if (drawn[i].length > 240) drawn[i].shift();
     });
-    if (!presenter) presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs);
+    if (!presenter) presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena);
     const control: Record<string, Control> = state.control;
     // Name tags: a proven person's name (short), else the slot label. Redrawn only when the text changes.
     for (const id of s.players) {
@@ -947,7 +947,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       get server() {
         return serverInfo;
       },
-      host: (listed = false) => switchTo({ kind: 'create', listed }),
+      host: (listed = false, arena?: string, rotate = false) => switchTo({ kind: 'create', listed, ...(arena ? { arena } : {}), rotate }),
       /** M10: servers and rooms, for scripted checks. */
       get gameServer() {
         return server;

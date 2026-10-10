@@ -8,6 +8,7 @@ import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, type 
 import { loadHavok } from '../physics/world';
 import { rosterFor, rosterOptions } from '../roster';
 import { createRumbleMatch } from '../sim/match';
+import { arenaById } from '../arena/arenas';
 import type { MatchEvent, MatchSnapshot } from '../sim/snapshot';
 import { RumblePresenter } from './presenter';
 
@@ -16,10 +17,11 @@ const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G gra
 export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const havok = await loadHavok();
   const roster = rosterFor(rosterOptions(location.search));
-  const match = createRumbleMatch({ havok, players: roster.map((e) => ({ id: e.label })) });
+  const arena = arenaById(new URLSearchParams(location.search).get('arena')) ?? undefined;
+  const match = createRumbleMatch({ havok, players: roster.map((e) => ({ id: e.label })), arena });
   const ids = match.ids;
   let snapshot: MatchSnapshot = match.snapshot();
-  const presenter = new RumblePresenter(canvas, hud, roster.map((e) => ({ id: e.label, identity: e.identity })), snapshot.orbs);
+  const presenter = new RumblePresenter(canvas, hud, roster.map((e) => ({ id: e.label, identity: e.identity })), snapshot.orbs, snapshot.arena);
 
   // Intent producers: the keyboard for people, test bots for the rest, each behind a scripting hook for checks.
   const keyboard = new Keyboard([P1_BINDINGS, P2_BINDINGS]);

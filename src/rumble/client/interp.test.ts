@@ -44,6 +44,9 @@ const snap = (tick: number, fighters: FighterSnapshot[], extra: Partial<MatchSna
   matchWinner: null,
   orbs: [{ x: 0, y: 0.6, z: 0, active: true, timer: 0 }],
   sweeper: { angle: 0, angularSpeed: 1.5 },
+  arena: 'floating-islands-classic',
+  pieces: [],
+  roundTime: 0,
   ...extra,
 });
 
@@ -57,8 +60,8 @@ describe('blending', () => {
     expect(m.fighters[0].velocity.x).toBeCloseTo(2);
     // Across ±π, not through 0.
     expect(Math.abs(Math.cos(m.fighters[0].yaw) + 1)).toBeLessThan(1e-9);
-    expect(Math.sin(m.sweeper.angle)).toBeCloseTo(0);
-    expect(Math.cos(m.sweeper.angle)).toBeCloseTo(1);
+    expect(Math.sin(m.sweeper!.angle)).toBeCloseTo(0);
+    expect(Math.cos(m.sweeper!.angle)).toBeCloseTo(1);
     expect(lerpAngle(0.1, -0.1, 0.5)).toBeCloseTo(0);
   });
 

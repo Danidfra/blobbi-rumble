@@ -113,7 +113,7 @@ describe('the public listing (M10B)', () => {
     expect(rows.find((r) => r.id === 'OPEN')).toMatchObject({ kind: 'open', players: 0, joinable: true });
     expect(JSON.stringify(rows)).not.toContain(priv.id);
     expect(JSON.stringify(rows)).not.toMatch(/pubkey|nostr|conn/);
-    for (const r of rows) expect(Object.keys(r).sort()).toEqual(['age', 'id', 'joinable', 'kind', 'maxConnections', 'maxPlayers', 'phase', 'players', 'round', 'spectators']);
+    for (const r of rows) expect(Object.keys(r).sort()).toEqual(['age', 'arena', 'id', 'joinable', 'kind', 'maxConnections', 'maxPlayers', 'phase', 'players', 'round', 'spectators']);
     // Full: not joinable; spectators counted.
     for (let c = 3; c <= m.perRoom; c++) {
       m.enter(pub2, c);

@@ -13,7 +13,20 @@ import { reactionKind, resolveImpact } from '../combat/impact';
 import type { Reaction } from '../combat/combat';
 import { COMBAT, SWEEPER } from '../tuning';
 
-export type SweeperTuning = typeof SWEEPER;
+/** The sweeper's numbers (an arena has its own, M11A); `SWEEPER` in tuning.ts is the classic island's. */
+export interface SweeperTuning {
+  pivot: { x: number; z: number };
+  postRadius: number;
+  reach: number;
+  halfWidth: number;
+  top: number;
+  angularSpeed: number;
+  impactFloor: number;
+  impactPerSpeed: number;
+  lift: number;
+  hitMargin: number;
+  hitCooldown: number;
+}
 
 export interface SweeperState {
   /** The bar's angle about +y, radians: Babylon's rotation.y, so a point at +x along the bar is at (cos θ, -sin θ). */

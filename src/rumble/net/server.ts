@@ -50,6 +50,7 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { HavokInstance } from '../sim/physics';
 import { AUTH, ChallengeBook, authAddress, verifyAuth } from '../../social/auth';
+import { arenaById } from '../arena/arenas';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
 import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage } from './protocol';
@@ -248,7 +249,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       const key = req.socket.remoteAddress ?? '?';
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
       // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
-      const room = rooms.create({ listed: q.get('public') === '1' });
+      // M11A: `arena=<id>` picks the arena (unknown: the classic island); `rotate=1` moves to another after each match.
+      const room = rooms.create({ listed: q.get('public') === '1', arena: arenaById(q.get('arena')) ?? undefined, rotate: q.get('rotate') === '1' });
       if (!room) return { code: 4003, why: 'room limit reached' };
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
@@ -337,7 +339,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
     log(`conn ${id} from ${from}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
+    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
     client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list'], room: info, server }));
     sendRoster(room);

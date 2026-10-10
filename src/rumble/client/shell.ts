@@ -35,6 +35,7 @@ import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
 import type { PeopleState, PersonRow } from './people';
 import type { GameServer } from './servers';
+import { ARENAS, arenaById } from '../arena/arenas';
 import type { RoomListing } from '../net/protocol';
 import type { PickerState } from './blobbis';
 import type { RumbleForm } from './rumbleForm';
@@ -45,8 +46,8 @@ import { isLocalHost } from '../net/serverTrust';
 export interface ShellActions {
   retry(): void;
   openRoom(): void;
-  /** Host a new game: listed in this server's public rooms, or reached by its code and link only. */
-  hostGame(listed: boolean): void;
+  /** Host a new game: listed in this server's public rooms, or reached by its code and link only; on an arena (M11A), rotating or not. */
+  hostGame(listed: boolean, arena?: string, rotate?: boolean): void;
   /** M10A: servers. */
   useServer(id: string): void;
   addServer(input: { name?: string; url: string; region?: string; operator?: string }): string | null;
@@ -648,6 +649,33 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  /** M11A: hosting a game: which arena (or a rotation), public or private. The choice is kept across panel redraws. */
+  let hostDraft = { arena: ARENAS[0].id as string, rotate: false };
+  const hostForm = (): Node[] => {
+    const pick = el('select', 'rs-link');
+    for (const ar of ARENAS) {
+      const o = el('option', undefined, ar.name);
+      o.value = ar.id;
+      pick.append(o);
+    }
+    pick.value = hostDraft.arena;
+    pick.addEventListener('focus', () => a.releaseKeys());
+    pick.addEventListener('change', () => (hostDraft = { ...hostDraft, arena: pick.value }));
+    pick.addEventListener('keydown', (e) => e.stopPropagation());
+    const rotate = el('label', 'rs-sub');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.checked = hostDraft.rotate;
+    box.addEventListener('change', () => (hostDraft = { ...hostDraft, rotate: box.checked }));
+    rotate.append(box, document.createTextNode(' rotate arenas between matches'));
+    const row = el('div', 'rs-row');
+    row.append(pick, rotate);
+    const acts = el('div', 'rs-row');
+    acts.append(button('Host a public game', () => a.hostGame(true, hostDraft.arena, hostDraft.rotate), 'rs-btn go'), button('Host a private game', () => a.hostGame(false, hostDraft.arena, hostDraft.rotate)));
+    const chosen = arenaById(hostDraft.arena);
+    return [row, acts, ...(chosen ? [el('div', 'rs-sub', chosen.description)] : [])];
+  };
+
   /** M10B: the current server's public rooms: counts and state, Join, Refresh; never who is in them. */
   const roomsSection = (v: ShellView): Node[] => {
     const out: Node[] = [el('h5', undefined, 'Public rooms on this server')];
@@ -658,7 +686,7 @@ export function createShell(a: ShellActions) {
     for (const r of sv.rooms) {
       const row = el('div', 'rs-row');
       const here = v.room?.id === r.id;
-      const words = `${r.players}/${r.maxPlayers} playing${r.spectators ? ` · ${r.spectators} watching` : ''} · ${r.phase === 'playing' ? `round ${r.round}` : r.phase}${r.joinable ? '' : ' · full'}`;
+      const words = `${arenaById(r.arena)?.name ?? 'Classic'} · ${r.players}/${r.maxPlayers} playing${r.spectators ? ` · ${r.spectators} watching` : ''} · ${r.phase === 'playing' ? `round ${r.round}` : r.phase}${r.joinable ? '' : ' · full'}`;
       row.append(el('b', undefined, r.kind === 'open' ? 'Open room' : r.id), el('span', 'rs-sub', words));
       if (here) row.append(el('span', 'rs-ok', 'you are here'));
       else if (r.joinable) row.append(button('Join', () => (r.kind === 'open' ? a.openRoom() : a.joinGame(r.id)), 'rs-btn go'));
@@ -731,6 +759,7 @@ export function createShell(a: ShellActions) {
     const parts: Node[] = [];
     // Room.
     parts.push(el('h4', undefined, 'Room'));
+    if (v.room?.arena) parts.push(el('div', 'rs-sub', `${arenaById(v.room.arena)?.name ?? v.room.arena}${v.room.rotate ? ' · rotating between matches' : ''}`));
     if (v.room && v.room.kind === 'private') {
       parts.push(el('div', 'rs-code', v.room.id));
       if (v.share) {
@@ -767,12 +796,12 @@ export function createShell(a: ShellActions) {
         parts.push(row, hint);
       }
       parts.push(el('div', 'rs-row'));
-      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a public game', () => a.hostGame(true)), button('Host a private game', () => a.hostGame(false)));
+      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom));
+      parts.push(...hostForm());
       parts.push(...inviteSection(v));
     } else {
       parts.push(el('div', 'rs-sub', 'The open room: anyone who opens this server plays here, with bots in the empty slots.'));
-      parts.push(el('div', 'rs-row'));
-      (parts.at(-1) as HTMLElement).append(button('Host a public game', () => a.hostGame(true), 'rs-btn go'), button('Host a private game', () => a.hostGame(false)));
+      parts.push(...hostForm());
       parts.push(el('div', 'rs-sub', 'A public game is listed below for anyone on this server; a private one is reached by its code or link only (a code is an address, not a secret).'));
     }
     const err = el('div', 'rs-err');

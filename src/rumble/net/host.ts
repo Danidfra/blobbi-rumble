@@ -26,6 +26,7 @@ import { createRumbleMatch, type RumbleMatch } from '../sim/match';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
+import { CLASSIC, nextArena, type ArenaDef } from '../arena/arenas';
 import { parseClientMessage, type Control, type LookReason, type PongMessage, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
 
 export const NET = Object.freeze({
@@ -44,6 +45,11 @@ export interface HostConfig {
   players?: string[];
   tickHz?: number;
   snapshotHz?: number;
+  /** M11A: the arena to play (the classic island by default), and whether to rotate to another after each match. */
+  arena?: ArenaDef;
+  rotate?: boolean;
+  /** For a rotation: 0..1 (tests make it deterministic). */
+  random?: () => number;
 }
 
 export type ConnectionId = number;
@@ -71,6 +77,9 @@ export class RumbleHost {
   private snapshot: MatchSnapshot;
   private matches = 0;
   private matchOverFor = 0;
+  /** M11A: rotate to another arena between matches. */
+  readonly rotate: boolean;
+  private readonly random: () => number;
 
   constructor(config: HostConfig) {
     const ids = config.players ?? ['P1', 'P2', 'P3', 'P4'];
@@ -78,11 +87,18 @@ export class RumbleHost {
     this.snapshotHz = config.snapshotHz ?? NET.snapshotHz;
     if (this.tickHz % this.snapshotHz !== 0) throw new Error('snapshotHz must divide tickHz');
     this.dt = 1 / this.tickHz;
-    this.match = createRumbleMatch({ havok: config.havok, players: ids.map((id) => ({ id })) });
+    this.rotate = config.rotate === true;
+    this.random = config.random ?? Math.random;
+    this.match = createRumbleMatch({ havok: config.havok, players: ids.map((id) => ({ id })), arena: config.arena ?? CLASSIC });
     this.ids = this.match.ids;
     this.bots = this.ids.map((_, i) => new BotInput(i + 1));
     for (const id of this.ids) this.holder.set(id, null);
     this.snapshot = this.match.snapshot();
+  }
+
+  /** M11A: the arena in play. */
+  get arena(): ArenaDef {
+    return this.match.arena;
   }
 
   /** Steps between two states sent. */
@@ -103,7 +119,7 @@ export class RumbleHost {
       this.ackTick.set(free, this.match.tick);
       this.lastInputTick.set(free, this.match.tick);
     }
-    return { t: 'welcome', you: free, players: [...this.ids], tickHz: this.tickHz, snapshotHz: this.snapshotHz };
+    return { t: 'welcome', you: free, players: [...this.ids], tickHz: this.tickHz, snapshotHz: this.snapshotHz, arena: { id: this.match.arena.id, rotate: this.rotate } };
   }
 
   /** A connection left: its slot (if any) goes back to its bot at once, with no input of the person's left held. */
@@ -235,6 +251,8 @@ export class RumbleHost {
       this.matchOverFor += this.dt;
       if (this.matchOverFor >= NET.nextMatchDelay) {
         this.matches += 1;
+        // M11A: a rotating room moves to another arena with the new match.
+        if (this.rotate) this.match.switchArena(nextArena(this.match.arena.id, this.random()));
         this.match.restart();
         this.snapshot = this.match.snapshot();
         this.resetBots();

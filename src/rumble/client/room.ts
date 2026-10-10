@@ -13,7 +13,7 @@
  */
 import { OPEN_ROOM, normalizeRoomId } from '../net/roomId';
 
-export type RoomIntent = { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create'; listed?: boolean } | { kind: 'invalid'; raw: string };
+export type RoomIntent = { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create'; listed?: boolean; arena?: string; rotate?: boolean } | { kind: 'invalid'; raw: string };
 
 export function roomIntent(loc: { pathname: string; search: string }): RoomIntent {
   const q = new URLSearchParams(loc.search);
@@ -29,19 +29,21 @@ export function roomIntent(loc: { pathname: string; search: string }): RoomInten
     if (!id) return { kind: 'invalid', raw: raw.slice(0, 16) };
     return id === OPEN_ROOM ? { kind: 'open' } : { kind: 'join', id };
   }
-  return q.has('create') ? { kind: 'create', listed: q.get('public') === '1' } : { kind: 'open' };
+  if (!q.has('create')) return { kind: 'open' };
+  const arena = q.get('arena');
+  return { kind: 'create', listed: q.get('public') === '1', ...(arena ? { arena } : {}), ...(q.get('rotate') === '1' ? { rotate: true } : {}) };
 }
 
 /** The WebSocket URL for a room: the server's URL with `room=` or `create=1` (any other query kept). */
 export function socketUrl(serverUrl: string, intent: RoomIntent): string {
   const u = new URL(serverUrl);
-  u.searchParams.delete('room');
-  u.searchParams.delete('create');
-  u.searchParams.delete('public');
+  for (const k of ['room', 'create', 'public', 'arena', 'rotate']) u.searchParams.delete(k);
   if (intent.kind === 'join') u.searchParams.set('room', intent.id);
   else if (intent.kind === 'create') {
     u.searchParams.set('create', '1');
     if (intent.listed) u.searchParams.set('public', '1');
+    if (intent.arena) u.searchParams.set('arena', intent.arena);
+    if (intent.rotate) u.searchParams.set('rotate', '1');
   }
   return u.toString();
 }

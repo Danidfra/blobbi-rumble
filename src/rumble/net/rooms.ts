@@ -20,6 +20,7 @@
  * with it; nothing reads it yet.
  */
 import type { HavokInstance } from '../sim/physics';
+import { CLASSIC, type ArenaDef } from '../arena/arenas';
 import { RumbleHost, type ConnectionId } from './host';
 import { PROTOCOL, type RoomListing } from './protocol';
 import { OPEN_ROOM, newRoomId, normalizeRoomId } from './roomId';
@@ -42,6 +43,9 @@ export interface Room {
   readonly mode: RoomMode;
   /** M10B: in the public listing. The open room always; a code room as it was made. */
   readonly listed: boolean;
+  /** M11A: the arena the room was made with; `host.arena` is the one in play (a rotation moves on). */
+  readonly arena: ArenaDef;
+  readonly rotate: boolean;
   readonly host: RumbleHost;
   /** The connections in it (players and spectators). */
   readonly connections: Set<ConnectionId>;
@@ -92,9 +96,9 @@ export class RoomManager {
   }
 
   /** A new code room, listed or not (default: unlisted, as before M10), or null when the server holds as many as it may. */
-  create(opts: { listed?: boolean } = {}): Room | null {
+  create(opts: { listed?: boolean; arena?: ArenaDef; rotate?: boolean } = {}): Room | null {
     if (this.rooms.size >= this.maxRooms) return null;
-    return this.make(newRoomId((id) => this.rooms.has(id), this.config.random), 'private', opts.listed === true);
+    return this.make(newRoomId((id) => this.rooms.has(id), this.config.random), 'private', opts.listed === true, opts.arena ?? CLASSIC, opts.rotate === true);
   }
 
   /**
@@ -110,7 +114,7 @@ export class RoomManager {
         const roster = r.host.roster().slots;
         const players = Object.values(roster).filter((s) => s.who !== 'bot').length;
         const snap = r.host.latest;
-        return { id: r.id, kind: r.kind, players, maxPlayers: Object.keys(roster).length, spectators: Math.max(0, r.connections.size - players), maxConnections: this.perRoom, phase: snap.phase, round: snap.round, joinable: this.hasRoom(r), age: Math.max(0, Math.floor((t - r.createdAt) / 1000)) };
+        return { id: r.id, kind: r.kind, players, maxPlayers: Object.keys(roster).length, spectators: Math.max(0, r.connections.size - players), maxConnections: this.perRoom, phase: snap.phase, round: snap.round, joinable: this.hasRoom(r), age: Math.max(0, Math.floor((t - r.createdAt) / 1000)), arena: r.host.arena.id };
       });
     rows.sort((a, b) => Number(b.kind === 'open') - Number(a.kind === 'open') || b.players - a.players || a.age - b.age);
     return rows.slice(0, PROTOCOL.maxListedRooms);
@@ -151,10 +155,10 @@ export class RoomManager {
     this.rooms.clear();
   }
 
-  private make(id: string, kind: RoomKind, listed = kind === 'open'): Room {
-    const host = new RumbleHost({ havok: this.config.havok, tickHz: this.config.tickHz, snapshotHz: this.config.snapshotHz });
+  private make(id: string, kind: RoomKind, listed = kind === 'open', arena: ArenaDef = CLASSIC, rotate = false): Room {
+    const host = new RumbleHost({ havok: this.config.havok, tickHz: this.config.tickHz, snapshotHz: this.config.snapshotHz, arena, rotate });
     // A new private room starts empty: its grace period runs until someone enters.
-    const room: Room = { id, kind, mode: 'casual', listed, host, connections: new Set(), createdAt: this.now(), emptySince: kind === 'private' ? this.now() : null };
+    const room: Room = { id, kind, mode: 'casual', listed, arena, rotate, host, connections: new Set(), createdAt: this.now(), emptySince: kind === 'private' ? this.now() : null };
     this.rooms.set(id, room);
     return room;
   }

@@ -5,6 +5,7 @@
  * has (it only ever answers with an intent).
  */
 import { describe, expect, it } from 'vitest';
+import { CLASSIC } from '../arena/arenas';
 import { onFloor } from '../arena/layout';
 import { createCombatState, startTumble } from '../combat/combat';
 import { createOrbs } from '../pickups/orbs';
@@ -13,8 +14,8 @@ import { aroundPost, bestOrb, BotInput, clearOfPost, createBotMemory, nearestFig
 
 const east = { x: 1, z: 0 };
 const west = { x: -1, z: 0 };
-const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, facing, active: true, combat: createCombatState(), powerLevel: 0, holder: -1 });
-const world = (fighters: BotFighter[], self = 0, orbs = createOrbs().map((o) => ({ ...o, active: false }))): BotWorld => ({ self, fighters, orbs, sweeperAngle: Math.PI / 2, grounded: true });
+const body = (x: number, z = 0, facing = east): BotFighter => ({ at: { x, z }, y: 0, facing, active: true, combat: createCombatState(), powerLevel: 0, holder: -1 });
+const world = (fighters: BotFighter[], self = 0, orbs = createOrbs().map((o) => ({ ...o, active: false }))): BotWorld => ({ self, fighters, orbs, sweeperAngle: Math.PI / 2, grounded: true, arena: CLASSIC });
 const frames = (m: ReturnType<typeof createBotMemory>, w: BotWorld, n: number) => {
   let out = think(m, w, 1 / 60);
   for (let i = 1; i < n; i++) out = think(m, w, 1 / 60);

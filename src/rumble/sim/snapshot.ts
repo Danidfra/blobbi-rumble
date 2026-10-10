@@ -5,6 +5,8 @@
  * class instance: a snapshot survives `JSON.stringify` unchanged. Fighters
  * are named by their stable match-local ids, never by roster order.
  */
+import type { ArenaId } from '../arena/arenas';
+import type { PiecePhase } from '../arena/pieces';
 import type { PlayerId } from './fighter';
 
 export interface Vec3 {
@@ -90,7 +92,14 @@ export interface MatchSnapshot {
   lastRoundWinner: PlayerId | null;
   matchWinner: PlayerId | null;
   orbs: OrbSnapshot[];
-  sweeper: { angle: number; angularSpeed: number };
+  /** The sweeper, where the arena has one. */
+  sweeper: { angle: number; angularSpeed: number } | null;
+  /** M11A: which arena (its definition is in the registry; nothing static is sent). */
+  arena: ArenaId;
+  /** M11B: the dynamic pieces, in the definition's order: their phase, seconds in it, and how far they have dropped. */
+  pieces: { phase: PiecePhase; t: number; drop: number }[];
+  /** Seconds since the round began. */
+  roundTime: number;
 }
 
 /** Something the match decided this step, for clients to show (and tests to read). */
@@ -98,7 +107,9 @@ export interface MatchEvent {
   tick: number;
   t: number;
   round: number;
-  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch';
+  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch' | 'piece' | 'arena';
+  /** A piece's index (for a `piece` event). */
+  piece?: number;
   /** Who acted (or whom it happened to, for a sweeper hit, a ring-out, a won round); null for nobody (a draw) or the arena. */
   who: PlayerId | null;
   /** Whom it was done to. */

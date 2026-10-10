@@ -86,3 +86,57 @@ export const GARDEN: ArenaTheme = Object.freeze({
   skyLight: '#f3f8ff',
   groundBounce: '#9fc7a8',
 });
+
+/** The factory: warm greys, safety yellow, orange machinery, a hazy blue-grey sky. The "grass" fields are the plate and its seams. */
+export const FACTORY: ArenaTheme = Object.freeze({
+  ...GARDEN,
+  name: 'factory',
+  skyTop: '#8fb3d9',
+  skyHorizon: '#dde6ee',
+  skyBelow: '#c3cfdb',
+  fog: '#d8e0e8',
+  grassA: '#9aa3ad',
+  grassB: '#8d969f',
+  grassFleck: '#c9d0d6',
+  grassEdge: '#5f6872',
+  edgeTrim: '#f4c542',
+  soilTop: '#56606a',
+  soil: '#6b7580',
+  soilBand: '#b06a3a',
+  rock: '#7d8791',
+  rockDark: '#4b545d',
+  sweeperA: '#ff8c42',
+  sweeperB: '#f4e9d8',
+  sweeperPole: '#3a4047',
+  sweeperCap: '#f4c542',
+  sweeperZone: '#8a9299',
+  tuft: '#6b7580',
+  groundBounce: '#9aa3ad',
+});
+
+/** The frozen lake: pale ice, a cold bright sky, snow at the rims. */
+export const FROZEN: ArenaTheme = Object.freeze({
+  ...GARDEN,
+  name: 'frozen',
+  skyTop: '#9fcbf5',
+  skyHorizon: '#eaf4fc',
+  skyBelow: '#cfe3f5',
+  fog: '#e2eef9',
+  grassA: '#cfe9f7',
+  grassB: '#c2e1f3',
+  grassFleck: '#ffffff',
+  grassEdge: '#7fb4d9',
+  edgeTrim: '#ffffff',
+  soilTop: '#9ec9e8',
+  soil: '#8dbfe3',
+  soilBand: '#b6d9f1',
+  rock: '#a9cde6',
+  rockDark: '#6f9fc4',
+  sweeperZone: '#b9d9ee',
+  tuft: '#9ec9e8',
+  groundBounce: '#c8e2f3',
+});
+
+export function themeFor(name: 'garden' | 'factory' | 'frozen'): ArenaTheme {
+  return name === 'factory' ? FACTORY : name === 'frozen' ? FROZEN : GARDEN;
+}

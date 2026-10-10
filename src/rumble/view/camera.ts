@@ -24,10 +24,25 @@ export interface Feet {
   z: number;
 }
 
-/** Whether a body's feet still count for the camera: in the round, and not yet below the floor. */
-export const framed = (feet: Feet, alive: boolean, c = CAMERA) => alive && feet.y > c.dropBelow;
+/** The camera's numbers (`CAMERA` in tuning.ts), with an arena's bounds and distance limit (M11A). */
+export interface CameraRules {
+  alpha: number;
+  beta: number;
+  baseRadius: number;
+  radiusPerMetre: number;
+  minRadius: number;
+  maxRadius: number;
+  targetFollow: number;
+  radiusFollow: number;
+  lift: number;
+  dropBelow: number;
+  bounds: { x: number; z: number };
+}
 
-export function wantedCamera(subjects: readonly Feet[], c = CAMERA): CameraPose {
+/** Whether a body's feet still count for the camera: in the round, and not yet below the floor. */
+export const framed = (feet: Feet, alive: boolean, c: CameraRules = CAMERA) => alive && feet.y > c.dropBelow;
+
+export function wantedCamera(subjects: readonly Feet[], c: CameraRules = CAMERA): CameraPose {
   if (subjects.length === 0) return { x: 0, y: c.lift, z: 0, radius: c.baseRadius };
   let minX = Infinity;
   let maxX = -Infinity;
@@ -54,7 +69,7 @@ export function wantedCamera(subjects: readonly Feet[], c = CAMERA): CameraPose 
   };
 }
 
-export function followCamera(current: CameraPose, wanted: CameraPose, dt: number, c = CAMERA): CameraPose {
+export function followCamera(current: CameraPose, wanted: CameraPose, dt: number, c: CameraRules = CAMERA): CameraPose {
   const kt = 1 - Math.exp(-dt * c.targetFollow);
   const kr = 1 - Math.exp(-dt * c.radiusFollow);
   return {

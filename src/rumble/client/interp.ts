@@ -124,7 +124,10 @@ export function interpolate(a: MatchSnapshot, b: MatchSnapshot, k: number, t: Ne
   return {
     ...a,
     fighters: a.fighters.map((f, i) => (continuous(f, b.fighters[i], gap, t) ? blendFighter(f, b.fighters[i], k) : f)),
-    sweeper: { ...a.sweeper, angle: lerpAngle(a.sweeper.angle, b.sweeper.angle, k) },
+    sweeper: a.sweeper && b.sweeper ? { ...a.sweeper, angle: lerpAngle(a.sweeper.angle, b.sweeper.angle, k) } : b.sweeper,
+    arena: b.arena,
+    pieces: b.pieces,
+    roundTime: b.roundTime,
   };
 }
 
@@ -136,7 +139,7 @@ export function extrapolate(s: MatchSnapshot, dt: number): MatchSnapshot {
     fighters: s.fighters.map((f) =>
       f.eliminated ? f : { ...f, position: { x: f.position.x + f.velocity.x * dt, y: f.position.y + (f.grounded ? 0 : f.velocity.y * dt), z: f.position.z + f.velocity.z * dt } },
     ),
-    sweeper: { ...s.sweeper, angle: s.sweeper.angle + s.sweeper.angularSpeed * dt },
+    sweeper: s.sweeper ? { ...s.sweeper, angle: s.sweeper.angle + s.sweeper.angularSpeed * dt } : null,
   };
 }
 

@@ -18,7 +18,7 @@ import { steer, type Contest } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
-import { initialFallState, updateFall, type FallState } from '../respawn';
+import { FALL_RULES, initialFallState, updateFall, type FallRules, type FallState } from '../respawn';
 import { COMBAT } from '../tuning';
 import {
   controlFactor,
@@ -85,16 +85,33 @@ export class FighterSim {
   private restingSteps = 0;
   /** Seconds it still counts as supported after being found resting. */
   private supported = 0;
+  /** M11E: how much grip the floor under it gives this step (1: the floor; less on ice). */
+  grip = 1;
+  /** M11D: the velocity of what it stands on (a belt), m/s: its steering is relative to this, so standing still rides along. */
+  carry = { x: 0, z: 0 };
+  /** M11A: where the fall line is, for this arena. */
+  fallRules: FallRules = FALL_RULES;
+  spawn: Vector3;
+  spawnYaw: number;
 
   constructor(
     readonly id: PlayerId,
     scene: Scene,
-    readonly spawn: Vector3,
-    readonly spawnYaw: number,
+    spawn: Vector3,
+    spawnYaw: number,
     readonly profile: RumbleBody = RUMBLE_BODY,
   ) {
+    this.spawn = spawn.clone();
+    this.spawnYaw = spawnYaw;
     this.body = createGameplayBody(scene, `${id}-body`, spawn, profile);
     this.yaw = spawnYaw;
+  }
+
+  /** M11A: another arena, another spawn (and fall line). */
+  relocate(spawn: Vector3, yaw: number, rules: FallRules) {
+    this.spawn = spawn.clone();
+    this.spawnYaw = yaw;
+    this.fallRules = rules;
   }
 
   /** The impact multiplier this fighter's blows and throws carry. */
@@ -166,8 +183,10 @@ export class FighterSim {
     // Power: a little more walk and run speed (never the jump, never the air share).
     let p = { ...this.profile, walkSpeed: this.profile.walkSpeed * this.speedMultiplier, runSpeed: this.profile.runSpeed * this.speedMultiplier };
     if (control < 1) p = { ...p, acceleration: p.acceleration * control, braking: p.braking * control };
+    // M11E: on ice the keys bite less and nothing brakes much: the same steering, with less grip (never a different body).
+    if (this.grip < 1 && grounded) p = { ...p, acceleration: p.acceleration * this.grip, braking: p.braking * this.grip * 0.1 };
     if (carrying) p = { ...p, walkSpeed: p.walkSpeed * COMBAT.carrySpeed, runSpeed: p.runSpeed * COMBAT.carrySpeed };
-    const s = steer(v.x, v.z, { ...intent, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
+    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...intent, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
     const b = this.body.body;
     if (s.dvx !== 0 || s.dvz !== 0) b.applyImpulse(new Vector3(s.dvx * this.profile.mass, 0, s.dvz * this.profile.mass), this.body.position());
     let jumped = false;
@@ -271,7 +290,7 @@ export class FighterSim {
   /** Advance the fall state; true on the step the body crossed the fall line. */
   checkFall(dt: number): boolean {
     const before = this.fall.fallen;
-    updateFall(this.fall, this.body.feet().y, dt);
+    updateFall(this.fall, this.body.feet().y, dt, this.fallRules);
     return !before && this.fall.fallen;
   }
 
@@ -294,6 +313,9 @@ export class FighterSim {
     this.grounded = true;
     this.restingSteps = 0;
     this.supported = 0;
+    this.grip = 1;
+    this.carry.x = this.carry.z = 0;
+    this.body.setFriction(this.profile.friction);
   }
 
   dispose() {

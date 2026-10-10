@@ -15,7 +15,7 @@ import type { Scene } from '@babylonjs/core/scene';
 import type { HavokPlugin } from '@babylonjs/core/Physics/v2/Plugins/havokPlugin';
 import { LAYER } from '../profile';
 import { SWEEPER } from '../tuning';
-import type { SweeperState } from '../arena/sweeper';
+import type { SweeperState, SweeperTuning } from '../arena/sweeper';
 
 /** The post's size, metres: a cylinder at the pivot. */
 export const SWEEPER_POST = Object.freeze({ diameter: SWEEPER.postRadius * 2, height: 0.9 });
@@ -29,8 +29,7 @@ export class SweeperBody {
   private readonly plugin: HavokPlugin;
   private readonly orientation = new Quaternion();
 
-  constructor(scene: Scene) {
-    const t = SWEEPER;
+  constructor(scene: Scene, t: SweeperTuning = SWEEPER) {
     this.plugin = scene.getPhysicsEngine()!.getPhysicsPlugin() as HavokPlugin;
     this.bar = MeshBuilder.CreateBox('sweeper-bar', { width: t.reach * 2, height: t.top, depth: t.halfWidth * 2 }, scene);
     this.bar.position.set(t.pivot.x, t.top / 2, t.pivot.z);
