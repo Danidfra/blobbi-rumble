@@ -20,7 +20,7 @@ import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
 import { FALL_RULES, initialFallState, updateFall, type FallRules, type FallState } from '../respawn';
 import { COMBAT, LEDGE } from '../tuning';
-import { catchLedge, climbTarget, createLedgeState, dropLedge, hangAnchor, onLedge, resetLedgeState, restLedge, tickLedge, type LedgeOutcome, type LedgeState } from './ledge';
+import { catchLedge, climbPoint, climbTarget, createLedgeState, dropLedge, hangAnchor, onLedge, resetLedgeState, restLedge, tickLedge, type LedgeOutcome, type LedgeState } from './ledge';
 import type { Ledge } from '../arena/geometry';
 import {
   controlFactor,
@@ -210,10 +210,13 @@ export class FighterSim {
     if (s.jumpTo !== null) {
       b.setLinearVelocity(new Vector3(v.x + s.dvx, s.jumpTo, v.z + s.dvz));
       jumped = true;
+      this.leapt = true;
       this.jumps += 1;
     }
     if (intent.punch) tryPunch(this.combat);
     this.grounded = grounded;
+    // Landed (on the ground and no longer rising): the leap is over. Just after the jump the probe still finds the floor.
+    if (grounded && !jumped && v.y < 0.5) this.leapt = false;
     return { grounded, jumped };
   }
 
@@ -244,11 +247,24 @@ export class FighterSim {
     const p = this.body.position();
     if (out === 'hanging') {
       const a = hangAnchor(h.ledge);
-      this.body.body.setLinearVelocity(new Vector3((a.x - p.x) * LEDGE.spring, (a.y - p.y) * LEDGE.spring, (a.z - p.z) * LEDGE.spring));
+      const pull = new Vector3((a.x - p.x) * LEDGE.spring, (a.y - p.y) * LEDGE.spring, (a.z - p.z) * LEDGE.spring);
+      const speed = pull.length();
+      if (speed > LEDGE.hangMaxSpeed) pull.scaleInPlace(LEDGE.hangMaxSpeed / speed);
+      this.body.body.setLinearVelocity(pull);
     } else if (out === 'climbing') {
-      const target = climbTarget(h.ledge);
-      const left = Math.max(dt, LEDGE.climbTime - h.t);
-      this.body.body.setLinearVelocity(new Vector3((target.x - p.x) / left, (target.y - p.y) / left, (target.z - p.z) / left));
+      // M12.1: along the climb's path (up, then in: never through the corner), at a bounded drive.
+      const at = climbPoint(h.ledge, h.t / LEDGE.climbTime);
+      let vx = (at.x - p.x) / dt;
+      let vy = (at.y - p.y) / dt;
+      let vz = (at.z - p.z) / dt;
+      const speed = Math.hypot(vx, vy, vz);
+      if (speed > LEDGE.climbMaxSpeed) {
+        const k = LEDGE.climbMaxSpeed / speed;
+        vx *= k;
+        vy *= k;
+        vz *= k;
+      }
+      this.body.body.setLinearVelocity(new Vector3(vx, vy, vz));
     } else if (out === 'climbed') {
       const target = climbTarget(h.ledge);
       this.body.teleport(new Vector3(target.x, target.y - this.profile.capsuleCenterY, target.z));
@@ -293,8 +309,15 @@ export class FighterSim {
     this.body.setAngularVelocity(axis.normalize().scale(spin));
   }
 
+  /** M12.1: airborne from its own jump (not from walking or running off an edge): such a body may only catch an edge it is moving toward. */
+  leapt = false;
+
+  /** M12.1: the hold's smoothed turn rate, rad/s (the anchor's swing, fed forward). */
+  holdSpin = 0;
+
   /** Take hold of `victim`: weightless, carried by the spring. */
   hold(victim: FighterSim) {
+    this.holdSpin = 0;
     victim.body.setGravityFactor(0);
   }
 

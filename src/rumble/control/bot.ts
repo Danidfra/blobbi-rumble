@@ -484,6 +484,12 @@ function decide(m: BotMemory, w: BotWorld, dt: number, t: typeof BOT, c: typeof 
     return { ...NONE, x: dir.x, z: dir.z, run: toTarget > t.runBeyond, jump };
   }
 
+  // M12.1: a target across a gap is leapt to in ATTACK too (leaning in toward it walked off the edge, caught it, climbed
+  // back and leaned in again, for good, now that ledges catch reliably).
+  {
+    const leap = leapToward(toward);
+    if (leap) return leap;
+  }
   // ATTACK: lean in, and strike when facing the target in reach.
   const dir = safeDirection(me.at, toward, t.attackLookAhead, t, w.arena, me.y);
   const facingIt = me.facing.x * toward.x + me.facing.z * toward.z;

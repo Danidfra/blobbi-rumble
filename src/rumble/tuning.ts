@@ -41,6 +41,10 @@ export const COMBAT = Object.freeze({
   /** The spring that keeps the held body at the anchor (1/s) and the most it may change its velocity per second (m/s²). */
   holdStiffness: 9,
   holdMaxPull: 45,
+  /** M12.1: the fastest the spring closes an error, m/s (on top of following the anchor). */
+  holdCatchUp: 3.2,
+  /** M12.1: the share of each step's measured hold turn taken into its smoothed rate (fed forward as the anchor's swing). */
+  holdSpinSmoothing: 0.25,
   /** The share of the pull the grabber feels back: the held body has presence. */
   holdReaction: 0.45,
   /** A carrying grabber WALKS (never runs) at this share of its walk speed (M11.1: a carrier that could run outpaced any escape). */
@@ -315,8 +319,17 @@ export const BOT = Object.freeze({
  * is a single pair of hands.
  */
 export const LEDGE = Object.freeze({
-  /** How far beyond the capsule's radius the hands reach sideways, metres. */
-  reachOut: 0.5,
+  /**
+   * How far beyond the capsule's radius the hands reach sideways, metres.
+   * M12.1: 0.75 (was 0.5): at 0.5 a body that RAN off an edge was already
+   * ~1.06 m out when its feet came low enough to catch, so walking off
+   * always caught and running off almost never did (Skyfall 8 / 30 rims,
+   * Factory 0 / 10), with nothing to tell the two apart. Knocked down or
+   * thrown, a body still never catches.
+   */
+  reachOut: 0.75,
+  /** M12.1: a body airborne from its own jump catches only edges it moves toward, or away from no faster than this, m/s (a hop in place still catches). */
+  leapAwaySpeed: 0.4,
   /** The ledge's top must be at least `minAbove` over the feet (a step down is not a fall to catch) and at most `reachUp` (hands over the head). */
   reachUp: 1.3,
   minAbove: 0.55,
@@ -334,12 +347,16 @@ export const LEDGE = Object.freeze({
   climbTime: 0.45,
   climbIn: 0.25,
   climbOver: 0.06,
+  /** M12.1: the share of the climb spent pulling straight up (the rest steps in over the top), and the fastest the climb may drive the body, m/s. */
+  climbRise: 0.6,
+  climbMaxSpeed: 6,
   /** No new catch for this long after letting go or being knocked off, seconds. */
   regrab: 0.4,
   /** After a climb the keys do not move the fighter for this long: a stick still pushed off the edge does not walk it straight back off. */
   settle: 0.3,
-  /** The hang is a stiff spring to its anchor (1/s). */
+  /** The hang is a stiff spring to its anchor (1/s), closing at most this fast, m/s (M12.1: a catch from the wider reach eases in, no snap). */
   spring: 16,
+  hangMaxSpeed: 4,
   /** Pushing the stick away from the wall at least this much, held for `awayHold` seconds, lets go (a push that walked off an edge is over before that). */
   awayPush: 0.5,
   awayHold: 0.35,

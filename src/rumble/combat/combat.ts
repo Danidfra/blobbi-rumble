@@ -257,11 +257,28 @@ export interface Pull {
  * change toward the anchor, moving with the grabber, and a share of its
  * horizontal part back on the grabber. The held body is weightless while
  * held, so the spring carries it up as well as along.
+ *
+ * M12.1: `anchorVel` is the anchor's own velocity (the grabber's, plus the
+ * swing of the hold turning round it, plus the grabber's vertical speed),
+ * fed forward, so a carried body keeps its place through a turn or a jump
+ * instead of trailing 25-30 cm behind and catching up; and the speed at
+ * which the spring closes an error is bounded (`holdCatchUp`), so a large
+ * one (a grab from mid-air) lifts the body smoothly instead of yanking it
+ * at 6 m/s.
  */
-export function holdPull(anchor: Point, grabberVel: Planar, victimFeet: Point, victimVel: Point, dt: number, t: Tuning = COMBAT): Pull {
-  let dvx = (anchor.x - victimFeet.x) * t.holdStiffness + grabberVel.x - victimVel.x;
-  let dvy = (anchor.y - victimFeet.y) * t.holdStiffness - victimVel.y;
-  let dvz = (anchor.z - victimFeet.z) * t.holdStiffness + grabberVel.z - victimVel.z;
+export function holdPull(anchor: Point, anchorVel: Planar & { y?: number }, victimFeet: Point, victimVel: Point, dt: number, t: Tuning = COMBAT): Pull {
+  let ex = (anchor.x - victimFeet.x) * t.holdStiffness;
+  let ey = (anchor.y - victimFeet.y) * t.holdStiffness;
+  let ez = (anchor.z - victimFeet.z) * t.holdStiffness;
+  const closing = Math.hypot(ex, ey, ez);
+  if (closing > t.holdCatchUp) {
+    ex *= t.holdCatchUp / closing;
+    ey *= t.holdCatchUp / closing;
+    ez *= t.holdCatchUp / closing;
+  }
+  let dvx = ex + anchorVel.x - victimVel.x;
+  let dvy = ey + (anchorVel.y ?? 0) - victimVel.y;
+  let dvz = ez + anchorVel.z - victimVel.z;
   const max = t.holdMaxPull * dt;
   const len = Math.hypot(dvx, dvy, dvz);
   if (len > max && len > 0) {
@@ -270,6 +287,15 @@ export function holdPull(anchor: Point, grabberVel: Planar, victimFeet: Point, v
     dvz *= max / len;
   }
   return { victim: { x: dvx, y: dvy, z: dvz }, grabber: { x: -dvx * t.holdReaction, z: -dvz * t.holdReaction } };
+}
+
+/** M12.1: the velocity of a hold's anchor: the grabber's, plus the swing of a hold angle turning at `turnRate` rad/s. */
+export function anchorVelocity(grabberVel: Point, holdAngle: number, turnRate: number, t: Tuning = COMBAT): Point {
+  return {
+    x: grabberVel.x + Math.cos(holdAngle) * t.holdDistance * turnRate,
+    y: grabberVel.y,
+    z: grabberVel.z - Math.sin(holdAngle) * t.holdDistance * turnRate,
+  };
 }
 
 /** The impact of a throw: base plus gain times the grabber's speed along the hold direction, through the impact path. */

@@ -50,7 +50,9 @@ describe('catching a ledge', () => {
     expect(l!.inZ).toBe(1);
     expect(l!.inX).toBe(0);
     // Too far out, too far below, above the top: nothing.
-    expect(reachableLedge(ps, { x: 3, y: 0, z: -5.6 }, -0.7)).toBeNull();
+    expect(reachableLedge(ps, { x: 3, y: 0, z: -5.75 }, -0.7)).toBeNull();
+    // M12.1: just inside the wider reach (1.15 m from the wall), held.
+    expect(reachableLedge(ps, { x: 3, y: 0, z: -5.6 }, -0.7)).not.toBeNull();
     expect(reachableLedge(ps, { x: 3, y: -1.2, z: -5.0 }, -1.6)).toBeNull();
     expect(reachableLedge(ps, { x: 3, y: 1, z: -5.0 }, 0.5)).toBeNull();
     // Skipped (a piece that is gone).

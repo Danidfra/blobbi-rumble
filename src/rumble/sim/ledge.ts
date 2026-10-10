@@ -61,7 +61,7 @@ export function canCatch(s: LedgeState, c: CombatState, grounded: boolean, vy: n
  * must be clear of every platform's bulk: an edge behind a wall, or one
  * whose hang would sit inside a neighbouring slab, is no ledge.
  */
-export function reachableLedge(platforms: readonly Platform[], c: { x: number; y: number; z: number }, feetY: number, skip?: (index: number) => boolean, t: LedgeTuning = LEDGE): Ledge | null {
+export function reachableLedge(platforms: readonly Platform[], c: { x: number; y: number; z: number }, feetY: number, skip?: (index: number) => boolean, t: LedgeTuning = LEDGE, leaping?: { vx: number; vz: number }): Ledge | null {
   const clear = (l: Ledge) => {
     const a = hangAnchor(l, t);
     const r = RUMBLE_BODY.capsuleRadius;
@@ -73,7 +73,10 @@ export function reachableLedge(platforms: readonly Platform[], c: { x: number; y
       return inside && bottom < p.y && top > p.y - p.thickness;
     });
   };
-  return findLedge(platforms, c, feetY, { reach: RUMBLE_BODY.capsuleRadius + t.reachOut, minBelow: t.minAbove, maxBelow: t.reachUp, skip, accept: clear });
+  // M12.1: a body in its own leap catches only an edge it is going toward (falling short of the far side), never the one it
+  // leapt away from; walked or run off, it may catch the edge it dropped from.
+  const toward = (l: Ledge) => !leaping || leaping.vx * l.inX + leaping.vz * l.inZ >= -t.leapAwaySpeed;
+  return findLedge(platforms, c, feetY, { reach: RUMBLE_BODY.capsuleRadius + t.reachOut, minBelow: t.minAbove, maxBelow: t.reachUp, skip, accept: (l) => toward(l) && clear(l) });
 }
 
 /** Where the capsule's centre hangs from a ledge: just clear of the wall, feet `hangDrop` below the top. */
@@ -86,6 +89,27 @@ export function hangAnchor(l: Ledge, t: LedgeTuning = LEDGE): { x: number; y: nu
 export function climbTarget(l: Ledge, t: LedgeTuning = LEDGE): { x: number; y: number; z: number } {
   const inward = RUMBLE_BODY.capsuleRadius + t.climbIn;
   return { x: l.x + l.inX * inward, y: l.y + t.climbOver + RUMBLE_BODY.capsuleCenterY, z: l.z + l.inZ * inward };
+}
+
+/**
+ * M12.1: where the capsule's centre is at progress `u` (0..1) of a climb.
+ * Two legs that never cut the platform's corner: first straight UP, clear
+ * of the wall, until the feet are just over the top; then IN over the top
+ * to the climb's end. (A straight line from the hang to the top took the
+ * capsule through the corner: Havok pushed it out, and the drive that
+ * chased the line lurched it at 12-18 m/s.) It also reads as a climb: a
+ * pull up, then a step over.
+ */
+export function climbPoint(l: Ledge, u: number, t: LedgeTuning = LEDGE): { x: number; y: number; z: number } {
+  const a = hangAnchor(l, t);
+  const b = climbTarget(l, t);
+  const k = Math.max(0, Math.min(1, u));
+  if (k <= t.climbRise) {
+    const w = k / t.climbRise;
+    return { x: a.x, y: a.y + (b.y - a.y) * w, z: a.z };
+  }
+  const w = (k - t.climbRise) / (1 - t.climbRise);
+  return { x: a.x + (b.x - a.x) * w, y: b.y, z: a.z + (b.z - a.z) * w };
 }
 
 export type LedgeOutcome = 'hanging' | 'climbing' | 'climbed' | 'let go' | 'tired';

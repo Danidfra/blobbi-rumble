@@ -25,7 +25,7 @@ import { CLASSIC, arenaSpawns, type ArenaDef } from '../arena/arenas';
 import { inPlatform, platformUnder } from '../arena/geometry';
 import { createPieces, drop as pieceDrop, pieceImpact, pieceSolid, resetPieces, tickPiece, type PieceState } from '../arena/pieces';
 import { createSweeper, resetSweeper, sweeperHit, tickSweeper, type SweeperState } from '../arena/sweeper';
-import { endGrab, holdBreaks, holdPull, isDown, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
+import { anchorVelocity, endGrab, holdBreaks, holdPull, isDown, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
 import { freeHolds, grabTarget, holdsConsistent, punchTarget, settleHolds, type Combatant, type Hold } from '../combat/melee';
 import { createThrowers, judgeThrow, resetThrowers, slips, tickBananas, type Banana, type Thrower, type ThrowRefusal } from '../pickups/bananas';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from '../pickups/orbs';
@@ -39,6 +39,7 @@ import { createArenaBody, type ArenaBody } from './arenaBody';
 import { FighterSim, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
 import { canCatch, reachableLedge } from './ledge';
+import { LEDGE } from '../tuning';
 import { createPhysicsWorld, type HavokInstance, type PhysicsWorld } from './physics';
 import type { MatchEvent, MatchSnapshot } from './snapshot';
 import { SweeperBody } from './sweeperBody';
@@ -222,6 +223,16 @@ export class RumbleMatch {
    * somewhere, upright and at rest, facing `yaw`, optionally with a power
    * level.
    */
+  /** M12.1, for checks: each dynamic piece's velocity as Havok has it. */
+  debugPieceVelocities(): { x: number; y: number; z: number }[] {
+    return this.def.dynamics.map((_, k) => this.arenaBody.pieceVelocity(k) ?? { x: 0, y: 0, z: 0 });
+  }
+
+  /** M12.1, for checks: the dynamic pieces' phases. */
+  debugPieces(): string[] {
+    return this.pieces.map((p) => p.phase);
+  }
+
   debugPlace(id: PlayerId, at: { x: number; y?: number; z: number; yaw?: number; powerLevel?: number }) {
     const f = this.fighters[this.indexOf(id)];
     f.body.teleport(new Vector3(at.x, at.y ?? 0, at.z));
@@ -314,7 +325,8 @@ export class RumbleMatch {
           return;
         }
         if (!playing || !canCatch(f.ledge, f.combat, f.grounded, f.body.velocity().y)) return;
-        const l = reachableLedge(this.def.platforms, f.body.position(), f.body.feet().y, gone);
+        const v = f.body.velocity();
+        const l = reachableLedge(this.def.platforms, f.body.position(), f.body.feet().y, gone, LEDGE, f.leapt ? { vx: v.x, vz: v.z } : undefined);
         if (!l) return;
         f.catchLedge(l);
         this.emit({ kind: 'ledge', who: this.ids[i], note: `caught ${this.def.platforms[l.platform].name ?? l.platform}` });
@@ -642,7 +654,13 @@ export class RumbleMatch {
     const v = me.combat.victim;
     if (isHolding(me.combat) && v >= 0) {
       const victim = this.fighters[v];
+      // M12.1: the hold's swing, fed forward: its turn rate smoothed over a few steps, so a real turn is followed and the
+      // step-to-step jiggle of a carrier's facing (which the load's own reaction causes) averages out instead of shaking it.
+      const angleBefore = me.combat.holdAngle;
       const anchor = me.holdStep(dt);
+      const rate = Math.atan2(Math.sin(me.combat.holdAngle - angleBefore), Math.cos(me.combat.holdAngle - angleBefore)) / dt;
+      me.holdSpin += (rate - me.holdSpin) * COMBAT.holdSpinSmoothing;
+      const turn = me.holdSpin;
       if (holdBreaks(me.combat, anchor, victim.feet()) || isTumbling(me.combat)) {
         endGrab(me.combat, victim.combat);
         me.letGo(victim);
@@ -651,7 +669,7 @@ export class RumbleMatch {
         this.emit({ kind: 'drop', who: me.id, on: victim.id, note: 'hold broke' });
       } else {
         me.carryDrag = victim.combat.struggle;
-        const pull = holdPull(anchor, me.velocity(), victim.feet(), victim.velocity3(), dt);
+        const pull = holdPull(anchor, anchorVelocity(me.body.velocity(), me.combat.holdAngle, turn), victim.feet(), victim.velocity3(), dt);
         victim.push(pull.victim.x, pull.victim.y, pull.victim.z);
         me.push(pull.grabber.x, 0, pull.grabber.z);
       }
