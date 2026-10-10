@@ -70,3 +70,20 @@ describe('identity messages (M8A)', () => {
     expect(parseClientMessage(JSON.stringify({ t: 'whoami' }))).toBeNull();
   });
 });
+
+describe('look messages (M9C)', () => {
+  const d = `blobbi-${'a'.repeat(12)}-${'b'.repeat(10)}`;
+  it('reads a look: the default, or a bounded declaration; everything else is dropped', () => {
+    expect(parseClientMessage(JSON.stringify({ t: 'look', form: null }))).toEqual({ t: 'look', form: null });
+    expect(parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v3', name: 'Puck' } }))).toEqual({ t: 'look', form: { v: 1, d, gen: 'v3', name: 'Puck' } });
+    expect(parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v2', colors: { base: '#AABBCC', secondary: '#000000', eye: '#ffffff' } } }))).toEqual({ t: 'look', form: { v: 1, d, gen: 'v2', colors: { base: '#aabbcc', secondary: '#000000', eye: '#ffffff' } } });
+    for (const bad of [{ v: 2, d, gen: 'v3' }, { v: 1, d: 'blobbi-puck', gen: 'v3' }, { v: 1, d, gen: 'v9' }, { v: 1, d, gen: 'v3', colors: { base: '#aabbcc', secondary: '#000000', eye: '#ffffff' } }, { v: 1, d, gen: 'v1', colors: { base: 'red' } }, { v: 1, d, gen: 'v1', seed: 'x'.repeat(64) }, 'x', 42, []])
+      expect(parseClientMessage(JSON.stringify({ t: 'look', form: bad })), JSON.stringify(bad)).toBeNull();
+    // A seed sent by a client is never read (the server derives it): a declaration with one is not a declaration.
+    expect(parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v3', seed: 'a'.repeat(64) } }))).toBeNull();
+    // Bounded: a long name is cut, an oversized message dropped unread.
+    const long = parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v3', name: 'n'.repeat(100) } }));
+    expect(long && long.t === 'look' && long.form?.name?.length).toBeLessThanOrEqual(32);
+    expect(parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v3', name: 'n'.repeat(600) } }))).toBeNull();
+  });
+});

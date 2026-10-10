@@ -1641,3 +1641,79 @@ Fix, at the layer the brief names:
 Wording: "Your selected Blobbi couldn't be loaded right now … Your
 selection is saved; the default fighter plays meanwhile." Nothing says
 the Blobbi was deleted.
+
+---
+
+## M9C–M9F as built (2026-10-09): looks for everyone (pending real multiplayer validation)
+
+### Where appearance lives on the wire
+
+Three places were possible: the 20 Hz state, the roster, or a new
+message. The **roster** won: it already goes to every connection in a
+room (players and spectators) on any change and never per frame, it is
+keyed by the server-controlled slot, and a look is the same kind of fact
+as a pubkey (a label on a slot the server vouches for). A small client
+message, `look`, sets it; the state stays byte-identical (tested).
+
+```
+client ──{ t:'look', form:{ v:1, d, gen, colors?, name? } | null }──► server
+server: proven pubkey on this connection? slot held? d = blobbi-<pubkey[0:12]>-…?
+        seed = deriveBlobbiV3Seed(pubkey, d)          (the kit's rule; never from the client)
+server ──{ t:'look', ok, reason? }──► that client
+server ──roster { slots: { P1: { who:'nostr', pubkey, form:{ …, seed } } } }──► everyone in the room
+```
+
+`net/looks.ts` (`parseLookDeclaration`, `bindLook`, `sameForm`) is pure;
+`host.setLook` keeps one form per connection, dropped with the identity
+or the connection; `server.ts` answers and re-sends the roster only on a
+change. `@blobbi-kit/core` is the server's only addition (a hash; no
+relay).
+
+### Trust boundary, stated
+
+| Verified by the server | Declared by the client (cosmetic) |
+| --- | --- |
+| the sender holds the pubkey (fresh signed challenge, M8A) | that a kind 31124 exists at the address |
+| the form's address is that pubkey's own (`d` prefix) | the Blobbi's stage, name |
+| the seed (derived here from `(pubkey, d)`) | V1 / V2 colours (the kit's palette would be the alternative) |
+| the message binds to the sender's slot only (no slot or pubkey field exists) | |
+
+A client that lies about the declared parts changes only its own
+fighter's paint; it can never wear another player's Blobbi (the prefix
+and the seed are the server's), nor touch another slot or the match.
+
+### The client
+
+`rumbleForm.ts`: `declarationOf(form)` (never the seed),
+`lookFromSlotForm(roster form)` (re-checked as untrusted: version, seed,
+colours; the same key as the owner's page builds), `planLooks(prev, want)`
+for every slot. `network.ts` declares its form once proven and again on a
+new connection or a change (`declared` is compared, so nothing is sent per
+frame), and dresses every slot from the roster; a server without the
+`looks` feature dresses only the page's own slot. `presenter.setLook` is
+unchanged: the same key rebuilds nothing.
+
+### Identity presentation (M9D)
+
+Name tags: "<person> · <Blobbi>" when a form is worn (clipped); the slot
+label for guests and bots. The players list: avatar, name, then "nostr ·
+<Blobbi> (Rumble form)"; "Guest" with the slot; the same for spectators.
+All text, from the existing profile cache; nothing waits on a relay.
+
+### Picker (M9E) and lifecycle (M9F)
+
+The picker already distinguishes the default, the selected Blobbi, an
+unreachable list and a selected Blobbi missing from an answered list
+(M9B.1 hotfix); it now says whether the form is shown to everyone or, on
+an older server, to this page only. Lifecycle is the roster's: join,
+leave, disconnect, reconnect, room switch, identity change, logout and
+server restart all end in a roster the server sends, so stale looks
+cannot survive and nothing leaks between rooms (a room switch is a new
+connection, declared afresh). Two players updating at once are two
+connections; idempotence is per look (`sameForm`).
+
+### Not done
+
+A verification that a 31124 exists at the declared address (it would
+need a relay read on the server; the brief asked for a bounded protocol).
+Real multiplayer browser validation.

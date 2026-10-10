@@ -271,7 +271,8 @@ src/rumble/
     read.ts             reading a snapshot back into combat predicates
     havokNode.ts        Havok's wasm from the package file, for Node
   net/                the network boundary (M7B):
-    protocol.ts         the wire messages, validation of untrusted input, state freshness (pure); M8A identity messages
+    protocol.ts         the wire messages, validation of untrusted input, state freshness (pure); M8A identity messages; M9C look messages
+    looks.ts            M9C: a fighter's Rumble form on the wire, bound to the sender's proven pubkey (the seed derived from (pubkey, d) here, never taken from a client)
     host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart; the roster
     server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag; the identity handshake; room routing
     rooms.ts            RoomManager: the open room and private rooms, one RumbleHost each; limits, grace period, disposal

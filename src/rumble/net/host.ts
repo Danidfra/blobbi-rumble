@@ -25,7 +25,8 @@ import { BotInput, botWorldFrom } from '../control/bot';
 import { createRumbleMatch, type RumbleMatch } from '../sim/match';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
-import { parseClientMessage, type Control, type PongMessage, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
+import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
+import { parseClientMessage, type Control, type LookReason, type PongMessage, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
 
 export const NET = Object.freeze({
   /** The authoritative simulation rate, steps per second. */
@@ -58,6 +59,8 @@ export class RumbleHost {
   private readonly slotOf = new Map<ConnectionId, string | null>();
   /** The pubkey each connection has proven, if any. */
   private readonly identity = new Map<ConnectionId, string>();
+  /** M9C: the form each connection's fighter wears, bound to its proven pubkey; gone with the identity or the connection. */
+  private readonly looks = new Map<ConnectionId, SlotForm>();
   private readonly bots: BotInput[];
   /** Per slot: the last input sequence applied, the tick it arrived on, and what the latest step had applied. */
   private readonly lastSeq = new Map<string, number>();
@@ -108,6 +111,7 @@ export class RumbleHost {
     const slot = this.slotOf.get(conn) ?? null;
     this.slotOf.delete(conn);
     this.identity.delete(conn);
+    this.looks.delete(conn);
     if (!slot || this.holder.get(slot) !== conn) return;
     this.holder.set(slot, null);
     this.match.clearInput(slot);
@@ -152,7 +156,33 @@ export class RumbleHost {
     const before = this.identity.get(conn) ?? null;
     if (pubkey) this.identity.set(conn, pubkey);
     else this.identity.delete(conn);
+    // A look belongs to the identity that declared it: another pubkey, or none, starts with the default.
+    if (before !== pubkey) this.looks.delete(conn);
     return before !== pubkey && this.slotOf.get(conn) !== null;
+  }
+
+  /**
+   * M9C: this connection's fighter wears `form` (null: the default). Only a
+   * connection with a proven identity, in a slot, for a Blobbi address that
+   * identity owns; the seed is derived here. Returns whether the roster
+   * changed, or why the look was refused. Nothing of the match is touched.
+   */
+  setLook(conn: ConnectionId, form: LookDeclaration | null): { ok: true; changed: boolean } | { ok: false; reason: LookReason } {
+    if (!this.slotOf.has(conn)) return { ok: false, reason: 'spectator' };
+    const pubkey = this.identity.get(conn);
+    if (!pubkey) return { ok: false, reason: 'no-identity' };
+    if (this.slotOf.get(conn) === null) return { ok: false, reason: 'spectator' };
+    const bound = form ? bindLook(pubkey, form) : null;
+    if (form && !bound) return { ok: false, reason: 'not-yours' };
+    const before = this.looks.get(conn) ?? null;
+    if (bound) this.looks.set(conn, bound);
+    else this.looks.delete(conn);
+    return { ok: true, changed: !sameForm(before, bound) };
+  }
+
+  /** The form a connection's fighter wears, or null. */
+  lookOf(conn: ConnectionId): SlotForm | null {
+    return this.looks.get(conn) ?? null;
   }
 
   /** The pubkey a connection has proven, or null. */
@@ -166,7 +196,8 @@ export class RumbleHost {
     for (const id of this.ids) {
       const conn = this.holder.get(id) ?? null;
       const pubkey = conn === null ? null : this.identity.get(conn);
-      slots[id] = conn === null ? { who: 'bot' } : pubkey ? { who: 'nostr', pubkey } : { who: 'guest' };
+      const form = conn === null ? null : this.looks.get(conn);
+      slots[id] = conn === null ? { who: 'bot' } : pubkey ? { who: 'nostr', pubkey, ...(form ? { form } : {}) } : { who: 'guest' };
     }
     return { t: 'roster', slots };
   }

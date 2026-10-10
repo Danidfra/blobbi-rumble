@@ -1,7 +1,7 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `fc56028` (M9B.1) plus its hotfix ·
+**Implementation baseline:** `0342ec4` (M9B.1 diagnostics) plus the M9C–M9F batch ·
 **Last major completed milestone:** M9A (validated for real). M9B (adult
 Rumble forms) is implemented and partly validated for real (the look
 changes, legacy forms, persistence, manual reconnect); its animation and
@@ -717,6 +717,51 @@ stage, generation and 2D look are unchanged, and nothing is published.
   simulation. The server is unchanged.
 - **Only this page sees it** until M9C.
 
+### 15d. Everyone sees every fighter's form (M9C–M9F, implemented)
+
+- **Protocol.** One small client message, `{ t: 'look', form | null }`,
+  declares the form the sender's own fighter wears: `{ v: 1, d, gen,
+  colors?, name? }`, bounded (a 32-character name, hex colours only on
+  V1 / V2, exactly those fields). The server answers `{ t: 'look', ok,
+  reason? }`. The roster, already sent to everyone on any change (never
+  per frame), carries per slot `form: { v, d, gen, seed, colors?, name?
+  }`. States carry nothing of it. The welcome lists the feature `looks`.
+- **Server-controlled association.** A look binds to the connection that
+  sent it and to the slot that connection holds; no field can name a slot
+  or a pubkey (a declaration with one is not a declaration). It needs a
+  proven identity on that connection, and the Blobbi address must be that
+  identity's own (`d` = `blobbi-<its 12 hex>-…`); the **seed is derived by
+  the server** from `(pubkey, d)` with the kit's rule and never taken from
+  the client. A spectator wears nothing. A look goes with its identity
+  (logout, another pubkey) and with its connection; the next holder of a
+  slot starts with the default. The same look again changes nothing.
+- **Trust boundary.** Verified: the sender's identity (a fresh signed
+  challenge), and that the form names a Blobbi address owned by that
+  identity (the ecosystem's rule: the author of a kind 31124 is its
+  owner). Declared, not verified: that a kind 31124 exists at that
+  address, its stage, its name, and (V1 / V2) that the colours are the
+  Blobbi's own. Those are cosmetic and only ever change the declarer's
+  own fighter's paint; the server consults no relay for them.
+- **Every client draws the same looks** from the roster: the form is
+  re-checked as untrusted data (version, seed shape, colours), then the
+  same deterministic kit build as the owner's page (the same key). A
+  server without `looks` shows a page its own form only. Guests and
+  spectators are unaffected and see the same forms.
+- **Lifecycle.** The page declares its form once proven, again on a new
+  connection (room switch, reconnect, server restart) and whenever the
+  chosen Blobbi, the default or the identity changes; the server's roster
+  is the truth for every slot, so leaving, disconnecting, logging out and
+  switching rooms clear looks everywhere without a second system. A failed
+  discovery keeps the saved choice (§15b); when it resolves, the form is
+  declared and worn by itself.
+- **Identity presentation (M9D).** The name tag shows the person's name
+  and, when their fighter wears a form, the Blobbi's name; the players
+  list shows the person (name, avatar) and "<Blobbi> (Rumble form)" kept
+  apart; guests are "Guest" with their slot label and the default
+  fighter; spectators get the same list. Profile text is text only.
+- **Physics untouched**: a look never reaches the match, and no gameplay
+  number or collider depends on it (tested on the host's state).
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -771,6 +816,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | Finding people vs identity | A name or a NIP-05 identifies, the pubkey is the identity: every row shows a short npub, a NIP-05 only once confirmed, no badge from metadata alone; the follow list is read, never written; selection never sends. |
 | Blobbi identity vs gameplay | A Blobbi is its kind 31124 at the owner's address, read only, through the kit's rules; a chosen Blobbi is a visual preference held locally and decides nothing in play. |
 | Blobbi identity vs form | The identity persists unchanged; the Rumble form is temporary, derived from the address alone (the kit's seed rule), deterministic, never published, and never a gameplay difference. |
+| Declared look vs verified ownership | A look binds to the sender's proven pubkey and the server derives its seed from that pubkey's own Blobbi address; existence, stage, name and legacy colours are the owner's declaration, cosmetic only, never checked against a relay. |
 | Casual vs value-bearing | Participant-hosted is fine for casual; stakes need a neutral server (§9). |
 | Untrusted input | Profile, relay and server text is rendered as text only; URLs are validated; nothing navigates automatically. |
 
@@ -797,6 +843,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-C | Choosing whom to invite | **Real two-identity test** (2026-10-09): Danidfra's follows listed, NotASage found by name and selected, the invite sent, received automatically, Join entered the room. |
 | M9A | The player's Blobbis, a local choice | **Real test** (2026-10-09): owned Blobbis listed, one selected, restored after reload, no leak across identities, default restored, guest play unchanged. |
 | M9B | Adult Rumble forms | Automated tests; **partly validated for real** (2026-10-09): selecting a Blobbi changes the local fighter, V1/V2 Blobbis get their adult forms, the choice persists across reloads and manual reconnection restores it. **Still open**: the animation checks (facing, grab arm pose, carried attachment, throw release, foot contact, transitions), geometry cleanup, room navigation and game reconnect. |
+| M9C–M9F | Looks for everyone, identity presentation, picker, lifecycle | Automated tests (declaration parsing, owner binding, host rules, two proven players with different Blobbis, a guest, spectators, a late joiner, change, default, logout, disconnect, room switch, not-yours, malformed and oversized, states carry nothing; client planning for every slot, roster forms re-checked). **Awaiting real multiplayer browser validation** (§15d). |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -844,8 +891,8 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation and lifecycle checks open) · M9B.1: Nostr session restoration (§13) |
-| **Next** | M9C: showing a player's Rumble form to the other players |
+| **In validation** | M9B: adult Rumble forms (§15c; animation and lifecycle checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: looks for everyone, identity presentation, picker, lifecycle (§15d) |
+| **Next** | To be decided after the multiplayer validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 

@@ -112,12 +112,14 @@ export interface ShellView {
   message: string;
   /** A proven person's name for a slot, or null. */
   nameOf: (slot: string) => string | null;
+  /** M9D: the Blobbi a slot's fighter wears, by name, or null. */
+  blobbiNameOf: (slot: string) => string | null;
   startCard: boolean;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
   /** M8C-C: the people finder of the connected identity (null: none, or not a private room). */
   people: PeopleState | null;
   /** M9A: the connected identity's Blobbis and its local choice (null: no verified identity); M9B: the form the chosen one takes here, and whether the fighter wears it. */
-  blobbis: { state: PickerState; form: RumbleForm | null; note: 'worn' | 'default' | 'refused' } | null;
+  blobbis: { state: PickerState; form: RumbleForm | null; note: 'worn' | 'default' | 'refused'; shared: boolean } | null;
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
 }
@@ -565,7 +567,7 @@ export function createShell(a: ShellActions) {
   };
 
   /** M9A: the player's Blobbis (kind 31124 by this identity, through the kit), and a local choice among them; M9B: the form the chosen one takes here. */
-  const blobbiSection = (ps: PickerState, form: RumbleForm | null, note: 'worn' | 'default' | 'refused'): Node[] => {
+  const blobbiSection = (ps: PickerState, form: RumbleForm | null, note: 'worn' | 'default' | 'refused', shared: boolean): Node[] => {
     const out: Node[] = [el('h4', undefined, 'My Blobbis')];
     const stageWord = { egg: 'Egg', baby: 'Baby', adult: 'Adult' } as const;
     switch (ps.phase) {
@@ -624,7 +626,7 @@ export function createShell(a: ShellActions) {
       if (form.derivation === 'legacy') out.push(el('div', 'rs-sub', `Temporary Rumble Form. Blobbis are formless creatures! Your Blobbi has temporarily taken on a new form to play in Rumble${form.ownColors ? ', in its own colours' : ''}. Its original appearance remains unchanged.`));
       else if (form.derivation === 'adult-stage') out.push(el('div', 'rs-sub', 'Your Blobbi is temporarily taking an adult form to play. Its actual life stage is unchanged.'));
       if (note === 'refused') out.push(el('div', 'rs-warn', 'This form couldn’t be built here, so your fighter keeps the default look.'));
-      else out.push(el('div', 'rs-sub', note === 'worn' ? 'Your fighter wears this form now. Only you see it for the moment; other players still see the default.' : 'Your fighter takes this form as soon as the match is on screen.'));
+      else out.push(el('div', 'rs-sub', note === 'worn' ? (shared ? 'Your fighter wears this form now, for everyone in the room.' : 'Your fighter wears this form now. This server shows it only to you; other players see the default.') : 'Your fighter takes this form as soon as the match is on screen.'));
     } else if (ps.selected && !form && !ps.missing) out.push(el('div', 'rs-warn', 'This Blobbi has no Rumble form here, so your fighter keeps the default look.'));
     const r = el('div', 'rs-row');
     if (ps.missing) r.append(button('Try again', a.reloadBlobbis));
@@ -696,7 +698,9 @@ export function createShell(a: ShellActions) {
         const p = v.profile(id.pubkey);
         name = clip(displayName(p, id.pubkey), 22);
         pic = avatar(id.pubkey, p?.picture, 18);
-        tag = mine ? 'you · nostr' : 'nostr';
+        // M9D: the person, then the Blobbi their fighter wears (its Rumble form), kept apart.
+        const b = v.blobbiNameOf(slot);
+        tag = `${mine ? 'you · ' : ''}nostr${b ? ` · ${clip(b, 16)} (Rumble form)` : ''}`;
       } else {
         name = id.who === 'bot' ? 'Bot' : 'Guest';
         pic = avatar(null, undefined, 18);
@@ -751,7 +755,7 @@ export function createShell(a: ShellActions) {
       box.append(pre, r);
       parts.push(box);
     }
-    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note));
+    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note, v.blobbis.shared));
     if (v.inbox) parts.push(...inboxSection(v, v.inbox));
     // Server.
     parts.push(el('h4', undefined, 'Server'));

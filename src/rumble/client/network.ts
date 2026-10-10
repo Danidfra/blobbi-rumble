@@ -47,7 +47,7 @@ import { InboxSetup } from './inboxSetup';
 import { PeopleFinder } from './people';
 import { BlobbiPicker } from './blobbis';
 import { blobbiPreview } from './blobbiPreview';
-import { planLook, rumbleFormOf, type RumbleForm, type Worn } from './rumbleForm';
+import { declarationOf, lookFromSlotForm, planLooks, rumbleFormOf, type RumbleForm, type Wanted } from './rumbleForm';
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
@@ -148,30 +148,62 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let people: PeopleFinder | null = null;
   // M9A: the connected identity's Blobbis (read only) and a local choice among them; nothing published.
   let blobbis: BlobbiPicker | null = null;
-  // M9B: the look the player's own fighter wears (the chosen Blobbi's Rumble form); only this page sees it until M9C.
-  let worn: Worn | null = null;
+  // M9B / M9C: what every fighter wears. The player's own form is declared to the server once proven; the server binds it to
+  // the proven pubkey and the roster carries every slot's form, so every page (players and spectators) draws the same looks.
+  // On a server without looks, only this page wears its own form.
+  const worn = new Map<string, string>();
   let lookNote: 'worn' | 'default' | 'refused' = 'default';
+  /** The form the server last accepted from this page (by its declaration), to send a change once, not per frame. */
+  let declared: string | null = null;
+  let declaredOn: string | null = null;
   const currentForm = (): RumbleForm | null => {
     const me = identity.verified;
     const chosen = blobbis?.chosen ?? null;
     return me && chosen ? rumbleFormOf(chosen, me) : null;
   };
-  /** Apply the chosen form to the player's slot (and the default to a slot left behind); nothing per frame unless something changed. */
-  const syncLook = () => {
-    if (!presenter) return;
+  const serverLooks = () => !!serverFeatures?.includes('looks');
+  /** Tell the server which form this fighter wears, when that changed or the connection is new. Only once proven; nothing else rides along. */
+  const declareLook = () => {
+    const me = identity.verified;
+    if (!ws || !me || !serverLooks() || conn.phase !== 'playing') return;
     const form = currentForm();
-    const plan = planLook(worn, you, form);
-    worn = plan.next;
+    const text = JSON.stringify(form ? declarationOf(form) : null);
+    const on = `${me}:${room?.id ?? ''}`;
+    if (text === declared && on === declaredOn) return;
+    if (send({ t: 'look', form: form ? declarationOf(form) : null })) {
+      declared = text;
+      declaredOn = on;
+    }
+  };
+  /** Every slot's look from the roster (the server's word), or, without server looks, this page's own form on its slot. */
+  const syncLooks = () => {
+    if (!presenter) return;
+    const want = new Map<string, Wanted>();
+    if (serverLooks()) {
+      for (const [slot, id] of Object.entries(roster ?? {})) {
+        if (id.who !== 'nostr' || !id.form) continue;
+        const r = lookFromSlotForm(id.form);
+        if (r) want.set(slot, { key: r.key, look: r.look });
+      }
+    } else {
+      const form = currentForm();
+      if (you && form) want.set(you, { key: form.key, look: form.look });
+    }
+    const plan = planLooks(worn, want);
+    worn.clear();
+    for (const [k, v] of plan.next) worn.set(k, v);
     for (const c of plan.changes) {
-      const r = presenter.setLook(c.slot, c.form?.look ?? null, c.form?.key ?? null);
-      if (c.form) {
+      const r = presenter.setLook(c.slot, c.look, c.key);
+      if (c.slot !== you) continue;
+      if (c.look) {
         if (r === 'default') {
-          // The kit could not build it: the default stays, and the plan must not think the form is worn.
-          worn = null;
+          // The kit could not build it: the default stays, and the record must not say the form is worn.
+          worn.delete(c.slot);
           lookNote = 'refused';
         } else lookNote = 'worn';
-      } else if (!form) lookNote = 'default';
+      } else lookNote = 'default';
     }
+    if (you && !want.has(you) && !currentForm()) lookNote = 'default';
   };
   const syncInbox = () => {
     const signer = identity.connectedSigner;
@@ -282,6 +314,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   // Identity: optional, separate from the game connection; relays only when there is a pubkey to look up.
   const storage = safeStorage();
   let roster: Record<string, SlotIdentity> | null = null;
+  /** What the current server offers (from its welcome). */
+  let serverFeatures: readonly string[] | null = null;
   let relayPool: BoundedPool | null = null;
   let directory: ProfileDirectory | null = null;
   // Dev only: ?relays=ws://a,ws://b replaces the lookup relays (tests run a local relay).
@@ -485,6 +519,12 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     const r = roster?.[slot];
     return r?.who === 'nostr' ? displayName(profileOf(r.pubkey), r.pubkey) : null;
   };
+  /** M9D: the Blobbi a slot's fighter wears, by name (the owner's declaration, text only), or null. */
+  const blobbiNameFor = (slot: string): string | null => {
+    const r = roster?.[slot];
+    if (r?.who !== 'nostr' || !r.form) return null;
+    return lookFromSlotForm(r.form)?.name ?? null;
+  };
   const sendInput = (move: Pick<MoveIntent, 'x' | 'z' | 'run'>) => {
     seq += 1;
     send(inputMessage(seq, move, actions));
@@ -551,6 +591,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           shell.toast(`Room ${room.id} is ready: share the link or the code`, 6000);
           shell.openSession();
         } else if (room.kind === 'private' && !conn.note) shell.toast(`Joined room ${room.id}`);
+        serverFeatures = m.features ?? [];
+        declared = null;
+        declaredOn = null;
         identity.onWelcome(m.features);
       } else if (m.t === 'state') {
         // Late or repeated states are dropped: the newest tick wins.
@@ -587,6 +630,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         roster = m.slots;
         spectators = m.spectators ?? 0;
         wantProfiles();
+        syncLooks();
       } else if (m.t === 'challenge') {
         void identity.onChallenge(m.challenge);
       } else if (m.t === 'auth') {
@@ -690,7 +734,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (people && shell.panelOpen && room?.kind === 'private' && identity.provenSigner) people.ensureFollows();
     // The Blobbi list is read the first time the panel shows it for a verified identity, or at once when a choice was remembered (the fighter wears it).
     if (blobbis && identity.verified && (shell.panelOpen || blobbis.state.selected)) blobbis.load();
-    syncLook();
+    declareLook();
+    syncLooks();
     if (inbox && nowMs - inboxExpiredAt > 1000) {
       inboxExpiredAt = nowMs;
       inbox.expire();
@@ -714,7 +759,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
       people: people && room?.kind === 'private' ? people.state : null,
-      blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote } : null,
+      blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote, shared: serverLooks() } : null,
+      blobbiNameOf: blobbiNameFor,
       inbox: inboxView(),
     });
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
@@ -759,7 +805,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     // Name tags: a proven person's name (short), else the slot label. Redrawn only when the text changes.
     for (const id of s.players) {
       const n = nameFor(id);
-      presenter.setTag(id, n === null ? null : clip(n, 14));
+      const b = blobbiNameFor(id);
+      // The tag: the person's name, and the Blobbi's when their fighter wears one (M9D); the slot label for guests and bots.
+      presenter.setTag(id, n === null ? null : b ? `${clip(n, 12)} · ${clip(b, 10)}` : clip(n, 14));
     }
     const ack = you ? state.acks[you] : undefined;
     const m = predictor.metrics;
@@ -854,7 +902,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           return currentForm();
         },
         get worn() {
-          return worn;
+          return Object.fromEntries(worn);
+        },
+        get declared() {
+          return declared;
         },
         get lookNote() {
           return lookNote;

@@ -11,6 +11,9 @@
  *     { t: 'challenge' }                              M8A: ask for a Nostr auth challenge
  *     { t: 'auth', event }                            M8A: a signed kind-22242 answer to it
  *     { t: 'logout' }                                 M8A: drop this connection's Nostr identity
+ *     { t: 'look', form }                             M9C: the Rumble form my fighter wears (null: the default);
+ *                                                     only for a connection with a proven identity, and only a
+ *                                                     Blobbi address that identity owns (`looks.ts`)
  *
  *   server → client
  *     { t: 'welcome', you, players, tickHz, snapshotHz, features?, room?, server? }
@@ -22,7 +25,9 @@
  *     { t: 'challenge', challenge, ttl }              M8A: sign this within ttl seconds
  *     { t: 'auth', ok, pubkey?, reason? }             M8A: the answer to a proof (or a logout)
  *     { t: 'roster', slots, spectators? }             M8A: per player slot, who drives it: a bot,
- *                                                     a guest, or a person proven to hold a pubkey
+ *                                                     a guest, or a person proven to hold a pubkey;
+ *                                                     M9C: and the form their fighter wears, if any
+ *     { t: 'look', ok, reason? }                      M9C: the answer to a look
  *
  * IDENTITY (M8A) is optional and separate from play: a connection plays as
  * a guest from its welcome on; proving a Nostr key later only labels the
@@ -40,6 +45,7 @@
  */
 import type { PlayerIntent } from '../sim/intent';
 import type { MatchSnapshot } from '../sim/snapshot';
+import { parseLookDeclaration, type LookDeclaration, type SlotForm } from './looks';
 
 export const PROTOCOL = Object.freeze({
   /** A client message longer than this, in characters, is dropped unread. */
@@ -73,7 +79,12 @@ export interface AuthMessage {
 export interface LogoutMessage {
   t: 'logout';
 }
-export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage;
+export interface LookMessage {
+  t: 'look';
+  /** The form, or null: the default fighter. */
+  form: LookDeclaration | null;
+}
+export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage;
 
 export interface WelcomeMessage {
   t: 'welcome';
@@ -133,15 +144,21 @@ export interface AuthReply {
   pubkey?: string;
   reason?: AuthReason;
 }
-/** Who drives a slot, as far as the server can vouch. */
-export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; pubkey: string };
+/** Who drives a slot, as far as the server can vouch; and (M9C) the form its fighter wears, bound to that pubkey. */
+export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; pubkey: string; form?: SlotForm };
+export type LookReason = 'no-identity' | 'not-yours' | 'spectator' | 'malformed';
+export interface LookReply {
+  t: 'look';
+  ok: boolean;
+  reason?: LookReason;
+}
 export interface RosterMessage {
   t: 'roster';
   slots: Record<string, SlotIdentity>;
   /** M8B: how many connections in the room are watching. */
   spectators?: number;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage;
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -183,6 +200,11 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (v.t !== 'auth' && raw.length > PROTOCOL.maxClientMessage) return null;
   if (v.t === 'challenge') return { t: 'challenge' };
   if (v.t === 'logout') return { t: 'logout' };
+  if (v.t === 'look') {
+    if (v.form === null) return { t: 'look', form: null };
+    const form = parseLookDeclaration(v.form);
+    return form ? { t: 'look', form } : null;
+  }
   if (v.t === 'auth') return isObject(v.event) ? { t: 'auth', event: v.event } : null;
   if (v.t === 'input') {
     if (!Number.isSafeInteger(v.seq) || (v.seq as number) < 0 || (v.seq as number) > PROTOCOL.maxSeq) return null;

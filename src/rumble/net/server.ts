@@ -320,7 +320,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     log(`conn ${id} from ${from}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
     const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
-    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth', 'rooms'], room: info, server }));
+    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth', 'rooms', 'looks'], room: info, server }));
     sendRoster(room);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
     const identityMessage = (msg: ClientMessage) => {
@@ -337,6 +337,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         challenges.drop(id);
         if (host.setIdentity(id, null)) sendRoster(room);
         return reply({ t: 'auth', ok: false, reason: 'logged-out' });
+      }
+      // M9C: the look of this connection's own fighter; the host binds it to the proven identity.
+      if (msg.t === 'look') {
+        const r = host.setLook(id, msg.form);
+        client.send(JSON.stringify(r.ok ? { t: 'look', ok: true } : { t: 'look', ok: false, reason: r.reason }));
+        if (r.ok && r.changed) sendRoster(room);
+        return;
       }
       if (msg.t !== 'auth') return;
       const issued = challenges.take(id);
@@ -379,7 +386,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       inbound(() => {
         if (!clients.has(ws)) return;
-        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout') return identityMessage(msg);
+        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout' || msg.t === 'look') return identityMessage(msg);
         const reply = host.receive(id, raw);
         if (reply) client.send(JSON.stringify(reply));
       });

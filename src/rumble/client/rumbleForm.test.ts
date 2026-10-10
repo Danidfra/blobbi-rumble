@@ -17,7 +17,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, type NostrEvent } from 
 import { describe, expect, it } from 'vitest';
 import { GAMEPLAY_PROFILE, RUMBLE_BODY } from '../profile';
 import { collectBlobbis, type OwnedBlobbi } from './blobbis';
-import { RUMBLE_FORM_VERSION, planLook, rumbleFormOf } from './rumbleForm';
+import { RUMBLE_FORM_VERSION, declarationOf, lookFromSlotForm, planLooks, rumbleFormOf } from './rumbleForm';
 
 const now = Math.floor(Date.now() / 1000);
 const me = generateSecretKey();
@@ -151,27 +151,54 @@ describe('what a form may not touch', () => {
   });
 });
 
-describe('which fighter wears what', () => {
+describe('which fighter wears what (M9C: every slot, from the roster)', () => {
   const form = rumbleFormOf(owned(me, PET[0]), ME)!;
   const other = rumbleFormOf(owned(me, PET[1], { gen: 'v2' }), ME)!;
-  it('a choice dresses the player’s slot; another choice redresses it; the default, a disconnect or no slot undresses it', () => {
-    let p = planLook(null, 'P1', form);
-    expect(p).toEqual({ next: { slot: 'P1', key: form.key }, changes: [{ slot: 'P1', form }] });
-    expect(planLook(p.next, 'P1', form).changes).toEqual([]);
-    p = planLook(p.next, 'P1', other);
-    expect(p.changes).toEqual([{ slot: 'P1', form: other }]);
-    expect(planLook(p.next, 'P1', null)).toEqual({ next: null, changes: [{ slot: 'P1', form: null }] });
-    expect(planLook(p.next, null, other)).toEqual({ next: null, changes: [{ slot: 'P1', form: null }] });
-    expect(planLook(null, null, null).changes).toEqual([]);
-    expect(planLook(null, 'P2', null).changes).toEqual([]);
+  const want = (entries: [string, { key: string; look: typeof form.look }][]) => new Map(entries);
+  it('a slot whose wanted key differs changes; the same key again builds nothing; a slot wanting nothing goes back to the default', () => {
+    let p = planLooks(new Map(), want([['P1', form]]));
+    expect(p.changes).toEqual([{ slot: 'P1', look: form.look, key: form.key }]);
+    expect(planLooks(p.next, want([['P1', form]])).changes).toEqual([]);
+    p = planLooks(p.next, want([['P1', other]]));
+    expect(p.changes).toEqual([{ slot: 'P1', look: other.look, key: other.key }]);
+    expect(planLooks(p.next, new Map())).toEqual({ next: new Map(), changes: [{ slot: 'P1', look: null, key: null }] });
+    expect(planLooks(new Map(), new Map()).changes).toEqual([]);
   });
-  it('a room change moves the form to the new slot and restores the old one; an identity switch is a new form or none', () => {
-    const p = planLook({ slot: 'P1', key: form.key }, 'P3', form);
+  it('several fighters at once: each slot independently; a room change is a new roster, so old slots are undressed and new ones dressed', () => {
+    const p = planLooks(new Map([['P1', form.key], ['P2', other.key]]), want([['P2', other], ['P3', form]]));
     expect(p.changes).toEqual([
-      { slot: 'P1', form: null },
-      { slot: 'P3', form },
+      { slot: 'P3', look: form.look, key: form.key },
+      { slot: 'P1', look: null, key: null },
     ]);
-    expect(p.next).toEqual({ slot: 'P3', key: form.key });
-    expect(planLook(p.next, 'P3', other).changes).toEqual([{ slot: 'P3', form: other }]);
+    expect([...p.next]).toEqual([
+      ['P2', other.key],
+      ['P3', form.key],
+    ]);
+  });
+});
+
+describe('the form on the wire (M9C)', () => {
+  it('the declaration names the address, the generation, the worn colours and the name, never the seed; the roster form gives back the same key', () => {
+    const legacy = rumbleFormOf(owned(me, PET[1], { gen: 'v2', name: 'Mara' }), ME)!;
+    const decl = declarationOf(legacy);
+    expect(decl).toEqual({ v: 1, d: legacy.blobbi.d, gen: 'v2', colors: legacy.look.colors, name: 'Mara' });
+    expect(JSON.stringify(decl)).not.toContain(legacy.look.seed);
+    const native = rumbleFormOf(owned(me, PET[0], { name: 'Puck' }), ME)!;
+    expect(declarationOf(native)).toEqual({ v: 1, d: native.blobbi.d, gen: 'v3', name: 'Puck' });
+    // As the server would carry it (the seed derived there): the same look and the same key as the owner's page made.
+    const fromRoster = lookFromSlotForm({ ...decl, seed: legacy.look.seed });
+    expect(fromRoster).toEqual({ look: legacy.look, key: legacy.key, name: 'Mara' });
+    expect(lookFromSlotForm({ ...declarationOf(native), seed: native.look.seed })).toEqual({ look: native.look, key: native.key, name: 'Puck' });
+  });
+  it('a roster form is untrusted: another version, a bad seed, a wrong generation or junk is the default; bad colours are dropped, V3 colours ignored', () => {
+    const seed = 'a'.repeat(64);
+    expect(lookFromSlotForm({ v: 2, seed, gen: 'v3' })).toBeNull();
+    expect(lookFromSlotForm({ v: 1, seed: 'zz', gen: 'v3' })).toBeNull();
+    expect(lookFromSlotForm({ v: 1, seed, gen: 'v9' })).toBeNull();
+    expect(lookFromSlotForm(null)).toBeNull();
+    expect(lookFromSlotForm('x')).toBeNull();
+    expect(lookFromSlotForm({ v: 1, seed, gen: 'v1', colors: { base: 'red', secondary: '#000000', eye: '#111111' } })).toEqual({ look: { seed, algorithm: 1 }, key: `v1:${seed}`, name: null });
+    expect(lookFromSlotForm({ v: 1, seed, gen: 'v3', colors: { base: '#aaaaaa', secondary: '#bbbbbb', eye: '#cccccc' } })!.look).toEqual({ seed, algorithm: 1 });
+    expect(lookFromSlotForm({ v: 1, seed, gen: 'v2', colors: { base: '#AAAAAA', secondary: '#bbbbbb', eye: '#cccccc' }, name: 'x'.repeat(500) })).toMatchObject({ look: { colors: { base: '#aaaaaa' } }, name: null });
   });
 });
