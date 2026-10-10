@@ -1323,7 +1323,7 @@ iPhone**; Settings shows the live fps there.
 API for page elements (iPad Safari has the prefixed one, which is used).
 The way to lose Safari's bars on iPhone is the home-screen app: M12.1 adds
 `public/manifest.json` (`display: fullscreen`, `orientation: landscape`,
-`start_url: /rumble.html?network=1`), icons (180, 192, 512) and the iOS
+`start_url: /rumble.html?network=1`), icons (180, 192, 512, a 512 maskable and a 32 favicon, rendered from the game's own canonical purple adult Blobbi by the dev page `icon.html` / `src/playground/renderIcon.ts`; regenerate with `npx vite --port 5199` and `/icon.html`) and the iOS
 meta tags. **No service worker** is registered: nothing is cached, so the
 app can never run an outdated multiplayer client (pages are served
 `no-cache`, assets by hash); it needs the network like the page does, and

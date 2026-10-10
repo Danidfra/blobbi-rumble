@@ -34,9 +34,9 @@ interface Conn {
   messages: ServerMessage[];
   send: (m: unknown) => void;
 }
-function open(url: string): Promise<Conn> {
+function open(url: string, headers?: Record<string, string>): Promise<Conn> {
   return new Promise((resolve) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, headers ? { headers } : undefined);
     sockets.push(ws);
     const c: Conn = { ws, url, messages: [], send: (m) => ws.send(JSON.stringify(m)) };
     ws.on('message', (d) => {
@@ -197,6 +197,24 @@ describe('rooms over the socket', () => {
     const b2 = `ws://127.0.0.1:${server.port}`;
     expect((await open(`${b2}/?create=1`)).welcome).toBeTruthy();
     expect((await open(`${b2}/?create=1`)).closed).toEqual({ code: 4003, reason: 'room limit reached' });
+  });
+
+  it('behind a trusted proxy (CLIENT_IP_HEADER) the limit is per player address, not one for everyone; never trusted unless configured', async () => {
+    // Behind Cloudflare Tunnel every socket comes from the tunnel: without the header, two players share one limit.
+    server = await startRumbleServer({ havok, port: 0, manual: true, roomsPerMinute: 1, clientIpHeader: 'cf-connecting-ip' });
+    const base = `ws://127.0.0.1:${server.port}`;
+    expect((await open(`${base}/?create=1`, { 'cf-connecting-ip': '203.0.113.7' })).welcome).toBeTruthy();
+    expect((await open(`${base}/?create=1`, { 'cf-connecting-ip': '198.51.100.9' })).welcome).toBeTruthy();
+    expect((await open(`${base}/?create=1`, { 'cf-connecting-ip': '203.0.113.7' })).closed?.code).toBe(4003);
+    // A malformed value falls back to the socket's address.
+    expect((await open(`${base}/?create=1`, { 'cf-connecting-ip': '<script>' })).welcome).toBeTruthy();
+    expect((await open(`${base}/?create=1`, { 'cf-connecting-ip': 'nonsense!' })).closed?.code).toBe(4003);
+    await server.close();
+    // Not configured: the header is ignored (anyone could send it).
+    server = await startRumbleServer({ havok, port: 0, manual: true, roomsPerMinute: 1 });
+    const b2 = `ws://127.0.0.1:${server.port}`;
+    expect((await open(`${b2}/?create=1`, { 'cf-connecting-ip': '203.0.113.7' })).welcome).toBeTruthy();
+    expect((await open(`${b2}/?create=1`, { 'cf-connecting-ip': '198.51.100.9' })).closed?.code).toBe(4003);
   });
 
   it('the same pubkey twice: two separate connections, two slots, nothing merged or taken over', async () => {

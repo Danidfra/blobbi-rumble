@@ -183,9 +183,10 @@ bundle, runs them as `node` with production dependencies) and a
 `compose.yaml`:
 
 ```
-cp .env.example .env    # or export the variables below
+cp .env.example .env    # the production values for rumble.blobbi.pet; adjust for another host
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz
+docker compose exec rumble node scripts/smoke.mjs http://127.0.0.1:8080 "$(grep ^PUBLIC_URL= .env | cut -d= -f2)"
 ```
 
 Environment (`npm run serve` and the container read the same):
@@ -196,6 +197,8 @@ Environment (`npm run serve` and the container read the same):
 | `PUBLIC_URL` | unset | the one address people open (`https://rumble.example`); identity proofs must name it, share links and the well-known document use it. Set it when hosting publicly. |
 | `SERVER_NAME`, `OPERATOR_PUBKEY` | unset | the server's claims (name; npub or hex) |
 | `ALLOWED_ORIGINS` | unset (any) | browser origins that may connect, comma-separated; a browser from another origin is refused (4005); non-browser clients (no Origin) are let in. Usually equal to `PUBLIC_URL`. |
+| `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (new rooms per minute) and the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. |
+| `RUMBLE_HOST_PORT`, `RUMBLE_TAG` | 8080, latest | compose only: the host port, published on **127.0.0.1** only, and the image tag to run (rollbacks) |
 | `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once |
 | `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
 | `STATIC_DIR` | dist | the built page |
@@ -222,6 +225,134 @@ container's `HEALTHCHECK` and `restart: unless-stopped` bring it back.
 Logs are compact lines about connections, rooms and abnormal traffic
 (remote address and Origin; never message contents, never keys).
 
+## Production: rumble.blobbi.pet (Debian 13, Docker, Cloudflare Tunnel)
+
+```
+browser ──https / wss──► Cloudflare ──tunnel──► cloudflared (systemd, on the host)
+                                                 └─http / ws──► 127.0.0.1:8080 ──► container :8080 (node, as user "node")
+```
+
+What the repository provides for it, and what it does not touch:
+
+- `compose.yaml`: project **`blobbi-rumble`** (its own default network; no
+  volumes, no host mounts), one service `rumble`, published on
+  **`127.0.0.1:8080` only** (the LAN and the Internet cannot reach it; only
+  processes on the host, i.e. cloudflared). Restart `unless-stopped`; health
+  check on `/healthz`; limits 2 CPUs, 1 GB, 256 processes; runs as the
+  image's unprivileged `node` user with a read-only filesystem (a 16 MB
+  tmpfs `/tmp`), every capability dropped and `no-new-privileges`; logs
+  capped at 3 × 10 MB. It shares nothing with other containers (Ditto or
+  any other): different project, network and port.
+- `.env.example`: the production settings (`PUBLIC_URL` and
+  `ALLOWED_ORIGINS` = `https://rumble.blobbi.pet`, `CLIENT_IP_HEADER` =
+  `cf-connecting-ip`). No secrets exist: the server holds no keys. `.env`
+  is ignored by git and excluded from the Docker build context, as are
+  `*.pem` / `*.key`.
+- `scripts/smoke.mjs` (also in the image): checks the page, `/healthz`, the
+  well-known document, the home-screen app files, the WebSocket from the
+  public origin, a foreign origin refused, and a Nostr proof bound to the
+  public address accepted (one bound to `ws://127.0.0.1:8080/ws` refused).
+- Nothing on the host changes: no router ports, no firewall rules, no SSH
+  or Tailscale changes, no new host services. The tunnel already exists.
+
+**1. Transfer the project** (from the development Mac; nothing is pushed
+anywhere). Either a git bundle (keeps history, so tags and rollbacks by
+commit work):
+
+```
+# on the Mac
+git bundle create /tmp/blobbi-rumble.bundle master
+scp /tmp/blobbi-rumble.bundle <user>@<server>:~/
+# on the server, the first time
+git clone ~/blobbi-rumble.bundle ~/blobbi-rumble
+# later updates
+cd ~/blobbi-rumble && git pull ~/blobbi-rumble.bundle master
+```
+
+or a plain copy of the working tree: `rsync -a --delete --exclude node_modules --exclude dist --exclude .serve --exclude .git --exclude .env ./ <user>@<server>:~/blobbi-rumble/`.
+Build **on the server** (x86-64): the image is built from source there, so
+nothing architecture-specific travels (an image built on an Apple-silicon
+Mac would be arm64 unless built with `--platform linux/amd64`).
+
+**2. Configure and start** (on the server):
+
+```
+cd ~/blobbi-rumble
+cp .env.example .env                 # review it: PUBLIC_URL, ALLOWED_ORIGINS, CLIENT_IP_HEADER, RUMBLE_HOST_PORT=8080
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env   # tag the image by commit (rollbacks)
+docker compose config | grep -A3 ports   # must show host_ip: 127.0.0.1, published "8080"
+docker compose build
+docker compose up -d
+```
+
+**3. Verify** (on the server):
+
+```
+docker compose ps                                     # rumble: Up … (healthy) after ~20 s
+ss -ltnp | grep ':8080'                               # 127.0.0.1:8080 only, never 0.0.0.0:8080 or [::]:8080
+curl -s http://127.0.0.1:8080/healthz                 # {"ok":true,"clients":…,"rooms":1,"tick":…}
+docker compose exec rumble node scripts/smoke.mjs http://127.0.0.1:8080 https://rumble.blobbi.pet
+docker compose exec rumble node scripts/smoke.mjs https://rumble.blobbi.pet      # the whole path, through Cloudflare
+```
+
+From any machine: `curl -s https://rumble.blobbi.pet/healthz` and
+`curl -s https://rumble.blobbi.pet/.well-known/rumble.json` (its `url` must
+be `https://rumble.blobbi.pet`). In a browser: open
+https://rumble.blobbi.pet, play (the session chip shows the room; F4 shows
+`wss://rumble.blobbi.pet/ws` and the round trip); open it in a second
+browser or on a phone and see each other; with a NIP-07 extension,
+Connect Nostr: the session panel shows the identity verified (the proof
+names `wss://rumble.blobbi.pet/ws`, which `PUBLIC_URL` makes the only
+accepted address). Opening the game through `http://127.0.0.1:8080` on the
+server itself is refused by `ALLOWED_ORIGINS` (4005) and its proofs would
+name the wrong address: test through the public hostname.
+
+**Logs, restarts, updates, rollback:**
+
+```
+docker compose logs -f --tail=200 rumble    # connections, rooms, refusals, a 30 s summary; never keys or messages
+docker compose restart rumble               # matches in progress end; pages reconnect by themselves
+docker compose stop / docker compose up -d  # only this project's container and network
+# update: bring the new code (step 1), then
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env
+docker compose build && docker compose up -d && docker compose ps
+# rollback: point RUMBLE_TAG at the previous commit's image (still on the host) and restart, no build
+docker image ls blobbi-rumble
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=<previous>/" .env && docker compose up -d
+```
+
+Old images can be removed one by one (`docker image rm blobbi-rumble:<tag>`);
+never `docker system prune` on a host with other services. Rooms live in
+memory: a restart or an update closes every room and match (players'
+pages reconnect to the open room; private room codes are gone).
+
+**Cloudflare Tunnel and long-lived WebSockets** (free plan; nothing paid
+is needed):
+
+- WebSockets go through tunnels and the free plan; the zone's WebSockets
+  setting must stay on (it is by default).
+- Cloudflare closes a WebSocket after about 100 s without traffic; a game
+  connection is never idle (states 20 a second, pings every second).
+- Cloudflare and cloudflared restart now and then (edge maintenance, a
+  cloudflared update): open sockets drop. The page reconnects by itself
+  (1, 2, 4, 8 s) as a new connection and may get another slot.
+- Every connection reaches the server from cloudflared, so the server
+  takes the player's address from `CF-Connecting-IP` (`CLIENT_IP_HEADER`);
+  trusting it is safe only because the port is loopback-only.
+- The tunnel's origin is `http://localhost:8080`. The container listens on
+  IPv4 loopback only; if cloudflared ever logs refused connections to
+  `[::1]:8080`, change the origin to `http://127.0.0.1:8080` in the
+  tunnel's configuration (a change to the host's tunnel: do it yourself or
+  ask first).
+- Pages are served `no-cache` and assets by content hash, so Cloudflare's
+  cache never serves an outdated client; there is no service worker. If
+  Rocket Loader or HTML minification are enabled for the zone, turn them
+  off for this hostname (they rewrite scripts). A Cloudflare challenge page
+  (Bot Fight Mode, Under Attack) cannot be shown to a WebSocket: keep such
+  modes off for this hostname or connections fail.
+- Latency: Cloudflare's edge sits between the players and the house; the
+  F4 panel shows the measured round trip.
+
 ## HTTPS / WSS and the reverse proxy
 
 The app never handles TLS and no certificates live in the repo. A browser
@@ -233,7 +364,7 @@ WebSocket upgrade for `/ws` (Caddy's `reverse_proxy localhost:8080` does;
 nginx needs `proxy_http_version 1.1`, `Upgrade` and `Connection` headers,
 and a read timeout above the 10 s heartbeat). Open only the proxy's port
 (443) to the Internet; 8080 stays local to the host or the compose
-network. Firewall: the host must accept inbound TCP 8080 for plain LAN
+network (`compose.yaml` publishes it on 127.0.0.1 only). Firewall: the host must accept inbound TCP 8080 for plain LAN
 play (macOS asks the first time).
 
 ## Resources (M10D)

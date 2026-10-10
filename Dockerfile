@@ -2,7 +2,9 @@
 # (`npm run serve`: page and WebSocket on one port, TLS terminated in front).
 #
 #   docker build -t blobbi-rumble .
-#   docker run --rm -p 8080:8080 -e PUBLIC_URL=https://rumble.example blobbi-rumble
+#   docker run --rm -p 127.0.0.1:8080:8080 -e PUBLIC_URL=https://rumble.example blobbi-rumble
+#   (publish on the loopback: the tunnel or proxy on the host reaches it, the network does not;
+#    production uses compose.yaml with .env, see HOSTING.md)
 #
 # Stage 1 builds the page (dist/) and the server bundle (.serve/); stage 2
 # runs them with production dependencies only, as an unprivileged user.
@@ -21,6 +23,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/.serve ./.serve
+# The deployment smoke check (HOSTING.md): `docker compose exec rumble node scripts/smoke.mjs https://<host>`.
+COPY scripts/smoke.mjs ./scripts/smoke.mjs
 # Defaults the process reads (see HOSTING.md): bind to every interface in the container, port 8080.
 ENV HOST=0.0.0.0 PORT=8080 STATIC_DIR=/app/dist
 EXPOSE 8080

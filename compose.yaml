@@ -1,20 +1,34 @@
-# Blobbi Rumble, one dedicated server. TLS is the reverse proxy's job (Caddy,
-# nginx, Traefik, or a platform): it terminates https and forwards the
-# WebSocket upgrade for /ws to this container. See HOSTING.md.
+# Blobbi Rumble, one dedicated server: the built game and the authoritative
+# match in one Node process (page and WebSocket /ws on one port). TLS is the
+# job of whatever sits in front (here Cloudflare Tunnel on the host, which
+# forwards https://rumble.blobbi.pet to http://localhost:8080). See HOSTING.md.
+#
+#   cp .env.example .env        # once; the values are the production ones
+#   docker compose up -d --build
+#
+# The port is published on the host's LOOPBACK only (127.0.0.1): nothing on
+# the LAN or the Internet reaches the container except through the tunnel.
+name: blobbi-rumble
+
 services:
   rumble:
     build: .
-    image: blobbi-rumble
+    image: blobbi-rumble:${RUMBLE_TAG:-latest}
     restart: unless-stopped
+    init: true
     ports:
-      - "8080:8080"
+      # Loopback only. Never "8080:8080" (that binds 0.0.0.0).
+      - "127.0.0.1:${RUMBLE_HOST_PORT:-8080}:8080"
     environment:
-      # The one address people open, e.g. https://rumble.example (required when hosting publicly).
-      PUBLIC_URL: ${PUBLIC_URL:-}
+      # The one public address (identity proofs must name wss://<host>/ws, share links use it). Required in production.
+      PUBLIC_URL: ${PUBLIC_URL:?set PUBLIC_URL in .env (see .env.example)}
+      # Browser origins allowed to open the WebSocket; the public origin only.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Behind Cloudflare Tunnel every connection comes from the tunnel: take the player's address from this header
+      # (only safe because the port is reachable from the host's loopback alone, i.e. only through the tunnel).
+      CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-}
       SERVER_NAME: ${SERVER_NAME:-Blobbi Rumble}
       OPERATOR_PUBKEY: ${OPERATOR_PUBKEY:-}
-      # Browser origins allowed to connect (comma-separated); empty: any origin. Usually the same as PUBLIC_URL.
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-64}
       MAX_ROOMS: ${MAX_ROOMS:-16}
       TICK_HZ: 60
@@ -25,10 +39,25 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
-    # One Node process; 16 rooms of Havok at 60 Hz fit comfortably in this (see the benchmark in HOSTING.md).
+    # One Node process; 16 rooms of Havok at 60 Hz use about 0.6 ms of CPU per tick in total (HOSTING.md).
     deploy:
       resources:
         limits:
           cpus: "2"
           memory: 1g
+          pids: 256
+    # Least privilege: no root (the image's USER node), no capabilities, no privilege escalation, a read-only filesystem.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Bounded logs: never fill the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     stop_grace_period: 15s

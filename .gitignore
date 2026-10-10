@@ -6,3 +6,9 @@ dist
 .server
 .serve
 .bench
+# Deployment settings and anything secret stay on the server.
+.env
+.env.*
+!.env.example
+*.pem
+*.key

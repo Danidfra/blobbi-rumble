@@ -123,6 +123,17 @@ export interface ServerConfig {
    * one without an Origin (not a browser) is allowed and logged.
    */
   allowedOrigins?: string[];
+  /**
+   * The request header that carries the player's own address, set by a
+   * trusted proxy in front (e.g. `cf-connecting-ip` behind Cloudflare
+   * Tunnel). Absent: the socket's address. Behind a tunnel every player
+   * arrives from the tunnel's address, so the per-address limits (new
+   * rooms per minute) would be one limit for everyone. Only safe when
+   * nothing but that proxy can reach this port (it could otherwise be
+   * forged); the header's first address is used, and the socket's when the
+   * header is missing or malformed.
+   */
+  clientIpHeader?: string;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -233,6 +244,15 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
   const configuredAddresses = [...(config.authUrls ?? []), ...(identity.public ? [identity.public.websocket] : [])].map(authAddress).filter((a): a is string => !!a);
   const creations = creationLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  const ipHeader = config.clientIpHeader?.trim().toLowerCase() || null;
+  /** The player's address: from the trusted proxy's header when configured (and sane), else the socket's. */
+  const clientAddress = (req: IncomingMessage): string => {
+    const socket = req.socket.remoteAddress ?? '?';
+    if (!ipHeader) return socket;
+    const raw = req.headers[ipHeader];
+    const first = (Array.isArray(raw) ? raw[0] : raw)?.split(',')[0]?.trim() ?? '';
+    return /^[0-9a-fA-F:.]{2,45}$/.test(first) ? first : socket;
+  };
   const allowedOrigins = (config.allowedOrigins ?? []).map((o) => o.trim().replace(/\/$/, '').toLowerCase()).filter(Boolean);
   /** M10D: whether a browser from this Origin may connect (no list: anyone; no Origin: not a browser, allowed). */
   const originAllowed = (origin: string | undefined) => !allowedOrigins.length || origin === undefined || allowedOrigins.includes(origin.replace(/\/$/, '').toLowerCase());
@@ -246,7 +266,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const roomFor = (req: IncomingMessage, from: string): { room: Room } | { code: number; why: string } => {
     const q = new URL(req.url ?? '/', 'http://x').searchParams;
     if (q.has('create')) {
-      const key = req.socket.remoteAddress ?? '?';
+      const key = clientAddress(req);
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
       // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
       // M11A: `arena=<id>` picks the arena (unknown: the classic island); `rotate=1` moves to another after each match.
@@ -277,7 +297,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   };
 
   wss.on('connection', (ws, req: IncomingMessage) => {
-    const from = `${req.socket.remoteAddress ?? '?'}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
+    const from = `${clientAddress(req)}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
     if (!originAllowed(req.headers.origin)) {
       stats.refused += 1;
       log(`refused ${from}: origin not allowed`);
