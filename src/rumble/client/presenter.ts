@@ -58,7 +58,7 @@ export interface HudInfo {
   matchOverHint: string;
   controls: string[];
   /** The fighters people at this screen play, and the keys each one struggles with (shown when it is held). */
-  strugglers?: { index: number; keys: string }[];
+  strugglers?: { index: number; keys: string; climb?: string; letGo?: string }[];
   /** M11F: a player at this screen who is out of the round and aiming a banana peel: where, and the keys. */
   aimers?: { index: number; aim: { x: number; z: number }; keys: string }[];
   /** Debug only: whether the holds are consistent (known where the match runs). */
@@ -221,13 +221,17 @@ export class RumblePresenter {
    */
   private showCues(s: MatchSnapshot, info: HudInfo) {
     const lines: { text: string; bar?: number; tone: string }[] = [];
-    for (const { index, keys } of info.strugglers ?? []) {
+    for (const { index, keys, climb, letGo } of info.strugglers ?? []) {
       const f = s.fighters[index];
       if (!f || f.eliminated || s.phase !== 'playing') continue;
       const touch = !!info.touch;
       if (f.heldBy) lines.push({ text: touch ? `GRABBED by ${f.heldBy} · tap BREAK FREE (or wiggle the stick ← →)` : `GRABBED by ${f.heldBy} · tap ${keys} to break free`, bar: f.combat.struggle, tone: '#ffe9a8' });
       else if (f.holding) lines.push({ text: touch ? `HOLDING ${f.holding} · THROW to throw · they can break free` : `HOLDING ${f.holding} · grab again to throw · they can break free`, bar: s.fighters.find((o) => o.id === f.holding)?.combat.struggle, tone: '#d6f0ff' });
-      else if (f.ledge) lines.push({ text: touch ? `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · CLIMB to climb up · LET GO to drop` : `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · jump to climb · grab or push away to let go`, bar: f.ledge.grip, tone: '#dff5e3' });
+      else if (f.ledge?.phase === 'climb') lines.push({ text: 'CLIMBING UP…', tone: '#dff5e3' });
+      else if (f.ledge) {
+        // M12.1: the keys by name; the bar is the grip left (it drains while hanging).
+        lines.push({ text: touch ? 'HANGING · tap CLIMB to get up · LET GO to drop' : `HANGING · ${climb ?? 'Space'}: climb up · ${letGo ?? 'G'}: let go · grip`, bar: f.ledge.grip, tone: f.ledge.grip < 0.25 ? '#ffd9d4' : '#dff5e3' });
+      }
     }
     for (const a of info.aimers ?? []) {
       const f = s.fighters[a.index];

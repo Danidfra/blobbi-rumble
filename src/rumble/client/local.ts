@@ -103,7 +103,7 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
       matchOverHint: 'press R to play again',
       controls: CONTROLS,
       holdsConsistent: match.holdsConsistent(),
-      strugglers: roster.flatMap((e, i) => (e.keys ? [{ index: i, keys: i === 0 ? 'A ↔ D' : '← ↔ →' }] : [])),
+      strugglers: roster.flatMap((e, i) => (e.keys ? [{ index: i, keys: i === 0 ? 'A ↔ D' : '← ↔ →', climb: i === 0 ? 'Space' : 'Enter', letGo: i === 0 ? 'G' : 'L' }] : [])),
       aimers: roster.flatMap((e, i) => (e.keys && aims[i] ? [{ index: i, aim: aims[i]!, keys: i === 0 ? 'WASD · throw F / G' : 'arrows · throw K / L' }] : [])),
     });
   };

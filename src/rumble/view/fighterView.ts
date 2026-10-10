@@ -51,6 +51,13 @@ export class FighterView {
   private readonly powerRing: Mesh;
   private readonly powerRingMat: StandardMaterial;
   /** Who is who, among four: the label floating over the head, facing the camera. */
+  /** M12.1: on a ledge, a grip bar over the head and a glow along the held edge (everyone sees them). */
+  private readonly gripBar: Mesh;
+  private readonly gripMat: StandardMaterial;
+  private readonly gripTex: DynamicTexture;
+  private gripKey = '';
+  private readonly edgeGlow: Mesh;
+  private readonly edgeMat: StandardMaterial;
   private readonly tag: Mesh;
   private readonly tagMat: StandardMaterial;
   private readonly tagTex: DynamicTexture;
@@ -89,6 +96,26 @@ export class FighterView {
     this.powerRing.material = this.powerRingMat;
     this.powerRing.isPickable = false;
     this.powerRing.setEnabled(false);
+    this.gripBar = MeshBuilder.CreatePlane(`${label}-grip`, { width: 0.7, height: 0.1 }, scene);
+    this.gripBar.billboardMode = MeshClass.BILLBOARDMODE_ALL;
+    this.gripBar.isPickable = false;
+    this.gripTex = new DynamicTexture(`${label}-grip-tex`, { width: 128, height: 18 }, scene, false);
+    this.gripTex.hasAlpha = true;
+    this.gripMat = new StandardMaterial(`${label}-grip-mat`, scene);
+    this.gripMat.diffuseTexture = this.gripTex;
+    this.gripMat.emissiveColor = Color3.White();
+    this.gripMat.disableLighting = true;
+    this.gripMat.useAlphaFromDiffuseTexture = true;
+    this.gripMat.backFaceCulling = false;
+    this.gripBar.material = this.gripMat;
+    this.gripBar.setEnabled(false);
+    this.edgeGlow = MeshBuilder.CreateBox(`${label}-edge`, { width: 1.1, height: 0.035, depth: 0.09 }, scene);
+    this.edgeGlow.isPickable = false;
+    this.edgeMat = new StandardMaterial(`${label}-edge-mat`, scene);
+    this.edgeMat.emissiveColor = Color3.FromHexString('#fff3b0');
+    this.edgeMat.disableLighting = true;
+    this.edgeGlow.material = this.edgeMat;
+    this.edgeGlow.setEnabled(false);
     this.tag = MeshBuilder.CreatePlane(`${label}-tag`, { width: 1, height: 0.25 }, scene);
     this.tag.billboardMode = MeshClass.BILLBOARDMODE_ALL;
     this.tag.isPickable = false;
@@ -166,6 +193,10 @@ export class FighterView {
       this.hidden = hidden;
       this.blobbi.rig.root.setEnabled(!hidden);
       this.tag.setEnabled(!hidden);
+      if (hidden) {
+        this.gripBar.setEnabled(false);
+        this.edgeGlow.setEnabled(false);
+      }
       for (const ring of this.rings) ring.setEnabled(this.debugOn && !hidden);
       if (hidden) this.powerRing.setEnabled(false);
     }
@@ -204,6 +235,8 @@ export class FighterView {
       this.powerRing.scaling.set(size, 1, size);
       this.powerRingMat.alpha = 0.35 + 0.45 * k + 0.2 * flash;
     }
+
+    this.showLedge(f, centre);
 
     // Feedback the kit has no animation for yet, laid over its pose.
     const rig = this.blobbi.rig;
@@ -277,6 +310,41 @@ export class FighterView {
     }
   }
 
+  /**
+   * M12.1: the ledge, readable at a glance. Hanging: the edge the hands
+   * hold glows, and a bar over the head shows the grip left (green, amber,
+   * then red and blinking when nearly gone). Climbing: the edge glows, no
+   * bar. The bar's texture is redrawn only when its value moves a step.
+   */
+  private showLedge(f: FighterSnapshot, centre: Vector3) {
+    const l = f.ledge;
+    this.edgeGlow.setEnabled(!!l);
+    this.gripBar.setEnabled(!!l && l.phase === 'hang');
+    if (!l) {
+      this.gripKey = '';
+      return;
+    }
+    // Along the edge, a hair above the top and in from it: the line the hands are on.
+    this.edgeGlow.position.set(l.x + l.inX * 0.05, l.y + 0.02, l.z + l.inZ * 0.05);
+    this.edgeGlow.rotation.y = Math.atan2(l.inX, l.inZ);
+    this.edgeMat.alpha = 0.65 + 0.35 * Math.abs(Math.sin(this.hangTime * 3));
+    if (l.phase !== 'hang') return;
+    this.gripBar.position.set(centre.x, centre.y + 0.78, centre.z);
+    const grip = Math.max(0, Math.min(1, l.grip));
+    const low = grip < 0.25;
+    const blink = low && Math.floor(this.hangTime * 6) % 2 === 0;
+    const key = `${Math.round(grip * 24)}|${blink}`;
+    if (key === this.gripKey) return;
+    this.gripKey = key;
+    const ctx = this.gripTex.getContext() as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, 128, 18);
+    ctx.fillStyle = 'rgba(43,43,58,0.75)';
+    ctx.fillRect(0, 0, 128, 18);
+    ctx.fillStyle = grip > 0.5 ? '#6fd38f' : grip > 0.25 ? '#ffc457' : blink ? '#ffffff' : '#ff6b5e';
+    ctx.fillRect(3, 3, Math.round(122 * grip), 12);
+    this.gripTex.update();
+  }
+
   /** Everything this view made goes (the kit frees its nodes, materials and skin; the shadow list forgets the meshes here). */
   dispose() {
     if (this.shadows) for (const m of this.blobbi.meshes) this.shadows.removeShadowCaster(m);
@@ -284,6 +352,11 @@ export class FighterView {
     for (const ring of this.rings) ring.dispose();
     this.powerRing.dispose();
     this.powerRingMat.dispose();
+    this.gripBar.dispose();
+    this.gripMat.dispose();
+    this.gripTex.dispose();
+    this.edgeGlow.dispose();
+    this.edgeMat.dispose();
     this.tag.dispose();
     this.tagMat.dispose();
     this.tagTex.dispose();

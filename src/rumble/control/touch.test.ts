@@ -391,13 +391,15 @@ describe('the buttons in each moment', () => {
     expect(touchContext(fighter({ heldBy: 'P2' }), 'playing')).toBe('held');
     expect(touchContext(fighter({ ledge: { phase: 'hang', x: 0, y: 0, z: 0, inX: 0, inZ: 1, grip: 1 } }), 'playing')).toBe('ledge');
     expect(touchContext(fighter({ eliminated: true }), 'playing')).toBe('out');
+    expect(touchContext(fighter({ ledge: { phase: 'climb', x: 0, y: 0, z: 0, inX: 0, inZ: 1, grip: 1 } }), 'playing')).toBe('climbing');
+    expect(touchButtons('climbing').jump).toMatchObject({ label: 'Climbing…', active: false });
   });
 
   it('grab and throw are one button (as G is one key); held, the big button breaks free; no moment invents an action', () => {
     expect(touchButtons('fight')).toMatchObject({ punch: { role: 'punch' }, jump: { role: 'jump' }, grab: { role: 'grab', label: 'Grab' } });
     expect(touchButtons('holding').grab).toMatchObject({ role: 'grab', label: 'Throw' });
     expect(touchButtons('held').punch).toMatchObject({ role: 'struggle', label: 'Break free', active: true });
-    for (const ctx of ['fight', 'holding', 'held', 'ledge', 'out', 'waiting'] as const) {
+    for (const ctx of ['fight', 'holding', 'held', 'ledge', 'climbing', 'out', 'waiting'] as const) {
       for (const f of Object.values(touchButtons(ctx, { left: 1, cooldown: 0, allowed: true }))) expect(['jump', 'punch', 'grab', 'struggle']).toContain(f.role);
     }
   });

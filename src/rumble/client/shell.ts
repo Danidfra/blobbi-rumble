@@ -286,8 +286,8 @@ const HELP: [string, string][] = [
   ['F / K', 'punch'],
   ['G / L', 'grab, then again to throw'],
   ['← → (A D) fast', 'break free when grabbed'],
-  ['fall past an edge', 'catch the ledge and hang (Skyfall, Factory)'],
-  ['Space / Enter · G / L', 'hanging: climb up · let go (or push away)'],
+  ['step or run off an edge', 'on your feet, you catch the ledge (Skyfall, Factory); knocked down or thrown, you fall'],
+  ['Space / Enter · G / L', 'hanging: climb up · let go (or hold away from the wall); the bar over you is your grip'],
   ['out of the round', 'WASD aims a banana peel, F or G throws it (3 a round, while 3+ still play)'],
 ];
 
@@ -298,7 +298,8 @@ const TOUCH_HELP: [string, string][] = [
   ['Punch', 'punch'],
   ['Grab', 'grab, then Throw (the same button)'],
   ['Break free', 'tap fast when grabbed (or wiggle the stick ← →)'],
-  ['hanging on a ledge', 'Climb (jump) · Let go (grab)'],
+  ['step or run off an edge', 'on your feet, you catch the ledge; knocked down or thrown, you fall'],
+  ['hanging on a ledge', 'Climb (jump) · Let go (grab); the bar over you is your grip'],
   ['out of the round', 'the stick aims a banana peel, Throw throws it (3 a round, while 3+ still play)'],
 ];
 

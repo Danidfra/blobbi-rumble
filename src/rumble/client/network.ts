@@ -61,6 +61,7 @@ import type { FighterSnapshot, MatchSnapshot } from '../sim/snapshot';
 import { COMBAT } from '../tuning';
 import { NET_VIEW, SnapshotBuffer, type Sample } from './interp';
 import { LocalPredictor, predictable, supported, type Body } from './predict';
+import { attachCarried } from './carryView';
 import { RumblePresenter } from './presenter';
 import { SimplePool } from 'nostr-tools/pool';
 import { ProfileDirectory } from '../../social/directory';
@@ -923,7 +924,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (meIndex >= 0) {
       const own = ownFighter(s.fighters[meIndex], latestSnap.fighters[meIndex], latestSnap.phase === 'playing', now);
       ownJumped = predictor.predicting && predictor.jumpedThisFrame;
+      const interpFighters = s.fighters;
       s = { ...s, fighters: s.fighters.map((f, i) => (i === meIndex ? own : f)) };
+      // M12.1: what you carry is drawn in your hands (your fighter is drawn now, the rest a moment ago).
+      if (predictor.predicting) s = { ...s, fighters: attachCarried(s.fighters, interpFighters, meIndex, latestSnap.fighters[meIndex].holding) };
     }
     s.fighters.forEach((f, i) => {
       (drawn[i] ??= []).push({ x: f.position.x, z: f.position.z, t: now });

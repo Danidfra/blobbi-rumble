@@ -138,14 +138,14 @@ export class TouchPad {
 }
 
 /** The fighter's moment, as far as the touch buttons care. */
-export type TouchContext = 'fight' | 'holding' | 'held' | 'ledge' | 'out' | 'waiting';
+export type TouchContext = 'fight' | 'holding' | 'held' | 'ledge' | 'climbing' | 'out' | 'waiting';
 
 /** The moment of a fighter (null: none of this screen's) in a match phase. */
 export function touchContext(me: FighterSnapshot | null, phase: MatchPhase): TouchContext {
   if (!me || phase !== 'playing') return 'waiting';
   if (me.eliminated) return 'out';
   if (me.heldBy) return 'held';
-  if (me.ledge) return 'ledge';
+  if (me.ledge) return me.ledge.phase === 'climb' ? 'climbing' : 'ledge';
   if (me.holding) return 'holding';
   return 'fight';
 }
@@ -173,6 +173,9 @@ export function touchButtons(ctx: TouchContext, peel?: { left: number; cooldown:
       return { punch: face('struggle', 'Break free'), jump: face('jump', 'Jump', false), grab: face('grab', 'Grab', false) };
     case 'ledge':
       return { punch: face('punch', 'Punch', false), jump: face('jump', 'Climb'), grab: face('grab', 'Let go') };
+    case 'climbing':
+      // M12.1: the climb runs by itself; nothing to press until it is over.
+      return { punch: face('punch', 'Punch', false), jump: face('jump', 'Climbing…', false), grab: face('grab', 'Let go', false) };
     case 'out': {
       const ready = !!peel && peel.allowed && peel.left > 0 && peel.cooldown <= 0;
       return { punch: face('punch', 'Throw', ready), jump: face('jump', 'Jump', false, false), grab: face('grab', 'Grab', false, false) };
