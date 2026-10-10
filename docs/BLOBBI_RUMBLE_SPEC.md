@@ -972,7 +972,7 @@ with no new mechanics.
   holding (the throw key and the load's progress), hanging (grip and keys),
   out of the round (the aim).
 - **Ledges.** A ledge must be at least 0.55 m above the feet (a step down
-  is not a fall); the hands reach 0.5 m beyond the capsule (was 0.35); a
+  is not a fall); the hands reach 0.5 m beyond the capsule (was 0.35; 0.75 since M12.1, §15i); a
   hang that would sit inside a neighbouring slab (an edge behind a wall) is
   no ledge; for 0.3 s after a climb the keys do not move the fighter, so a
   stick still pushed off the edge does not walk it straight back off (a
@@ -1112,15 +1112,21 @@ profile changes only those; meshes, materials, colours, the Blobbi
 appearance, shadows themselves and all gameplay feedback are the same at
 every level.
 
-| Level | Pixel ratio cap | Shadow map | PCF |
+| Level | Pixel ratio cap (M12.1) | Shadow map | PCF |
 | --- | --- | --- | --- |
-| High | 2 | 2048 | medium |
-| Medium | 1.5 | 1024 | low |
+| High | 3 (the screen's own; 2 on a 2× screen) | 2048 | medium |
+| Medium | 2 | 1024 | low |
 | Low | 1 (budget may go to 0.75) | 512 | low |
+| Auto, phone | 2, stepping down to 1 when slow | 1024 | low |
+| Auto, desktop | 2 (what desktops always drew) | 2048 | medium |
+
+(M12 had High 2, Medium 1.5 and a phone's Auto at Medium's 1.5: half a
+3× iPhone's resolution each way, the playtest's "less sharp than
+desktop"; see §15i.)
 
 *Auto* (the default) starts from standard hints only (a coarse primary
-pointer → Medium; ≤ 2 cores or ≤ 2 GB `deviceMemory` → Low; else High;
-never the user agent) and then follows measured frame times: a 2 s window
+pointer → the phone row; ≤ 2 cores or ≤ 2 GB `deviceMemory` → Low; else
+the desktop row; never the user agent) and then follows measured frame times: a 2 s window
 averaging slower than 1/40 s lowers the pixel ratio by 0.25 (down to the
 profile's floor); three windows faster than 1/55 s raise it back (up to
 the cap). The choice is saved per device (`rumble:graphics`) and shown
@@ -1193,6 +1199,169 @@ remote inspector if available); (10) Connect Nostr without a signer: the
 explanation, guest play continues; with a signer-capable mobile browser,
 if available: proof, profile, Blobbi picker; (11) a desktop keyboard
 player in the same room sees nothing different.
+
+### 15i. Gameplay physics and mobile polish (M12.1, IMPLEMENTED — AWAITING MANUAL VALIDATION)
+
+From the first desktop and real-iPhone playtest of M11.1 + M12. No new
+arenas, combat systems or rules; the protocol is unchanged.
+
+**Root causes found** (each measured before it was fixed, with temporary
+probes over hundreds of bot matches and thousands of scripted crossings):
+
+1. *"Launched extremely high at junctions."* A falling tile or pad
+   (an ANIMATED Havok body) reset in the middle of its fall was swept back
+   up with `setTargetTransform`: 1.76 m in one 1/60 s step, +106 m/s.
+   Havok keeps an animated body's velocity, and the piece, now at rest,
+   was never driven again: it kept +106 m/s for the rest of the match.
+   Every fighter that touched it (crossing onto a corner tile, or along
+   its seam) met a floor "rising" at 100 m/s and left at ~50 m/s (62 m/s
+   peak; about 30 times in 20 bot matches on Frozen Lake; Skyfall's pads
+   alike). Fighter-to-fighter contact, friction swaps, seams between flush
+   boxes and capsule inertia were each ruled out on the exact replayed
+   step. The fix is at the physics layer (`sim/arenaBody.ts`): a piece
+   only ever sweeps *down* (a real fall that carries what stands on it);
+   any return is a teleport; a piece not moving this step has no velocity.
+   Seams between flush static boxes were tested separately (every seam of
+   every arena, 8 angles, walk and run, alone, against an opponent and
+   carrying): no lift (< 1.5 m/s, < 15 cm, and the only hops found were
+   the sweepers' solid bars, by rule). A one-surface floor mesh was tried
+   and removed: it changed nothing measurable.
+2. *Climbs that lurched.* The climb drove the capsule in a straight line
+   from the hang to the top, through the platform's corner; Havok pushed
+   it out and the drive, chasing the line, reached 12-18 m/s. Now two
+   legs (`sim/ledge.ts climbPoint`): straight up clear of the wall, then in
+   over the top, at most 6 m/s; the hang spring closes at most 4 m/s.
+3. *"Grabs look strange."* Three things: (a) the hold spring had no feed-
+   forward of the anchor's own motion, so a carrier turning swung the
+   anchor away and the body trailed it by 19-27 cm; (b) its catch-up was
+   unbounded in speed, so a large error (a grab from mid-jump) yanked the
+   body up at up to 6 m/s; (c) online, your carrier is drawn from
+   prediction (now) and the body you hold from interpolation (~100 ms
+   ago), so it trailed your hands by its speed times that delay. Fixed:
+   the anchor velocity (the carrier's, with its vertical part, plus the
+   hold's swing as a smoothed turn rate) is fed forward; the spring closes
+   at most 3.2 m/s; the body you carry is drawn at the server's offset
+   from you at the same interpolated moment (`client/carryView.ts`,
+   presentation only). Measured: 4-5 cm off the anchor through a steady
+   turn (was 19-27 cm), settles within 3 cm; peak lift 3.2 m/s (was up to
+   6.15).
+4. *"Bots throw much farther."* No mechanical difference. The throw is
+   `throwBase 3.0 + throwGain 1.0 × the carrier's speed along the throw`,
+   through the same impact path, for anyone. Measured over 523 bot throws:
+   no-power impact 3.69 on average (speed along 0.64 m/s), thrown 1.7 m
+   from the rim on average, facing out within ~20°, 67 % ring-outs. A
+   person who throws standing still gets 3.0 (19 % less) and usually not
+   toward a void; walking the load toward the edge gives the bot's
+   numbers. A test replays a bot's carry-and-throw as a person's intents
+   and gets the same impact and the same landing to the centimetre. What
+   looks like strength is timing and aim (and the hold direction lagging
+   a fresh turn by up to 3.5 rad/s, for bots and people alike).
+5. *Ledges hard to understand.* Walking off an edge always caught it;
+   running off almost never did (Skyfall 8 of 30 rims, Factory 0 of 10):
+   at run speed the body was 1.06 m out when its feet came low enough,
+   beyond the 0.9 m reach. The reach is now 1.15 m (`LEDGE.reachOut`
+   0.75): walking and running off catch on every rim (31 / 31 and 10 / 10;
+   the other 3 land on a lower floor). A body airborne from its own jump
+   catches only an edge it moves toward (falling short of the far side),
+   never the one it leapt away from. Knocked down or thrown, a body still
+   never catches: falling stays a risk. Bots that leaned toward a target
+   across a broken bridge walked off, caught, climbed back and leaned in
+   again for ever (a round that never ended); bots now leap a gap in
+   ATTACK as they did when seeking.
+
+**Ledge feedback.** A grip bar over a hanging fighter's name tag (green,
+amber, then red and blinking), and a glow along the edge it holds, for
+everyone; the cue names the keys ("Space: climb up · G: let go · grip");
+a CLIMBING state in which the touch buttons are dimmed ("Climbing…");
+the help says when a catch happens.
+
+**Safari.** iOS Safari zooms on a quick double tap and starts pinches
+even where `touch-action` forbids them. The controls and the look area
+now cancel `touchstart`, `touchmove`, `touchend` and Safari's `gesture*`
+events themselves (the pointer events the controls read still arrive).
+Only the game's surfaces do this: the body no longer carries
+`touch-action: none`, so cards and menus scroll and zoom as any page and
+the site's pinch zoom is not disabled. Remaining limits: a pinch that
+starts on a card or a chip still zooms the page (deliberately); iOS may
+still show its edge-swipe gestures (back, home indicator), which no page
+can disable.
+
+**Camera on touch.** Left thumb the stick, right thumb the buttons, any
+other finger dragged across the rest of the arena turns the camera round
+the fight, horizontally only (`control/look.ts`; 0.0068 rad per CSS
+pixel, eased at 28/s, no felt lag). One finger owns the look by pointer
+id; the stick's and the buttons' fingers cannot reach it. The shared
+camera's target, distance, bounds and drop lines are unchanged; only its
+yaw turns, and the stick is camera-relative, so "up" stays "away from the
+camera" at every angle (tested at 16 yaws). A ⟲ button (shown once the
+view is turned) and Settings → Camera recenter it. Desktop keeps
+Babylon's own mouse orbit. Camera rotation is presentation: nothing of it
+reaches the server.
+
+**Settings.** A ⚙ button beside Help (top right on touch, bottom left on
+desktop) opens a compact card: Graphics (Auto, Low, Medium, High; the
+active one marked; the live render size, ratio, shadow map and fps),
+Performance (an FPS counter, remembered as `rumble:fps`), Camera
+(recenter; touch only) and Display (Full screen where the browser has the
+API, standard or webkit-prefixed; otherwise how to get rid of the bars).
+Opening it hides and releases the controls; closing it fires nothing
+(the controls act on touch-down, the close button on click). The choice
+is remembered (`rumble:graphics`); Auto's own adjustments never change a
+fixed choice.
+
+**Sharpness (iPhone).** The page renders at `CSS size × pixel ratio`.
+On a 3× iPhone at the old phone Auto (cap 1.5) that was half the screen's
+resolution each way. Now: Auto on a phone starts at ×2 (1.8× the pixels)
+and steps down when frames are slow; High draws the screen's own ×3.
+Effective scale per level on a 3× phone: Low ×1, Medium ×2, High ×3, Auto
+×2 → ×1; on a 2× screen: Low ×1, Medium ×2, High ×2, Auto ×2. Desktop
+measurements (this Mac, 932 × 430 page, GPU-synchronised): Low 1.7 ms,
+Medium 2.4 ms, High 2.8 ms median per frame. **Nothing was measured on an
+iPhone**; Settings shows the live fps there.
+
+**Full screen and the home-screen app.** iPhone Safari has no Fullscreen
+API for page elements (iPad Safari has the prefixed one, which is used).
+The way to lose Safari's bars on iPhone is the home-screen app: M12.1 adds
+`public/manifest.json` (`display: fullscreen`, `orientation: landscape`,
+`start_url: /rumble.html?network=1`), icons (180, 192, 512) and the iOS
+meta tags. **No service worker** is registered: nothing is cached, so the
+app can never run an outdated multiplayer client (pages are served
+`no-cache`, assets by hash); it needs the network like the page does, and
+connects to the same server over `ws://` / `wss://` on its own origin.
+Caveats: a home-screen app has its own storage on iOS (the saved Nostr
+login, graphics choice and remembered Blobbi are separate from Safari's),
+and browser extensions, NIP-07 signers included, do not run in it. A
+future PWA milestone would decide on a service worker (network-first for
+pages, a version check against the server's protocol before using any
+cached client), install prompts, and update notices.
+
+**Tests.** `sim/junctions.test.ts` (pieces at rest after a reset mid-
+fall; every seam of every arena; bot matches on all four arenas with no
+upward speed or step beyond the rules), `sim/carry.test.ts` (grab lift,
+anchor tracking through turns, repeated grabs / escapes / throws / drops
+on the move, the bot-versus-person throw replay and the throw rule, run-
+off catches, no catch of a leapt-from edge, knocked-down bodies fall, the
+climb path and drive, bot-only Skyfall matches ending),
+`client/carryView.test.ts`, `control/look.test.ts` (look ownership,
+direction, release; movement after rotation), `client/fullscreen.test.ts`,
+and additions to `client/touchControls.test.ts` (look and stick together,
+recenter, Safari's events cancelled on the controls only) and
+`view/quality.test.ts`.
+
+**Manual checklist (desktop and a real iPhone).** (1) Cross every bridge
+and seam of every arena walking, running and carrying: no hop. (2) Let
+Frozen Lake's corner tiles fall and the round end mid-fall; walk onto them
+next round: no launch. (3) Carry someone and turn: they stay in your
+hands; throw while walking toward an edge vs standing. (4) Run off a
+Skyfall or Factory edge: you catch it; the grip bar and the edge glow
+show; climb (Space / Climb) and let go (G / Let go); a jump away from an
+edge does not catch it. (5) iPhone: double-tap Punch / Jump / Grab / Break
+free fast: no zoom; drag the stick hard: no scroll; drag on the arena to
+turn the camera while moving; ⟲ recenters. (6) ⚙: switch Auto / Low /
+Medium / High and compare sharpness and fps; turn the FPS counter on;
+reload: both remembered. (7) Add to Home Screen; open from the icon: no
+Safari bars, landscape, the match connects. (8) A desktop player in the
+same room notices nothing different.
 
 ### 16. Invites are not access control
 
@@ -1280,6 +1449,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M11A–M11F | Arena chaos, vertical survival, eliminated-player interactions | Automated tests (registry, geometry, pieces, the match on every arena, host rotation, the socket, links and listings, ledges, belts, ice, peels, bots), headless bot matches finishing on all four arenas, `npm run bench` before and after, and a visual check of each arena in Chrome. **IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15f). |
 | M11.1 | Gameplay polish and balance: geometry, scale, grab, ledges | Automated tests (geometry rules, walkable transitions, the grab exchange, escapes, immunities, ledges), headless matches on all arenas with escapes happening, bench, Chrome screenshots of the flat bridges and the cue. **M11.1 IMPLEMENTED — AWAITING MANUAL GAMEPLAY VALIDATION** (§15g). |
 | M12 | Mobile support: touch controls, responsive HUD, landscape, graphics quality | Automated tests (stick, touch pad, roles, struggle parity and cap, ledge, peels, cleanup, a stand-in DOM, through the authoritative host, quality and field of view); typecheck, build, headless matches on all four arenas, bench; Chrome screenshots of phone- and tablet-sized viewports with forced touch mode; render cost measured on a desktop GPU only. **M12 IMPLEMENTED — AWAITING REAL DEVICE VALIDATION** (§15h). |
+| M12.1 | Physics and mobile polish: no launches, holds, throws parity, ledges, Safari gestures, touch camera, settings, sharpness, home-screen app | Root causes measured with temporary probes (bot-match censuses, replayed steps, seam sweeps, throw statistics, ledge censuses); automated tests (junctions, carry, parity, ledges, look, fullscreen, touch DOM, quality); headless on all four arenas; bench; Chrome screenshots at 667 × 375, 844 × 390 and 932 × 430 with forced touch. **M12.1 IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15i); nothing tried on a real iPhone yet. |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -1328,7 +1498,7 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) · M11.1: gameplay polish and balance (§15g; implemented, awaiting manual gameplay validation) · M12: mobile support and touch controls (§15h; implemented, awaiting real device validation) |
+| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) · M11.1: gameplay polish and balance (§15g; implemented, awaiting manual gameplay validation) · M12: mobile support and touch controls (§15h; implemented, awaiting real device validation) · M12.1: physics and mobile polish (§15i; implemented, awaiting manual validation) |
 | **Next** | A first official server, deployed from the compose file, and the real online validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C; the way to serve phones without a NIP-07 signer, §15h) |

@@ -70,6 +70,7 @@ gets them at its first touch):
 ```
 left thumb    a floating stick: lands where you touch; push to the rim to run
 right thumb   Punch (big) · Jump · Grab (Grab is also Throw while holding)
+another finger  drag across the arena to turn the camera (M12.1); ⟲ recenters
 grabbed       tap Break free (or wiggle the stick left-right): the same capped strokes as A-D-A-D
 on a ledge    Climb (the jump) · Let go (the grab), or hold the stick away from the wall
 out           the stick aims a banana peel; Throw shows the peels left and the cooldown
@@ -78,13 +79,25 @@ out           the stick aims a banana peel; Throw shows the peels left and the c
 The controls hide (and let go of everything) while a panel or card is
 open, and on blur, a hidden tab or an orientation change. Landscape is the
 intended orientation; a phone held upright is asked to rotate (the match
-goes on; "Play in portrait anyway" dismisses it). Session panel →
-Graphics: Auto / Low / Medium / High (pixel ratio cap and shadow map only;
-Auto adapts to measured frame times) and, where the browser allows, Full
-screen. Nostr on a phone needs a browser that provides a NIP-07 signer;
-without one you play as a guest (NIP-46 is a later milestone). Details,
-measurements, limitations and the device checklist:
-[docs/BLOBBI_RUMBLE_SPEC.md](docs/BLOBBI_RUMBLE_SPEC.md) §15h.
+goes on; "Play in portrait anyway" dismisses it). ⚙ (beside Help, M12.1)
+opens Settings: Graphics Auto / Low / Medium / High (pixel ratio cap and
+shadow map only; Auto adapts to measured frame times; on a 3× phone Low
+×1, Medium ×2, High ×3, Auto ×2 down to ×1), an FPS counter, camera
+recenter and, where the browser allows, Full screen. On iPhone there is no
+full screen for web pages: Share → Add to Home Screen opens the game
+without Safari's bars (a manifest and icons, no service worker). Nostr on
+a phone needs a browser that provides a NIP-07 signer; without one you
+play as a guest (NIP-46 is a later milestone; a home-screen app runs no
+extensions). Details, measurements, limitations and the device checklists:
+[docs/BLOBBI_RUMBLE_SPEC.md](docs/BLOBBI_RUMBLE_SPEC.md) §15h and §15i.
+
+GAMEPLAY PHYSICS (M12.1, implemented — awaiting manual validation): the
+"launched at junctions" bug was a falling tile reset mid-fall that kept
++106 m/s in Havok at rest (fixed at the physics layer); climbs follow a
+path that never cuts the corner; carried bodies stay in their carrier's
+hands (feed-forward, bounded catch-up, drawn with your predicted fighter
+online); running off an edge catches it as walking off does; bots and
+people throw by the same rule (measured, §15i).
 
 PLAYING WITH OTHER MACHINES (M7D): see [HOSTING.md](HOSTING.md). In short,
 `npm run serve` builds the game and runs one Node process that serves it

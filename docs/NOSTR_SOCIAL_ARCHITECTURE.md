@@ -1744,3 +1744,9 @@ found and did:
   needs its own milestone: connection UX, a relay for the signer channel,
   permission prompts for `sign_event` and `nip44_*`, session restore, and
   the invite and Blobbi features over a slower, asynchronous signer.
+- **M12.1, the home-screen app.** Rumble can now be added to an iPhone's
+  home screen (a manifest, no service worker) to play without Safari's
+  bars. Browser extensions do not run in such an app, so NIP-07 is not
+  available there, and iOS gives it storage of its own (a login saved in
+  Safari is not seen). Guest play works the same; Nostr in the app waits
+  for NIP-46 like any signer-less phone.
