@@ -12,7 +12,7 @@ import type { ClientMessage } from '../net/protocol';
 import { IdentitySession } from './identity';
 
 const URL_ = 'wss://rumble.example/ws';
-function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean; sk?: Uint8Array; findDelayMs?: number; findHangs?: boolean; restoreMs?: number } = {}) {
+function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: boolean; sk?: Uint8Array; findDelayMs?: number; findHangs?: boolean; restoreMs?: number; unavailable?: string } = {}) {
   const sk = opts.sk ?? generateSecretKey();
   const pk = getPublicKey(sk);
   const store = new Map<string, string>();
@@ -36,6 +36,7 @@ function setup(opts: { saved?: string; signer?: NostrSigner | null; connected?: 
     },
     storage,
     ...(opts.restoreMs ? { restoreMs: opts.restoreMs } : {}),
+    ...(opts.unavailable ? { unavailable: opts.unavailable } : {}),
   });
   return { session, sent, store, pk, sk, setUp: (v: boolean) => (up = v), asked: () => asked };
 }
@@ -91,6 +92,19 @@ describe('the identity session', () => {
     await s.session.connect();
     s.session.onAuth({ t: 'auth', ok: true, pubkey: 'b'.repeat(64) });
     expect(s.session.state.phase).toBe('error');
+  });
+
+  it('M12: a page may say its own words for "no signer" (a phone), and only for that; still a guest, nothing sent', async () => {
+    const phone = setup({ signer: null, unavailable: 'This browser has no Nostr signer (NIP-07). Keep playing as a guest.' });
+    await phone.session.connect();
+    expect(phone.session.state).toMatchObject({ phase: 'error', error: expect.stringMatching(/no Nostr signer/) });
+    expect(phone.sent).toEqual([]);
+    const refuse = setup({ unavailable: 'phone words', signer: { method: 'nip07', getPublicKey: () => Promise.reject(new SignerError('denied', 'no')), signEvent: () => Promise.reject(new Error('x')) } });
+    await refuse.session.connect();
+    expect(refuse.session.state.error).toMatch(/declined/);
+    // Dismissed: back to a guest who plays on.
+    phone.session.dismissError();
+    expect(phone.session.state.phase).toBe('guest');
   });
 
   it('no extension, a refusal, a timeout: an error with words, still a guest to the server', async () => {

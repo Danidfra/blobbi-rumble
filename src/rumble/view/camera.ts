@@ -84,3 +84,16 @@ export function applyCamera(camera: ArcRotateCamera, pose: CameraPose) {
   camera.target.set(pose.x, pose.y, pose.z);
   camera.radius = pose.radius;
 }
+
+/**
+ * M12: the field of view for a screen's shape. Babylon fixes the vertical
+ * angle, so a landscape screen (the intended one) only ever sees more to
+ * the sides. A screen narrower than `minAspect` (a phone held upright)
+ * would lose the arena's sides instead: below it, the horizontal angle is
+ * fixed at what `minAspect` shows, so the whole width stays in view and
+ * the view grows taller rather than narrower.
+ */
+export function fovFor(aspect: number, verticalFov: number, minAspect = 1.25): { mode: 'vertical' | 'horizontal'; fov: number } {
+  if (!(aspect > 0) || aspect >= minAspect) return { mode: 'vertical', fov: verticalFov };
+  return { mode: 'horizontal', fov: 2 * Math.atan(minAspect * Math.tan(verticalFov / 2)) };
+}

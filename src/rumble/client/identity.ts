@@ -66,6 +66,8 @@ export interface IdentityDeps {
   onChange?: () => void;
   /** Development diagnostics: the stage a connection or restore reached and why (never a key, a signature, a challenge or a message). */
   diag?: (stage: string, detail?: string) => void;
+  /** M12: what to say when no signer is found, if not the desktop words (a phone has no extension store of the same kind). */
+  unavailable?: string;
 }
 
 const SIGNER_WORDS: Record<string, string> = {
@@ -120,6 +122,12 @@ export class IdentitySession {
     return this.state.phase === 'verified' ? this.state.pubkey : null;
   }
 
+  /** What to tell the player about a signer failure. */
+  private words(code: string): string {
+    if (code === 'unavailable' && this.d.unavailable) return this.d.unavailable;
+    return SIGNER_WORDS[code] ?? SIGNER_WORDS.failed;
+  }
+
   private set(patch: Partial<IdentityState>) {
     this.state = { ...this.state, ...patch };
     this.d.onChange?.();
@@ -144,7 +152,7 @@ export class IdentitySession {
       if (g !== this.gen) return this.d.diag?.('connect:superseded', `gen ${g} → ${this.gen}`);
       const code = e instanceof SignerError ? e.code : 'failed';
       this.d.diag?.('connect:failed', code);
-      this.set({ phase: 'error', error: SIGNER_WORDS[code] ?? SIGNER_WORDS.failed });
+      this.set({ phase: 'error', error: this.words(code) });
     }
   }
 
@@ -271,7 +279,7 @@ export class IdentitySession {
     } catch (e) {
       const code = e instanceof SignerError ? e.code : 'failed';
       this.d.diag?.('game:proof', `signing ${code}`);
-      this.set({ phase: 'error', error: SIGNER_WORDS[code] ?? SIGNER_WORDS.failed });
+      this.set({ phase: 'error', error: this.words(code) });
     }
   }
 

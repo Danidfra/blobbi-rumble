@@ -42,6 +42,7 @@ import type { RumbleForm } from './rumbleForm';
 import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
+import { QUALITY_CHOICES, type QualityChoice } from '../view/quality';
 
 export interface ShellActions {
   retry(): void;
@@ -90,6 +91,10 @@ export interface ShellActions {
   toggleInboxRelay(url: string): void;
   confirmInboxSetup(): void;
   closeInboxSetup(): void;
+  /** M12: the graphics choice (saved on this device). */
+  setQuality(choice: QualityChoice): void;
+  /** M12: the player chose to play on in portrait (the rotate hint goes for this visit). */
+  dismissRotate(): void;
 }
 
 /** A received invite as the panel shows it. */
@@ -134,10 +139,14 @@ export interface ShellView {
   blobbis: { state: PickerState; form: RumbleForm | null; note: 'worn' | 'default' | 'refused'; shared: boolean } | null;
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
+  /** M12: the graphics choice, and what the renderer does with it now (read live, outside the panel's rebuild). */
+  graphics: { choice: QualityChoice; info: () => { level: string; ratio: number; width: number; height: number; fps: number; shadowMap: number } };
+  /** M12: ask to turn the phone (portrait on a touch phone). */
+  rotate: boolean;
 }
 
 const CSS = `
-  .rs-top { position: fixed; top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; z-index: 5; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
+  .rs-top { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); left: calc(env(safe-area-inset-left, 0px) + 10px); right: calc(env(safe-area-inset-right, 0px) + 10px); display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; z-index: 5; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
   .rs-top > * { pointer-events: auto; }
   .rs-chip { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 999px; background: rgba(255,255,255,0.82); box-shadow: 0 3px 12px rgba(40,50,80,0.13); cursor: pointer; white-space: nowrap; max-width: 46vw; overflow: hidden; }
   .rs-chip:hover { background: rgba(255,255,255,0.95); }
@@ -158,10 +167,10 @@ const CSS = `
   .rs-struggle { position: fixed; left: 50%; bottom: 14vh; transform: translateX(-50%); padding: 8px 14px; border-radius: 14px; background: rgba(176,65,62,0.88); color: #fff; font: 700 14px ui-sans-serif, system-ui, sans-serif; text-align: center; pointer-events: none; display: none; z-index: 4; }
   .rs-struggle .bar { margin-top: 6px; height: 8px; width: 220px; border-radius: 4px; background: rgba(255,255,255,0.3); overflow: hidden; }
   .rs-struggle .bar > i { display: block; height: 100%; background: #fff; }
-  .rs-hint { position: fixed; left: 10px; bottom: 10px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; z-index: 5; }
+  .rs-hint { position: fixed; left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; z-index: 5; }
   .rs-hint kbd, .rs-help kbd { display: inline-block; padding: 0 5px; border-radius: 4px; background: #eef1f6; border: 1px solid #d6dbe6; font: 11px ui-monospace, Menlo, monospace; color: #2b2b3a; }
   .rs-card { position: fixed; z-index: 6; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.22); font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
-  .rs-panel { left: 10px; top: 50px; width: min(320px, calc(100vw - 20px)); max-height: calc(100vh - 70px); overflow: auto; padding: 12px 14px; display: none; }
+  .rs-panel { left: calc(env(safe-area-inset-left, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); width: min(320px, calc(100vw - 20px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 70px); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: 12px 14px; display: none; }
   .rs-panel h4 { margin: 10px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
   .rs-panel h4:first-child { margin-top: 0; }
   .rs-code { font: 700 26px ui-monospace, Menlo, monospace; letter-spacing: 0.12em; }
@@ -196,14 +205,14 @@ const CSS = `
   .rs-players .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rs-avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; background: #eef1f6; }
   .rs-avatar img, .rs-avatar svg { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .rs-help { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(400px, calc(100vw - 20px)); padding: 16px 20px; display: none; line-height: 1.8; }
+  .rs-help { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(400px, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 16px 20px; display: none; line-height: 1.8; }
   .rs-help h3, .rs-start h3 { margin: 0 0 6px; font-size: 16px; letter-spacing: 0.05em; }
   .rs-help .x { position: absolute; right: 10px; top: 8px; }
-  .rs-start { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(360px, calc(100vw - 20px)); padding: 18px 20px; text-align: center; display: none; }
+  .rs-start { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(360px, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; padding: 18px 20px; text-align: center; display: none; }
   .rs-start p { margin: 0 0 12px; color: #555a6e; }
   .rs-start .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
   .rs-start .id { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eef1f6; font-size: 12px; color: #555a6e; }
-  .rs-consent { right: 10px; bottom: 10px; width: min(340px, calc(100vw - 20px)); padding: 12px 14px; display: none; }
+  .rs-consent { right: calc(env(safe-area-inset-right, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); width: min(340px, calc(100vw - 20px)); padding: 12px 14px; display: none; }
   .rs-toasts { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 7; }
   .rs-toast { padding: 5px 12px; border-radius: 10px; background: rgba(43,43,58,0.85); color: #fff; font: 12px ui-sans-serif, system-ui, sans-serif; }
   .rs-banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(210,225,245,0.55); backdrop-filter: blur(2px); z-index: 8; }
@@ -212,6 +221,14 @@ const CSS = `
   .rs-banner p { margin: 0 0 12px; color: #555a6e; word-break: break-word; }
   .rs-banner .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
   #hud { top: 52px !important; max-height: calc(100vh - 70px); overflow: auto; }
+  .rs-rotate { position: fixed; inset: 0; z-index: 9; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(210,225,245,0.92); backdrop-filter: blur(4px); text-align: center; font: 15px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
+  .rs-rotate .ph { width: 44px; height: 72px; margin: 0 auto 14px; border: 4px solid #2b2b3a; border-radius: 10px; animation: rs-turn 2.2s ease-in-out infinite; }
+  .rs-rotate h2 { margin: 0 0 6px; font-size: 20px; }
+  .rs-rotate p { margin: 0 0 14px; color: #555a6e; }
+  @keyframes rs-turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+  .rs-quality { display: inline-flex; gap: 0; border: 1px solid #d6dbe6; border-radius: 9px; overflow: hidden; }
+  .rs-quality .rs-btn { border: none; border-radius: 0; }
+  .rs-quality .rs-btn.go { background: #2b2b3a; color: #fff; }
   @media (max-width: 860px) {
     .rs-board { order: 3; flex-basis: 100%; justify-content: center; flex-wrap: wrap; background: none; box-shadow: none; padding: 0; }
     .rs-pl { min-width: 54px; }
@@ -220,6 +237,46 @@ const CSS = `
     .rs-panel { top: 108px; max-height: calc(100vh - 128px); }
     #hud { top: 108px !important; }
   }
+  /* M12: a finger. Bigger targets, no iOS zoom on focus (16px fields), no browser gestures on the game. */
+  @media (pointer: coarse) {
+    .rs-btn { padding: 8px 14px; font-size: 13px; min-height: 36px; }
+    .rs-card input, .rs-card select, .rs-card textarea { font-size: 16px !important; }
+    .rs-chip { height: 36px; }
+    .rs-person, .rs-blobbi { min-height: 40px; }
+  }
+  body.rs-touch { touch-action: none; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+  body.rs-touch .rs-card, body.rs-touch .rs-card * { -webkit-user-select: text; user-select: text; }
+  body.rs-touch .rs-hint { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 52px); }
+  body.rs-touch .rs-struggle { display: none !important; }
+  body.rs-touch .rs-toasts { top: calc(env(safe-area-inset-top, 0px) + 54px); bottom: auto; }
+  body.rs-touch .rs-consent { right: auto; bottom: auto; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 54px); transform: translateX(-50%); }
+  /* A phone on its side: one slim top row; the board shrinks into it; cards fit the short height. */
+  @media (max-height: 520px) {
+    .rs-top { flex-wrap: nowrap; gap: 6px; font-size: 12px; }
+    .rs-board { order: 0; flex-basis: auto; flex-wrap: nowrap; padding: 2px; gap: 2px; background: rgba(255,255,255,0.6); box-shadow: none; min-width: 0; overflow: hidden; }
+    .rs-board .round { padding: 0 4px; font-size: 10px; }
+    .rs-pl { min-width: 0; max-width: 84px; padding: 1px 6px; flex-direction: row; gap: 4px; }
+    .rs-pl { flex-shrink: 0; }
+    .rs-pl .nm { font-size: 11px; max-width: 54px; flex-shrink: 0; }
+    .rs-top > .rs-chip { flex-shrink: 1; min-width: 0; }
+    .rs-board { flex-shrink: 0; }
+    .rs-pl .sc { letter-spacing: 0; }
+    .rs-chip { height: 30px; padding: 0 10px; max-width: 30vw; }
+    .rs-msg { top: 18vh; font-size: 16px; padding: 6px 14px; }
+    .rs-panel { top: calc(env(safe-area-inset-top, 0px) + 46px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 56px); }
+    .rs-help, .rs-start { line-height: 1.5; padding: 12px 16px; }
+    #hud { top: 46px !important; }
+    body.rs-touch .rs-hint { top: calc(env(safe-area-inset-top, 0px) + 46px); }
+    body.rs-touch .rs-toasts, body.rs-touch .rs-consent { top: calc(env(safe-area-inset-top, 0px) + 46px); }
+    .rs-cue { bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important; font-size: 12px !important; max-width: 46vw; }
+    .rs-cue > div { padding: 5px 10px !important; }
+  }
+  /* A small phone on its side: the chips keep only what matters (the room, the Nostr button), the board keeps the names. */
+  @media (max-height: 520px) and (max-width: 760px) {
+    .rs-chip .dim { display: none; }
+    .rs-board .round { display: none; }
+  }
+  body.rs-touch .rs-cue { max-width: 46vw; text-align: center; }
 `;
 
 const HELP: [string, string][] = [
@@ -232,6 +289,17 @@ const HELP: [string, string][] = [
   ['fall past an edge', 'catch the ledge and hang (Skyfall, Factory)'],
   ['Space / Enter · G / L', 'hanging: climb up · let go (or push away)'],
   ['out of the round', 'WASD aims a banana peel, F or G throws it (3 a round, while 3+ still play)'],
+];
+
+/** M12: the same help for touch players. */
+const TOUCH_HELP: [string, string][] = [
+  ['stick (left thumb)', 'move · push to the rim to run'],
+  ['Jump', 'jump'],
+  ['Punch', 'punch'],
+  ['Grab', 'grab, then Throw (the same button)'],
+  ['Break free', 'tap fast when grabbed (or wiggle the stick ← →)'],
+  ['hanging on a ledge', 'Climb (jump) · Let go (grab)'],
+  ['out of the round', 'the stick aims a banana peel, Throw throws it (3 a round, while 3+ still play)'],
 ];
 
 export function createShell(a: ShellActions) {
@@ -260,19 +328,32 @@ export function createShell(a: ShellActions) {
   const banner = el('div', 'rs-banner');
   const bannerBox = el('div');
   banner.appendChild(bannerBox);
-  document.body.append(top, msg, struggle, hint, panel, help, start, consent, toasts, banner);
+  // M12: the friendly ask to turn a phone held upright (the match goes on behind it).
+  const rotate = el('div', 'rs-rotate');
+  const rotateBox = el('div');
+  rotateBox.append(el('div', 'ph'), el('h2', undefined, 'Rotate your phone'), el('p', undefined, 'Blobbi Rumble is made for landscape: the whole arena, and room for both thumbs. Your match keeps going meanwhile.'), button('Play in portrait anyway', () => a.dismissRotate()));
+  rotate.appendChild(rotateBox);
+  document.body.append(top, msg, struggle, hint, panel, help, start, consent, toasts, banner, rotate);
 
-  // The help card: static, built once.
-  help.append(el('h3', undefined, 'How to play'), button('✕', () => toggleHelp(false), 'rs-btn x'));
-  for (const [keys, what] of HELP) {
-    const row = el('div');
-    row.append(el('kbd', undefined, keys), document.createTextNode(`  ${what}`));
-    help.appendChild(row);
-  }
-  help.append(el('div', 'rs-sub', 'Knock the others off the island: the last Blobbi standing wins the round; first to 3 rounds wins the match.'));
-  const dbg = el('div', 'rs-sub');
-  dbg.append(el('kbd', undefined, 'H'), document.createTextNode(' this help · '), el('kbd', undefined, 'F3'), document.createTextNode(' colliders · '), el('kbd', undefined, 'F4'), document.createTextNode(' network numbers'));
-  help.appendChild(dbg);
+  // The help card: built for keys, rebuilt for touch (M12).
+  let touch = false;
+  const buildHelp = () => {
+    help.replaceChildren(el('h3', undefined, 'How to play'), button('✕', () => toggleHelp(false), 'rs-btn x'));
+    for (const [keys, what] of touch ? TOUCH_HELP : HELP) {
+      const row = el('div');
+      row.append(el('kbd', undefined, keys), document.createTextNode(`  ${what}`));
+      help.appendChild(row);
+    }
+    help.append(el('div', 'rs-sub', 'Knock the others off the island: the last Blobbi standing wins the round; first to 3 rounds wins the match.'));
+    if (touch) {
+      help.append(el('div', 'rs-sub', 'Keyboard works too (WASD, Space, F, G). Graphics and full screen: the session panel (tap the room chip).'));
+      return;
+    }
+    const dbg = el('div', 'rs-sub');
+    dbg.append(el('kbd', undefined, 'H'), document.createTextNode(' this help · '), el('kbd', undefined, 'F3'), document.createTextNode(' colliders · '), el('kbd', undefined, 'F4'), document.createTextNode(' network numbers'));
+    help.appendChild(dbg);
+  };
+  buildHelp();
 
   let helpOpen = false;
   let panelOpen = false;
@@ -304,6 +385,10 @@ export function createShell(a: ShellActions) {
     input.placeholder = 'CODE';
     input.autocomplete = 'off';
     input.spellcheck = false;
+    // Phones: capitals, no autocorrect, and a Go key.
+    input.autocapitalize = 'characters';
+    input.setAttribute('autocorrect', 'off');
+    input.enterKeyHint = 'go';
     input.addEventListener('focus', () => a.releaseKeys());
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -758,6 +843,44 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  /** M12: graphics quality (Auto / Low / Medium / High), what it does now (refreshed live, once a second), and full screen. */
+  let graphicsLine: HTMLElement | null = null;
+  let graphicsInfo: ShellView['graphics']['info'] | null = null;
+  let graphicsAt = 0;
+  const graphicsSection = (v: ShellView): Node[] => {
+    const out: Node[] = [el('h4', undefined, 'Graphics')];
+    const row = el('div', 'rs-row');
+    const seg = el('div', 'rs-quality');
+    const names: Record<QualityChoice, string> = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High' };
+    for (const c of QUALITY_CHOICES) seg.appendChild(button(names[c], () => a.setQuality(c), c === v.graphics.choice ? 'rs-btn go' : 'rs-btn'));
+    row.appendChild(seg);
+    const fs = document.documentElement;
+    if (document.fullscreenEnabled && fs.requestFullscreen) {
+      row.appendChild(
+        button(document.fullscreenElement ? 'Exit full screen' : 'Full screen', () => {
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+          else void fs.requestFullscreen({ navigationUI: 'hide' }).catch(() => toast('This browser did not allow full screen'));
+          lastPanel = '';
+        }),
+      );
+    }
+    out.push(row);
+    graphicsLine = el('div', 'rs-sub');
+    graphicsInfo = v.graphics.info;
+    graphicsAt = 0;
+    out.push(graphicsLine, el('div', 'rs-sub', 'Lower settings draw fewer pixels and a coarser shadow; the game and its rules are the same at every level.'));
+    return out;
+  };
+  const refreshGraphics = () => {
+    if (!graphicsLine || !graphicsInfo || !panelOpen) return;
+    const now = performance.now();
+    if (now - graphicsAt < 1000) return;
+    graphicsAt = now;
+    const g = graphicsInfo();
+    graphicsLine.textContent = `Now: ${g.level} · ${g.width}×${g.height} px (×${g.ratio.toFixed(2)}) · shadow ${g.shadowMap} · ${g.fps.toFixed(0)} fps`;
+  };
+  document.addEventListener('fullscreenchange', () => (lastPanel = ''));
+
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
     // Room.
@@ -881,6 +1004,7 @@ export function createShell(a: ShellActions) {
     }
     if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note, v.blobbis.shared));
     if (v.inbox) parts.push(...inboxSection(v, v.inbox));
+    parts.push(...graphicsSection(v));
     // Server.
     parts.push(el('h4', undefined, 'Server'));
     if (v.trust) {
@@ -930,8 +1054,24 @@ export function createShell(a: ShellActions) {
     get panelOpen() {
       return panelOpen;
     },
+    /** M12: something over the arena wants the player's fingers (a panel, a card, the banner, the rotate ask): the touch controls step aside. */
+    get modalOpen() {
+      return panelOpen || helpOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
+    },
+    /** M12: the player plays by touch: touch help, the help chip as a button, no browser gestures on the game. */
+    setTouch(on: boolean) {
+      if (on === touch) return;
+      touch = on;
+      document.body.classList.toggle('rs-touch', on);
+      hint.replaceChildren(...(on ? [document.createTextNode('? Help')] : [el('kbd', undefined, 'H'), document.createTextNode(' Help')]));
+      buildHelp();
+      lastStruggle = '';
+    },
     show(v: ShellView) {
       const c = v.conn;
+      const rotateOn = v.rotate ? 'flex' : 'none';
+      if (rotate.style.display !== rotateOn) rotate.style.display = rotateOn;
+      refreshGraphics();
       const healthy = c.phase === 'playing' || c.phase === 'watching';
       // Session chip: room · server, and a dot for the connection (quiet when healthy).
       const roomText = v.room ? (v.room.kind === 'private' ? v.room.id : 'Open room') : c.room ?? '…';
@@ -994,7 +1134,7 @@ export function createShell(a: ShellActions) {
           const fill = el('i');
           fill.style.width = `${Math.round(held.combat.struggle * 100)}%`;
           bar.appendChild(fill);
-          struggle.replaceChildren(el('div', undefined, `Grabbed by ${clip(label(v, held.heldBy!), 14)}! Alternate ← → (A D) fast`), bar);
+          struggle.replaceChildren(el('div', undefined, `Grabbed by ${clip(label(v, held.heldBy!), 14)}! ${touch ? 'Tap Break free fast' : 'Alternate ← → (A D) fast'}`), bar);
         }
         struggle.style.display = held ? 'block' : 'none';
       }
@@ -1002,7 +1142,7 @@ export function createShell(a: ShellActions) {
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
         const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const pKey = JSON.stringify([v.graphics.choice, inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;

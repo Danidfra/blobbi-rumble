@@ -4,14 +4,18 @@
  * once per frame and the presenter draws its snapshot. No server.
  */
 import { BotInput, botWorldFrom } from '../control/bot';
-import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, moveIntent, type MoveIntent } from '../control/input';
-import { BANANAS } from '../tuning';
+import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, type MoveIntent } from '../control/input';
+import { moveAim } from '../control/aim';
 import { loadHavok } from '../physics/world';
 import { rosterFor, rosterOptions } from '../roster';
 import { createRumbleMatch } from '../sim/match';
 import { arenaById } from '../arena/arenas';
 import type { MatchEvent, MatchSnapshot } from '../sim/snapshot';
 import { RumblePresenter } from './presenter';
+import { TouchControls, prefersTouch, watchFirstTouch } from './touchControls';
+import { touchContext } from '../control/touch';
+import { parseQuality } from '../view/quality';
+import { BANANAS } from '../tuning';
 
 const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'grabbed? alternate left/right to break free', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match · ?network=1 to play on a server'];
 
@@ -32,6 +36,19 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
     bots.push(driver instanceof BotInput ? driver : null);
     return new ScriptableInput(driver);
   });
+  // M12: touch controls drive the first keyboard player (P1), beside its keys; graphics from ?quality= (auto by default).
+  const p1 = roster.findIndex((e) => e.keys);
+  const p1Input = p1 >= 0 ? (inputs[p1].base as PlayerInput) : null;
+  let touch: TouchControls | null = null;
+  const useTouch = () => {
+    if (touch || !p1Input) return;
+    touch = new TouchControls();
+    p1Input.touch = touch.pad;
+    presenter.setTouchLayout(true);
+  };
+  if (prefersTouch(location.search, matchMedia('(pointer: coarse)').matches)) useTouch();
+  watchFirstTouch(location.search, useTouch);
+  presenter.setQuality(parseQuality(new URLSearchParams(location.search).get('quality')), { coarse: matchMedia('(pointer: coarse)').matches, cores: navigator.hardwareConcurrency || undefined });
   let botsOn = true;
   let matchCount = 0;
   const events: MatchEvent[] = [];
@@ -56,7 +73,8 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const frame = (dt: number) => {
     const before = snapshot;
     const playing = before.phase === 'playing';
-    inputs.forEach((input, i) => (input.enabled = playing && !before.fighters[i].eliminated && (botsOn || !bots[i] || input.script !== null)));
+    // A person out of the round keeps their input: it aims and throws peels (it never reaches the fighter).
+    inputs.forEach((input, i) => (input.enabled = playing && (!before.fighters[i].eliminated || !!roster[i].keys) && (botsOn || !bots[i] || input.script !== null)));
     bots.forEach((b, i) => b?.plan(botWorldFrom(before, ids[i]), dt));
     const yaw = presenter.cameraYaw();
     inputs.forEach((input, i) => {
@@ -65,9 +83,8 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
       const f = before.fighters[i];
       if (keys && playing && f.eliminated) {
         // Out of the round at this keyboard: the keys aim a banana peel; punch or grab throws it.
-        const raw = moveIntent(keyboard.held, yaw, keys);
         const a = aims[i] ?? presenter.clampAim({ x: f.position.x, z: f.position.z });
-        aims[i] = presenter.clampAim({ x: a.x + raw.x * BANANAS.aimSpeed * dt, z: a.z + raw.z * BANANAS.aimSpeed * dt });
+        aims[i] = moveAim(a, intent, dt, (p) => presenter.clampAim(p));
         if (intent.punch || intent.grab) match.throwBanana(ids[i], aims[i]!.x, aims[i]!.z);
         return;
       }
@@ -75,7 +92,12 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
       match.setInput(ids[i], intent);
     });
     take(match.step(dt));
+    if (touch && p1 >= 0) {
+      const me = snapshot.fighters[p1];
+      touch.update({ visible: true, context: touchContext(me, snapshot.phase), peel: { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: snapshot.fighters.filter((f) => f.alive).length >= BANANAS.minAlive } });
+    }
     presenter.present(snapshot, dt, {
+      touch: !!touch,
       driver: (i) => (bots[i] ? 'bot' : 'keys'),
       botState: (i) => bots[i]?.memory.state.toLowerCase() ?? null,
       matchOverHint: 'press R to play again',

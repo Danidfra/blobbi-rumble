@@ -37,7 +37,7 @@
  * `?interp=0` (draw the newest state, as M7B did), `?predict=0`.
  */
 import { canAct, type CombatState } from '../combat/combat';
-import { Keyboard, PlayerInput, type KeyBindings, type MoveIntent } from '../control/input';
+import { Keyboard, NET_BINDINGS, PlayerInput, type MoveIntent } from '../control/input';
 import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
@@ -54,7 +54,7 @@ import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from '
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
 import { inputMessage, isNewer, type ClientMessage, type Control, type ServerMessage, type StateMessage } from '../net/protocol';
-import { BANANAS } from '../tuning';
+import { moveAim, wantsThrow } from '../control/aim';
 import { ROSTER } from '../roster';
 import { combatOf } from '../sim/read';
 import type { FighterSnapshot, MatchSnapshot } from '../sim/snapshot';
@@ -70,6 +70,10 @@ import { LOOKUP_RELAYS, relayUrl } from '../../social/relays';
 import { findNip07, nip07From, nip07Signer } from '../../social/signer';
 import type { SlotIdentity } from '../net/protocol';
 import { IdentitySession } from './identity';
+import { TouchControls, needsRotate, prefersTouch, watchFirstTouch } from './touchControls';
+import { touchContext } from '../control/touch';
+import { parseQuality, type DeviceHints, type QualityChoice } from '../view/quality';
+import { BANANAS } from '../tuning';
 
 /** Storage that may be missing or throw (private windows, blocked site data). */
 const safeStorage = (): Storage | null => {
@@ -80,19 +84,11 @@ const safeStorage = (): Storage | null => {
   }
 };
 const START_SEEN = 'rumble:start-seen';
+/** M12: no signer on a touch device. Rumble never asks for a private key, so it only works with a signer the browser provides. */
+const MOBILE_NO_SIGNER = 'This browser has no Nostr signer (NIP-07). On a phone that takes a browser with a signer extension, or a Nostr app’s built-in browser. Rumble never asks for your private key. You can keep playing as a guest.';
 /** How many times this page started the network client (diagnostics: more than once means a duplicate initialisation). */
 let startups = 0;
 
-const NET_BINDINGS: KeyBindings = {
-  forward: ['KeyW', 'ArrowUp'],
-  back: ['KeyS', 'ArrowDown'],
-  left: ['KeyA', 'ArrowLeft'],
-  right: ['KeyD', 'ArrowRight'],
-  run: ['ShiftLeft', 'ShiftRight'],
-  jump: ['Space', 'Enter'],
-  punch: ['KeyF', 'KeyK'],
-  grab: ['KeyG', 'KeyL'],
-};
 const CONTROLS = ['F3 colliders & reach · F4 network numbers · H help', 'the next match starts by itself'];
 /** Movement is resent at least this often, ms, so the server knows the keys are still held (it lets go after a second of silence). */
 const KEEPALIVE_MS = 200;
@@ -306,6 +302,34 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const usePredict = q.get('predict') !== '0';
   const keyboard = new Keyboard([NET_BINDINGS]);
   const input = new PlayerInput(keyboard, NET_BINDINGS);
+  // M12: touch controls, for a finger as the main pointer (or ?touch=1), or from the first touch on the page.
+  let touchOn = prefersTouch(location.search, matchMedia('(pointer: coarse)').matches);
+  let touchControls: TouchControls | null = null;
+  let rotateDismissed = false;
+  const ensureTouch = () => {
+    if (!touchOn || touchControls) return;
+    touchControls = new TouchControls();
+    input.touch = touchControls.pad;
+    shell.setTouch(true);
+    presenter?.setTouchLayout(true);
+  };
+  watchFirstTouch(location.search, () => {
+    touchOn = true;
+    ensureTouch();
+  });
+  // M12: graphics quality, remembered on this device; auto unless chosen.
+  const QUALITY_KEY = 'rumble:graphics';
+  let quality: QualityChoice = parseQuality((() => {
+    try {
+      return safeStorage()?.getItem(QUALITY_KEY);
+    } catch {
+      return null;
+    }
+  })());
+  const deviceHints = (): DeviceHints => {
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    return { coarse: matchMedia('(pointer: coarse)').matches, cores: nav.hardwareConcurrency || undefined, memory: nav.deviceMemory };
+  };
   // Dev: ?delay=ms overrides the interpolation delay, to measure it.
   const delay = q.has('delay') ? Number(q.get('delay')) / 1000 : NET_VIEW.delay;
   const newBuffer = () => new SnapshotBuffer({ ...NET_VIEW, delay });
@@ -411,6 +435,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const identity = new IdentitySession({
     url,
     send,
+    // M12: a phone rarely has a NIP-07 signer; say so plainly, and that the game needs none.
+    ...(matchMedia('(pointer: coarse)').matches ? { unavailable: MOBILE_NO_SIGNER } : {}),
     findSigner: async () => {
       const n = ++findCalls;
       const t0 = performance.now();
@@ -502,7 +528,19 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     // M9B.1: the extension holds another identity than the remembered one: only a click connects it.
     connectOtherNostr: () => identity.connectOther(),
     dismissOtherNostr: () => identity.dismissChanged(),
-    releaseKeys: () => keyboard.held.clear(),
+    releaseKeys: () => input.release(),
+    setQuality: (choice) => {
+      quality = choice;
+      try {
+        safeStorage()?.setItem(QUALITY_KEY, choice);
+      } catch {
+        // Not remembered: this visit only.
+      }
+      presenter?.setQuality(choice, deviceHints());
+    },
+    dismissRotate: () => {
+      rotateDismissed = true;
+    },
     startSeen: seeStart,
     // M8C-A: a private Nostr invite to a pasted npub / nprofile.
     sendInvite: (input) => doSendInvite(input),
@@ -563,6 +601,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       else location.assign(i.url);
     },
   });
+  ensureTouch();
   // Idle relays close; nothing stays open for long.
   setInterval(() => relayPool?.sweep(), 10_000);
   // M9B.1: a remembered, explicit connection is restored by itself (the same signer, the same pubkey, or nothing); once per page.
@@ -726,7 +765,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   setInterval(() => send({ t: 'ping', id: ++pingId, ct: performance.now() }), 1000);
   // A tab that loses focus or is hidden lets go of everything at once.
   const release = () => {
-    keyboard.held.clear();
+    input.release();
     sendInput({ x: 0, z: 0, run: false });
   };
   window.addEventListener('blur', release);
@@ -786,8 +825,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (out && presenter) {
       // Out of the round: the keys move the aim over the floor, a punch or grab throws; nothing goes to the fighter.
       if (!aim) aim = presenter.clampAim({ x: me!.position.x, z: me!.position.z });
-      aim = presenter.clampAim({ x: aim.x + intent.x * BANANAS.aimSpeed * dt, z: aim.z + intent.z * BANANAS.aimSpeed * dt });
-      if ((intent.punch || intent.grab) && me!.bananas.left > 0 && me!.bananas.cooldown <= 0) send({ t: 'throw', x: +aim.x.toFixed(2), z: +aim.z.toFixed(2) });
+      aim = moveAim(aim, intent, dt, (p) => presenter!.clampAim(p));
+      if (wantsThrow(intent, me!.bananas)) send({ t: 'throw', x: +aim.x.toFixed(2), z: +aim.z.toFixed(2) });
     } else {
       aim = null;
       actions.jump ||= intent.jump;
@@ -840,8 +879,19 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       people: people && room?.kind === 'private' ? people.state : null,
       blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote, shared: serverLooks() } : null,
       blobbiNameOf: blobbiNameFor,
+      graphics: { choice: quality, info: () => presenter?.renderInfo ?? { level: '-', ratio: window.devicePixelRatio || 1, width: canvas.width, height: canvas.height, fps: 0, shadowMap: 0 } },
+      rotate: needsRotate({ width: window.innerWidth, height: window.innerHeight, touch: touchOn, dismissed: rotateDismissed }),
       inbox: inboxView(),
     });
+    // M12: the touch controls: shown while this page plays a fighter and nothing is over the arena; the buttons' words follow the moment.
+    if (touchControls) {
+      const alive = latestSnap ? latestSnap.fighters.filter((f) => f.alive).length : 0;
+      touchControls.update({
+        visible: conn.phase === 'playing' && !!you && !shell.modalOpen,
+        context: touchContext(me, latestSnap?.phase ?? 'roundOver'),
+        peel: me ? { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: alive >= BANANAS.minAlive } : undefined,
+      });
+    }
     if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
     // The frame of input this ran under, for prediction and its replay.
     if (you) predictor.frame(dt, seq, { ...move, jump: intent.jump, punch: false, grab: false });
@@ -879,7 +929,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       (drawn[i] ??= []).push({ x: f.position.x, z: f.position.z, t: now });
       if (drawn[i].length > 240) drawn[i].shift();
     });
-    if (!presenter) presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena);
+    if (!presenter) {
+      presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena);
+      presenter.setQuality(quality, deviceHints());
+      if (touchControls) presenter.setTouchLayout(true);
+    }
     const control: Record<string, Control> = state.control;
     // Name tags: a proven person's name (short), else the slot label. Redrawn only when the text changes.
     for (const id of s.players) {
@@ -904,6 +958,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         // The text HUD is a developer view now: F4 (or F3).
         textHud: showNet,
         controls: CONTROLS,
+        touch: !!touchControls,
         strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
         aimers: meIndex >= 0 && aim ? [{ index: meIndex, aim, keys: 'WASD · throw F / G' }] : [],
         footer: showNet
@@ -931,6 +986,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   requestAnimationFrame(loop);
   Object.assign(window, {
     rumble: {
+      /** M12: the renderer's settings now, and its measured cost (n frames, GPU-synchronised); `setGraphics` as the panel does. */
+      get graphics() {
+        return presenter?.renderInfo ?? null;
+      },
+      measureRender: (n = 60) => presenter?.measureRender(n) ?? null,
+      setGraphics: (choice: QualityChoice) => {
+        quality = choice;
+        presenter?.setQuality(choice, deviceHints());
+      },
       mode: 'network',
       get you() {
         return you;

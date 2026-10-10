@@ -23,7 +23,10 @@ import type { MatchSnapshot } from '../sim/snapshot';
 import { CAMERA, COMBAT, ORBS, ROUND, SWEEPER } from '../tuning';
 import { createArena } from '../view/arenaView';
 import { createWorld } from '../view/world';
-import { applyCamera, followCamera, framed, wantedCamera, type CameraPose } from '../view/camera';
+import { applyCamera, followCamera, fovFor, framed, wantedCamera, type CameraPose } from '../view/camera';
+import { Camera } from '@babylonjs/core/Cameras/camera';
+import { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
+import { FrameBudget, profileFor, ratioFor, type DeviceHints, type QualityChoice, type RenderProfile } from '../view/quality';
 import { PhysicsDebug } from '../view/debug';
 import type { BlobbiIdentityInput } from '@blobbi-kit/3d';
 import { CLASSIC, arenaById, type ArenaDef } from '../arena/arenas';
@@ -62,6 +65,8 @@ export interface HudInfo {
   holdsConsistent?: boolean;
   /** Show the text HUD (default true). Network mode shows it only for F4; F3 always shows it. */
   textHud?: boolean;
+  /** M12: the people at this screen play by touch: the cues name the touch controls. */
+  touch?: boolean;
 }
 
 export class RumblePresenter {
@@ -86,6 +91,10 @@ export class RumblePresenter {
   private previous: MatchSnapshot | null = null;
   private message = '';
   private readonly lastHazard: Record<string, string> = {};
+  /** M12: the graphics choice, the profile it resolved to, and (auto) the frame budget that adapts the pixel ratio. */
+  private quality: { choice: QualityChoice; profile: RenderProfile; ratio: number; budget: FrameBudget | null } | null = null;
+  private lastFrameAt = 0;
+  private readonly verticalFov: number;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -112,6 +121,7 @@ export class RumblePresenter {
     this.orbView = new OrbView(this.scene, orbs, this.env.shadows);
     this.bananaView = new BananaView(this.scene, this.env.shadows);
     this.cue = document.createElement('div');
+    this.cue.className = 'rs-cue';
     this.cue.setAttribute('style', 'position:fixed;left:50%;bottom:12%;transform:translateX(-50%);display:none;flex-direction:column;gap:6px;align-items:center;z-index:6;pointer-events:none;font:600 15px ui-monospace,Menlo,monospace;color:#2b2b3a;');
     (hud.parentElement ?? document.body).appendChild(this.cue);
     if (this.def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(this.def.theme), this.def.sweeper);
@@ -124,7 +134,83 @@ export class RumblePresenter {
       this.sweeperView?.showDebug(this.debug.on);
       e.preventDefault();
     });
-    window.addEventListener('resize', () => this.engine.resize());
+    this.verticalFov = cam.fov;
+    window.addEventListener('resize', () => {
+      this.engine.resize();
+      this.fitView();
+    });
+    this.fitView();
+  }
+
+  /** M12: keep the arena's width in view on a narrow (upright) screen; landscape is unchanged. */
+  private fitView() {
+    const w = this.engine.getRenderWidth();
+    const h = this.engine.getRenderHeight();
+    const f = fovFor(h > 0 ? w / h : 1, this.verticalFov);
+    const cam = this.env.camera;
+    cam.fovMode = f.mode === 'vertical' ? Camera.FOVMODE_VERTICAL_FIXED : Camera.FOVMODE_HORIZONTAL_FIXED;
+    cam.fov = f.fov;
+  }
+
+  /**
+   * M12: touch play. The orbit camera's own pointer input goes (a stray
+   * finger on the arena would turn the view, and with it the meaning of
+   * the stick); the presenter frames the fight by itself anyway.
+   */
+  setTouchLayout(on: boolean) {
+    if (on) this.env.camera.detachControl();
+    else this.env.camera.attachControl(true);
+  }
+
+  /** M12: the graphics choice: the pixel ratio and the shadow map (`view/quality.ts`); auto also adapts to measured frames. */
+  setQuality(choice: QualityChoice, hints: DeviceHints) {
+    const profile = profileFor(choice, hints);
+    const ratio = ratioFor(profile, window.devicePixelRatio || 1);
+    const budget = choice === 'auto' ? new FrameBudget(ratio, Math.min(ratio, profile.minRatio), ratio) : null;
+    this.quality = { choice, profile, ratio, budget };
+    this.applyRatio(ratio);
+    this.env.shadows.mapSize = profile.shadowMap;
+    this.env.shadows.filteringQuality = profile.shadowFilter === 'medium' ? ShadowGenerator.QUALITY_MEDIUM : ShadowGenerator.QUALITY_LOW;
+  }
+
+  private applyRatio(ratio: number) {
+    if (this.quality) this.quality.ratio = ratio;
+    this.engine.setHardwareScalingLevel(1 / ratio);
+    this.engine.resize();
+    this.fitView();
+  }
+
+  /**
+   * M12: the render cost, measured: `frames` frames drawn back to back at
+   * the current settings, each waited out on the GPU (a one-pixel read),
+   * timed on the page's clock. Milliseconds: the median and the 90th
+   * percentile. For diagnostics (`rumble.measureRender()`), never per frame.
+   */
+  measureRender(frames = 60): { median: number; p90: number; width: number; height: number } {
+    const gl = (this.engine as unknown as { _gl?: WebGLRenderingContext })._gl;
+    const px = new Uint8Array(4);
+    const times: number[] = [];
+    for (let i = 0; i < frames; i++) {
+      const t0 = performance.now();
+      this.scene.render();
+      gl?.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      times.push(performance.now() - t0);
+    }
+    times.sort((a, b) => a - b);
+    return { median: times[Math.floor(frames / 2)], p90: times[Math.floor(frames * 0.9)], width: this.engine.getRenderWidth(), height: this.engine.getRenderHeight() };
+  }
+
+  /** M12: what the renderer is doing, for the settings and diagnostics. */
+  get renderInfo() {
+    return {
+      choice: this.quality?.choice ?? 'auto',
+      level: this.quality?.profile.level ?? 'high',
+      ratio: this.quality?.ratio ?? 1 / this.engine.getHardwareScalingLevel(),
+      width: this.engine.getRenderWidth(),
+      height: this.engine.getRenderHeight(),
+      fps: this.engine.getFps(),
+      shadowMap: this.env.shadows.mapSize,
+    };
   }
 
   /** The camera's yaw, for camera-relative keys. */
@@ -138,16 +224,17 @@ export class RumblePresenter {
     for (const { index, keys } of info.strugglers ?? []) {
       const f = s.fighters[index];
       if (!f || f.eliminated || s.phase !== 'playing') continue;
-      if (f.heldBy) lines.push({ text: `GRABBED by ${f.heldBy} · tap ${keys} to break free`, bar: f.combat.struggle, tone: '#ffe9a8' });
-      else if (f.holding) lines.push({ text: `HOLDING ${f.holding} · grab again to throw · they can break free`, bar: s.fighters.find((o) => o.id === f.holding)?.combat.struggle, tone: '#d6f0ff' });
-      else if (f.ledge) lines.push({ text: `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · jump to climb · grab or push away to let go`, bar: f.ledge.grip, tone: '#dff5e3' });
+      const touch = !!info.touch;
+      if (f.heldBy) lines.push({ text: touch ? `GRABBED by ${f.heldBy} · tap BREAK FREE (or wiggle the stick ← →)` : `GRABBED by ${f.heldBy} · tap ${keys} to break free`, bar: f.combat.struggle, tone: '#ffe9a8' });
+      else if (f.holding) lines.push({ text: touch ? `HOLDING ${f.holding} · THROW to throw · they can break free` : `HOLDING ${f.holding} · grab again to throw · they can break free`, bar: s.fighters.find((o) => o.id === f.holding)?.combat.struggle, tone: '#d6f0ff' });
+      else if (f.ledge) lines.push({ text: touch ? `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · CLIMB to climb up · LET GO to drop` : `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · jump to climb · grab or push away to let go`, bar: f.ledge.grip, tone: '#dff5e3' });
     }
     for (const a of info.aimers ?? []) {
       const f = s.fighters[a.index];
       if (!f?.eliminated || s.phase !== 'playing') continue;
       const alive = s.fighters.filter((x) => x.alive).length;
       const why = alive < BANANAS.minAlive ? `no peels with ${alive} left` : f.bananas.left === 0 ? 'no peels left this round' : f.bananas.cooldown > 0 ? `next peel in ${f.bananas.cooldown.toFixed(1)} s` : `${f.bananas.left} peel${f.bananas.left === 1 ? '' : 's'} left`;
-      lines.push({ text: `OUT · aim ${a.keys} · ${why}`, tone: '#f4f4f4' });
+      lines.push({ text: info.touch ? `OUT · aim with the stick, THROW a peel · ${why}` : `OUT · aim ${a.keys} · ${why}`, tone: '#f4f4f4' });
     }
     const key = lines.map((l) => `${l.text}|${l.bar === undefined ? '-' : Math.round(l.bar * 20)}`).join('\n');
     if (key === this.cueKey) return;
@@ -267,6 +354,14 @@ export class RumblePresenter {
   }
 
   present(s: MatchSnapshot, dt: number, info: HudInfo, own?: { id: string; jumped: boolean }) {
+    // M12, auto graphics: the real time between drawn frames (not the clamped dt) feeds the budget.
+    const nowMs = performance.now();
+    const budget = this.quality?.budget;
+    if (budget && this.lastFrameAt > 0) {
+      const next = budget.sample((nowMs - this.lastFrameAt) / 1000);
+      if (next !== null) this.applyRatio(next);
+    }
+    this.lastFrameAt = nowMs;
     this.syncArena(s);
     const prev = this.previous;
     const fresh = prev === null || s.tick !== prev.tick;
@@ -294,6 +389,15 @@ export class RumblePresenter {
     if (!this.cameraPose) this.cameraPose = wantedCamera(wanted, camRules);
     else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted, camRules), dt);
     applyCamera(this.env.camera, this.cameraPose);
+    this.showCues(s, info);
+    // The text HUD, built only when it is shown (most frames it is not: no strings to make).
+    const text = info.textHud !== false || this.debug.on;
+    const display = text ? '' : 'none';
+    if (this.hud.style.display !== display) this.hud.style.display = display;
+    if (!text) {
+      this.scene.render();
+      return;
+    }
 
     const lines = [...(info.status ?? []), `${this.def.name} · round ${s.round} · first to ${ROUND.target} · last Blobbi standing`, ''];
     s.fighters.forEach((f, i) => {
@@ -304,7 +408,6 @@ export class RumblePresenter {
       lines.push(`${who} ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot && !f.eliminated ? `  ${bot}` : ''}`);
     });
     lines.push('', this.message || (s.phase === 'playing' ? '' : '…'));
-    this.showCues(s, info);
     for (const a of info.aimers ?? []) {
       const f = s.fighters[a.index];
       if (!f?.eliminated || s.phase !== 'playing') continue;
@@ -328,10 +431,7 @@ export class RumblePresenter {
     lines.push('', ...info.controls);
     if (info.footer?.length) lines.push('', ...info.footer);
     if (this.debug.on) lines.push(...this.debugLines(s, info));
-    const text = info.textHud !== false || this.debug.on;
-    const display = text ? '' : 'none';
-    if (this.hud.style.display !== display) this.hud.style.display = display;
-    if (text) this.debug.print(lines);
+    this.debug.print(lines);
     this.scene.render();
   }
 
