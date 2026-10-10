@@ -104,86 +104,90 @@ export const CLASSIC: ArenaDef = Object.freeze({
 });
 
 /**
- * Skyfall: a larger floating garden in several islands. A big centre, an
- * east island half a metre up over a breakable bridge, a west island half
- * a metre down over another, a south step up to a high perch, a low ledge
- * along the north rim to fall onto and climb back from, and two falling
- * pads at the centre's corners that tempt a fight and drop it.
+ * Skyfall (M11.1 layout): a wide centre island, an island to the east and
+ * one to the west over rope bridges that break, all at ONE height, so a
+ * bridge meets its islands flush and is walked across; the vertical game
+ * is around it: a low ledge the length of the north wall to fall onto and
+ * climb back from, a step and a high perch to the south, and two pads at
+ * the centre's north-east and south-west corners that tempt a fight and
+ * drop it. Everything a fighter stands on is at least 4.5 m across.
  */
 export const SKYFALL: ArenaDef = Object.freeze({
   id: 'floating-islands-skyfall',
   name: 'Floating Islands: Skyfall',
-  description: 'Several islands, bridges that break, pads that fall, a ledge to climb back from. Watch the edges.',
+  description: 'Three islands over bridges that break, pads that fall, a ledge to climb back from. Watch the edges.',
   theme: 'garden',
   platforms: Object.freeze([
-    F(0, 0, 5, 4, 0, 'floor', 0.6, 'centre'),
-    F(8.6, 1.6, 2, 2, 0.5, 'platform', 0.5, 'east island'),
-    F(5.8, 1.6, 0.8, 0.85, 0, 'bridge', 0.2, 'east bridge'),
-    F(-8.4, -1.2, 2.2, 1.8, -0.5, 'platform', 0.5, 'west island'),
-    F(-6.1, -1.2, 1.1, 0.85, -0.5, 'bridge', 0.2, 'west bridge'),
-    F(0, 4.8, 3, 0.8, -1.2, 'platform', 0.4, 'north ledge'),
-    F(-1, -4.9, 1.3, 0.9, 0.5, 'platform', 0.5, 'south step'),
-    F(-1, -7, 1.6, 1.2, 1, 'platform', 0.5, 'south perch'),
-    F(4.4, 5.2, 1.2, 1.2, 0, 'platform', 0.4, 'north-east pad'),
-    F(-4.4, -5.2, 1.2, 1.2, 0, 'platform', 0.4, 'south-west pad'),
+    F(0, 0, 6, 4.5, 0, 'floor', 0.6, 'centre'),
+    F(10.5, 1.2, 2.5, 2.5, 0, 'platform', 0.6, 'east island'),
+    F(7, 1.2, 1.0, 1.0, 0, 'bridge', 0.2, 'east bridge'),
+    F(-10.5, -1.2, 2.5, 2.3, 0, 'platform', 0.6, 'west island'),
+    F(-7, -1.2, 1.0, 1.0, 0, 'bridge', 0.2, 'west bridge'),
+    F(0, 5.3, 3, 0.8, -1.2, 'platform', 0.4, 'north ledge'),
+    F(-1, -5.5, 1.6, 1.0, 0.5, 'platform', 0.5, 'south step'),
+    F(-1, -7.4, 1.8, 0.9, 1, 'platform', 0.5, 'south perch'),
+    F(4.6, 5.7, 1.4, 1.2, 0, 'platform', 0.4, 'north-east pad'),
+    F(-4.6, -5.7, 1.4, 1.2, 0, 'platform', 0.4, 'south-west pad'),
   ]),
   dynamics: Object.freeze([
-    D(2, { kind: 'breakable', impacts: 3, after: 28, warn: 1.6, fall: 0.5, back: 0 }),
-    D(4, { kind: 'breakable', impacts: 3, after: 34, warn: 1.6, fall: 0.5, back: 0 }),
-    D(8, { kind: 'falling', arm: 1.2, warn: 1.3, fall: 0.5, back: 8 }),
-    D(9, { kind: 'falling', arm: 1.2, warn: 1.3, fall: 0.5, back: 8 }),
+    D(2, { kind: 'breakable', impacts: 3, after: 30, warn: 1.8, fall: 0.5, back: 0 }),
+    D(4, { kind: 'breakable', impacts: 3, after: 36, warn: 1.8, fall: 0.5, back: 0 }),
+    D(8, { kind: 'falling', arm: 1.4, warn: 1.5, fall: 0.5, back: 8 }),
+    D(9, { kind: 'falling', arm: 1.4, warn: 1.5, fall: 0.5, back: 8 }),
   ]),
   conveyors: Object.freeze([]),
   sweeper: null,
   orbs: Object.freeze([
     { x: 0, z: 0 },
-    { x: 8.6, z: 1.6 },
-    { x: -8.4, z: -1.2 },
+    { x: 10.5, z: 1.2 },
+    { x: -10.5, z: -1.2 },
   ]),
   spawnSets: {
     2: [
-      { x: -2.8, z: 0 },
-      { x: 2.8, z: 0 },
+      { x: -3.2, z: 0 },
+      { x: 3.2, z: 0 },
     ],
     3: [
-      { x: 0, z: -2.8 },
-      { x: 2.4, z: 1.4 },
-      { x: -2.4, z: 1.4 },
+      { x: 0, z: -2.5 },
+      { x: 2.8, z: 1.6 },
+      { x: -2.8, z: 1.6 },
     ],
     4: [
-      { x: -2.8, z: -2.4 },
-      { x: 2.8, z: -2.4 },
-      { x: -2.8, z: 2.4 },
-      { x: 2.8, z: 2.4 },
+      { x: -3, z: -2.2 },
+      { x: 3, z: -2.2 },
+      { x: -3, z: 2.2 },
+      { x: 3, z: 2.2 },
     ],
   },
   fallY: -5,
   ledges: true,
-  camera: { bounds: { x: 7.5, z: 5.5 }, maxRadius: 19, dropBelow: -2.4 },
+  camera: { bounds: { x: 9.5, z: 5.5 }, maxRadius: 24, dropBelow: -2.4 },
   iceFriction: 0.35,
 });
 
-/** The factory's rotating arm: the sweeper's rules with its own pivot, on the west pad; a little faster and shorter than the garden's. */
-const FACTORY_ARM: SweeperTuning = Object.freeze({ ...SWEEPER, pivot: { x: -6.5, z: 0 }, reach: 1.7, angularSpeed: 1.9, impactFloor: 1.6 });
+/** The factory's rotating arm: the sweeper's rules with its own pivot in the middle of the west pad; shorter and a little slower than the garden's, so the pad's corners are clear of it. */
+const FACTORY_ARM: SweeperTuning = Object.freeze({ ...SWEEPER, pivot: { x: -7.8, z: 0 }, reach: 1.7, angularSpeed: 1.6, impactFloor: 1.6 });
 
 /**
- * The factory: a main floor with two conveyor belts running opposite ways
- * across it (toward the rims), a raised crate in the middle to fight on
- * and jump between belts from, a pad on each side, and a rotating arm on
- * the west pad.
+ * The factory (M11.1 layout): a wide main floor with a conveyor belt along
+ * its north and south edges running opposite ways (toward the pads), a
+ * raised crate in the middle to fight on and over, a pad on each side wide
+ * enough to fight on, and a rotating arm in the middle of the west pad
+ * whose corners it does not reach. The belts are the fast lanes: a running
+ * punch off one hits harder, a tumbling body is carried to the rim.
  */
 export const FACTORY: ArenaDef = Object.freeze({
   id: 'blobbi-factory',
   name: 'Blobbi Factory',
-  description: 'Conveyor belts carry you toward the edges, a crate in the middle, a rotating arm on the west pad.',
+  description: 'Belts along the edges carry you toward the pads, a crate in the middle, a rotating arm on the west pad.',
   theme: 'factory',
   platforms: Object.freeze([
-    F(0, 0, 4.75, 3.6, 0, 'floor', 0.6, 'main floor'),
-    F(0, 2.3, 4.75, 0.75, 0.02, 'conveyor', 0.1, 'north belt'),
-    F(0, -2.3, 4.75, 0.75, 0.02, 'conveyor', 0.1, 'south belt'),
-    F(0, 0, 1.4, 0.9, 0.6, 'platform', 0.6, 'crate'),
-    F(6.25, 0, 1.5, 2.2, 0, 'floor', 0.6, 'east pad'),
-    F(-6.5, 0, 1.75, 2.2, 0, 'floor', 0.6, 'west pad'),
+    F(0, 0, 6, 4, 0, 'floor', 0.6, 'main floor'),
+    F(0, 3.2, 6, 0.8, 0.02, 'conveyor', 0.1, 'north belt'),
+    F(0, -3.2, 6, 0.8, 0.02, 'conveyor', 0.1, 'south belt'),
+    F(0, 0, 1.6, 1.0, 0.6, 'platform', 0.6, 'crate'),
+    F(7.8, 0, 1.8, 4, 0, 'floor', 0.6, 'east pad'),
+    F(-7.8, 0, 1.8, 4, 0, 'floor', 0.6, 'west pad'),
   ]),
   dynamics: Object.freeze([]),
   conveyors: Object.freeze([
@@ -193,38 +197,39 @@ export const FACTORY: ArenaDef = Object.freeze({
   sweeper: FACTORY_ARM,
   orbs: Object.freeze([
     { x: 0, z: 0 },
-    { x: 6.6, z: 0 },
-    { x: -6.5, z: 1.6 },
+    { x: 7.8, z: 0 },
+    { x: -7.8, z: 2.5 },
   ]),
   spawnSets: {
     2: [
-      { x: -3, z: 0 },
-      { x: 3, z: 0 },
+      { x: -3.6, z: 0 },
+      { x: 3.6, z: 0 },
     ],
     3: [
-      { x: 0, z: -1.3 },
-      { x: 3.2, z: 0.5 },
-      { x: -3.2, z: 0.5 },
+      { x: 0, z: -1.9 },
+      { x: 3.6, z: 1.2 },
+      { x: -3.6, z: 1.2 },
     ],
     4: [
-      { x: -3.2, z: -0.9 },
-      { x: 3.2, z: -0.9 },
-      { x: -3.2, z: 0.9 },
-      { x: 3.2, z: 0.9 },
+      { x: -3.6, z: -1.4 },
+      { x: 3.6, z: -1.4 },
+      { x: -3.6, z: 1.4 },
+      { x: 3.6, z: 1.4 },
     ],
   },
   fallY: -4,
   ledges: true,
-  camera: { bounds: { x: 5.5, z: 3 }, maxRadius: 15, dropBelow: -1.4 },
+  camera: { bounds: { x: 7, z: 3.5 }, maxRadius: 19, dropBelow: -1.4 },
   iceFriction: 0.35,
 });
 
 /**
- * The frozen lake: a sheet of ice in a cross of solid tiles with four
- * fragile corner tiles that crack, give and leave holes, and four lobes
- * around it. Little grip everywhere: momentum is the game.
+ * The frozen lake (M11.1 layout): nine ice tiles of 3.6 m in a square, the
+ * four corner tiles fragile (they crack under weight, give, and freeze over
+ * again), and a lobe on each side. Little grip everywhere: momentum is the
+ * game, and the corners are a bet.
  */
-const TILE = 1.45;
+const TILE = 1.8;
 export const FROZEN: ArenaDef = Object.freeze({
   id: 'frozen-lake',
   name: 'Frozen Lake',
@@ -240,42 +245,42 @@ export const FROZEN: ArenaDef = Object.freeze({
     F(-2 * TILE, 2 * TILE, TILE, TILE, 0, 'ice', 0.5, 'north-west tile'),
     F(2 * TILE, -2 * TILE, TILE, TILE, 0, 'ice', 0.5, 'south-east tile'),
     F(-2 * TILE, -2 * TILE, TILE, TILE, 0, 'ice', 0.5, 'south-west tile'),
-    F(5.6, 0, 1.3, 2.4, 0, 'ice', 0.5, 'east lobe'),
-    F(-5.6, 0, 1.3, 2.4, 0, 'ice', 0.5, 'west lobe'),
+    F(3 * TILE + 1.4, 0, 1.4, 2.6, 0, 'ice', 0.5, 'east lobe'),
+    F(-3 * TILE - 1.4, 0, 1.4, 2.6, 0, 'ice', 0.5, 'west lobe'),
   ]),
   dynamics: Object.freeze([
-    D(5, { kind: 'falling', arm: 1.4, warn: 1.4, fall: 0.4, back: 9 }),
-    D(6, { kind: 'falling', arm: 1.4, warn: 1.4, fall: 0.4, back: 9 }),
-    D(7, { kind: 'falling', arm: 1.4, warn: 1.4, fall: 0.4, back: 9 }),
-    D(8, { kind: 'falling', arm: 1.4, warn: 1.4, fall: 0.4, back: 9 }),
+    D(5, { kind: 'falling', arm: 1.8, warn: 1.8, fall: 0.4, back: 9 }),
+    D(6, { kind: 'falling', arm: 1.8, warn: 1.8, fall: 0.4, back: 9 }),
+    D(7, { kind: 'falling', arm: 1.8, warn: 1.8, fall: 0.4, back: 9 }),
+    D(8, { kind: 'falling', arm: 1.8, warn: 1.8, fall: 0.4, back: 9 }),
   ]),
   conveyors: Object.freeze([]),
   sweeper: null,
   orbs: Object.freeze([
     { x: 0, z: 0 },
-    { x: 5.6, z: 0 },
-    { x: -5.6, z: 0 },
+    { x: 3 * TILE + 1.4, z: 0 },
+    { x: -3 * TILE - 1.4, z: 0 },
   ]),
   spawnSets: {
     2: [
-      { x: -2.9, z: 0 },
-      { x: 2.9, z: 0 },
+      { x: -3.2, z: 0 },
+      { x: 3.2, z: 0 },
     ],
     3: [
-      { x: 0, z: -2.9 },
-      { x: 2.9, z: 0 },
-      { x: -2.9, z: 0 },
+      { x: 0, z: -3.2 },
+      { x: 3.2, z: 0 },
+      { x: -3.2, z: 0 },
     ],
     4: [
-      { x: -2.9, z: 0 },
-      { x: 2.9, z: 0 },
-      { x: 0, z: -2.9 },
-      { x: 0, z: 2.9 },
+      { x: -3.2, z: 0 },
+      { x: 3.2, z: 0 },
+      { x: 0, z: -3.2 },
+      { x: 0, z: 3.2 },
     ],
   },
   fallY: -4,
   ledges: false,
-  camera: { bounds: { x: 5, z: 3.5 }, maxRadius: 15 },
+  camera: { bounds: { x: 6, z: 4 }, maxRadius: 18 },
   iceFriction: 0.06,
 });
 

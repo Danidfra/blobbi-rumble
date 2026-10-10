@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { ORBS } from '../tuning';
 import { ARENA, spawnPoints } from './layout';
 import { ARENAS, ARENA_IDS, CLASSIC, DEFAULT_ARENA, FACTORY, FROZEN, SKYFALL, arenaById, arenaSpawns, nextArena, type PieceRule } from './arenas';
-import { extentOf, findLedge, inPlatform, onAnyFloor, platformUnder, rimDistanceOf } from './geometry';
+import { extentOf, findLedge, inPlatform, onAnyFloor, platformUnder, rimDistanceOf, type Platform } from './geometry';
 import { FALL_DEPTH, createPieces, drop, pieceImpact, pieceSolid, resetPieces, tickPiece } from './pieces';
 
 describe('the arena registry (M11A)', () => {
@@ -102,29 +102,29 @@ describe('geometry over platforms at several heights', () => {
     const ps = FACTORY.platforms;
     expect(platformUnder(ps, { x: 0, z: 0 })?.name).toBe('crate');
     expect(platformUnder(ps, { x: 3, z: 0 })?.name).toBe('main floor');
-    expect(platformUnder(ps, { x: 0, z: 2.3 })?.kind).toBe('conveyor');
+    expect(platformUnder(ps, { x: 0, z: 3.2 })?.kind).toBe('conveyor');
     expect(platformUnder(ps, { x: 0, z: 20 })).toBeNull();
-    expect(onAnyFloor(ps, { x: 6.25, z: 0 }, 0.5)).toBe(true);
-    expect(onAnyFloor(ps, { x: 6.25, z: 2.1 }, 0.5)).toBe(false);
+    expect(onAnyFloor(ps, { x: 7.8, z: 0 }, 0.5)).toBe(true);
+    expect(onAnyFloor(ps, { x: 7.8, z: 3.8 }, 0.5)).toBe(false);
     const ext = extentOf(ps);
-    expect(ext.halfWidth).toBeCloseTo(8.25, 5);
+    expect(ext.halfWidth).toBeCloseTo(9.6, 5);
     expect(rimDistanceOf(ps, { x: 0, z: 0 })).toBeGreaterThan(3);
-    expect(rimDistanceOf(ps, { x: 9, z: 0 })).toBe(0);
+    expect(rimDistanceOf(ps, { x: 11, z: 0 })).toBe(0);
   });
 
   it('a ledge is found just beyond a platform’s edge within reach and height, pointing inward; not over the platform, not too far', () => {
     const ps = SKYFALL.platforms;
-    // Beside the east island (y 0.5), a body whose feet are below its top.
-    const l = findLedge(ps, { x: 8.6, y: 0.6, z: 3.9 }, 0.0, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 });
+    // Beside the east island's north edge (z 3.7, top at 0), a body whose feet are half a metre below its top.
+    const l = findLedge(ps, { x: 10.7, y: 0.1, z: 4.0 }, -0.5, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 });
     expect(l).not.toBeNull();
     expect(ps[l!.platform].name).toBe('east island');
-    expect(l!.y).toBe(0.5);
+    expect(l!.y).toBe(0);
     expect(l!.inZ).toBe(-1);
     expect(l!.inX).toBe(0);
-    expect(findLedge(ps, { x: 8.6, y: 0.6, z: 1 }, 0.0, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
-    expect(findLedge(ps, { x: 8.6, y: 0.6, z: 4.5 }, 0.0, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
+    expect(findLedge(ps, { x: 10.7, y: 0.1, z: 1 }, -0.5, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
+    expect(findLedge(ps, { x: 10.7, y: 0.1, z: 4.6 }, -0.5, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
     // A platform below the feet is not a ledge to hang from.
-    expect(findLedge(ps, { x: 8.6, y: 2, z: 3.9 }, 2, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
+    expect(findLedge(ps, { x: 10.7, y: 2, z: 4.0 }, 1.5, { reach: 0.6, minBelow: 0.2, maxBelow: 1.2 })).toBeNull();
   });
 });
 
@@ -197,5 +197,80 @@ describe('the dynamic pieces (M11B)', () => {
     expect(p.load).toBeGreaterThan(0.9);
     resetPieces([p]);
     expect(p.load).toBe(0);
+  });
+});
+
+/** M11.1: the geometry the playtest faulted, checked for every arena: bridges meet their platforms flush, spawns are safe. */
+describe('arena geometry rules (M11.1)', () => {
+  const edges = (r: Platform) => ({ x0: r.x - r.halfWidth, x1: r.x + r.halfWidth, z0: r.z - r.halfDepth, z1: r.z + r.halfDepth });
+
+  it('every bridge end meets a platform of the same height, flush with its edge, within that edge’s span: no step, no float, no penetration', () => {
+    for (const a of ARENAS) {
+      const bridges = a.platforms.filter((p) => p.kind === 'bridge');
+      for (const b of bridges) {
+        const along = b.halfWidth >= b.halfDepth ? 'x' : 'z';
+        const be = edges(b);
+        const ends = along === 'x' ? [{ at: be.x0, side: 'x1' as const }, { at: be.x1, side: 'x0' as const }] : [{ at: be.z0, side: 'z1' as const }, { at: be.z1, side: 'z0' as const }];
+        for (const end of ends) {
+          const met = a.platforms.filter((p) => p !== b && p.kind !== 'bridge').filter((p) => {
+            const pe = edges(p);
+            if (Math.abs(pe[end.side] - end.at) > 1e-6) return false;
+            if (p.y !== b.y) return false;
+            // The bridge's width lies within the platform's edge.
+            return along === 'x' ? be.z0 >= pe.z0 - 1e-6 && be.z1 <= pe.z1 + 1e-6 : be.x0 >= pe.x0 - 1e-6 && be.x1 <= pe.x1 + 1e-6;
+          });
+          expect(met, `${a.id}: ${b.name} end at ${end.at} meets no flush platform of its height`).toHaveLength(1);
+        }
+        // No other platform overlaps the bridge's footprint (nothing to poke through its deck).
+        for (const p of a.platforms) {
+          if (p === b) continue;
+          const pe = edges(p);
+          const overlap = Math.min(be.x1, pe.x1) - Math.max(be.x0, pe.x0) > 1e-6 && Math.min(be.z1, pe.z1) - Math.max(be.z0, pe.z0) > 1e-6;
+          expect(overlap, `${a.id}: ${p.name} overlaps ${b.name}`).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('no platform of a different height overlaps another’s footprint except as a deliberate step (a crate, a step, a perch) wholly inside or flush beside it', () => {
+    for (const a of ARENAS) {
+      a.platforms.forEach((p, i) => {
+        a.platforms.forEach((q, j) => {
+          if (j <= i) return;
+          const pe = edges(p);
+          const qe = edges(q);
+          const ox = Math.min(pe.x1, qe.x1) - Math.max(pe.x0, qe.x0);
+          const oz = Math.min(pe.z1, qe.z1) - Math.max(pe.z0, qe.z0);
+          if (ox <= 1e-6 || oz <= 1e-6) return;
+          // Overlapping footprints: one must sit wholly inside the other (a raised crate), never partly.
+          const inside = (s: ReturnType<typeof edges>, t: ReturnType<typeof edges>) => s.x0 >= t.x0 - 1e-6 && s.x1 <= t.x1 + 1e-6 && s.z0 >= t.z0 - 1e-6 && s.z1 <= t.z1 + 1e-6;
+          expect(inside(pe, qe) || inside(qe, pe), `${a.id}: ${p.name} and ${q.name} overlap partly`).toBe(true);
+          expect(p.y !== q.y, `${a.id}: ${p.name} and ${q.name} overlap at one height`).toBe(true);
+        });
+      });
+    }
+  });
+
+  it('spawns are at least two metres from the outer rim, on solid floor, never on a piece that can fall, and at least two metres apart', () => {
+    for (const a of ARENAS) {
+      for (const n of [2, 3, 4] as const) {
+        const spawns = arenaSpawns(a, n);
+        for (const s of spawns) {
+          // The classic island is kept as it was (its three-player spawn is 1.55 m from the rim by design); the M11 arenas give two metres.
+          expect(rimDistanceOf(a.platforms, s), `${a.id} ${n}: spawn ${s.x},${s.z} near the rim`).toBeGreaterThanOrEqual(a === CLASSIC ? 1.5 : 1.9);
+          for (const d of a.dynamics) expect(inPlatform(a.platforms[d.platform], s, 0)).toBe(false);
+        }
+        for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) expect(Math.hypot(spawns[i].x - spawns[j].x, spawns[i].z - spawns[j].z)).toBeGreaterThanOrEqual(2);
+      }
+    }
+  });
+
+  it('every arena offers at least one fighting area at least 8 m across both ways; bridges are at least 2 m wide', () => {
+    for (const a of ARENAS) {
+      expect(a.platforms.some((p) => p.halfWidth >= 4 && p.halfDepth >= 4) || a.id === 'frozen-lake').toBe(true);
+      for (const b of a.platforms.filter((p) => p.kind === 'bridge')) expect(Math.min(b.halfWidth, b.halfDepth) * 2).toBeGreaterThanOrEqual(2);
+    }
+    // The lake's nine tiles are one 10.8 m sheet.
+    expect(extentOf(FROZEN.platforms.filter((p) => p.name?.endsWith('tile') || p.name === 'middle')).halfWidth).toBeCloseTo(5.4, 5);
   });
 });

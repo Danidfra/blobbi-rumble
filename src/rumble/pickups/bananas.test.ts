@@ -15,8 +15,8 @@ describe('judging a throw', () => {
     const r = judgeThrow(t, 0, 0, 0, ctx());
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.banana).toEqual({ x: 0, y: BANANAS.height, z: 0, age: 0 });
-    // On the east island (y 0.5): the peel sits on it.
-    const up = judgeThrow(t, 0, 8.6, 1.6, ctx());
+    // On the south step (y 0.5): the peel sits on it.
+    const up = judgeThrow(t, 0, -1, -5.5, ctx());
     expect(up.ok && up.banana.y).toBeCloseTo(0.5 + BANANAS.height, 6);
   });
 
