@@ -5,14 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { describe as words, initialConnection, onClose } from './connection';
-import { pageAddress, roomIntent, shareLink, socketUrl } from './room';
+import { pageAddress, roomIntent, shareLink, socketUrl, isOwnServer } from './room';
 
 describe('room intents from the page address', () => {
   it('reads /play/<code>, ?room=, ?create=1, and the open room', () => {
     expect(roomIntent({ pathname: '/play/A7F2', search: '' })).toEqual({ kind: 'join', id: 'A7F2' });
     expect(roomIntent({ pathname: '/play/a7f2', search: '?server=ws://x' })).toEqual({ kind: 'join', id: 'A7F2' });
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&room=a7-f2' })).toEqual({ kind: 'join', id: 'A7F2' });
-    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1' })).toEqual({ kind: 'create' });
+    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1' })).toEqual({ kind: 'create', listed: false });
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1' })).toEqual({ kind: 'open' });
     expect(roomIntent({ pathname: '/play/OPEN', search: '' })).toEqual({ kind: 'open' });
   });
@@ -59,5 +59,27 @@ describe('connection words for rooms', () => {
     expect(full.phase).toBe('full');
     expect(words(full, 2)!.title).toBe('Room ZZZZ is full');
     expect(words(onClose(initialConnection('ws://x'), 1013, 'server full', 1), 2)!.title).toBe('The server is full');
+  });
+});
+
+describe('public rooms and server-aware links (M10)', () => {
+  it('?create=1&public=1 asks for a listed room; the socket URL carries it; a plain create stays unlisted', () => {
+    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1&public=1' })).toEqual({ kind: 'create', listed: true });
+    expect(roomIntent({ pathname: '/rumble.html', search: '?create=1' })).toEqual({ kind: 'create', listed: false });
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2');
+  });
+  it('a share link names the server when the page is not served by it (and has no public address); the server’s own address needs nothing', () => {
+    expect(shareLink('A7F2', 'https://site.example', undefined, 'wss://site.example/ws')).toBe('https://site.example/play/A7F2');
+    expect(shareLink('A7F2', 'http://192.168.1.5:5177', undefined, 'ws://192.168.1.5:8787/')).toBe('http://192.168.1.5:5177/play/A7F2?server=ws%3A%2F%2F192.168.1.5%3A8787%2F');
+    expect(shareLink('A7F2', 'https://site.example', undefined, 'wss://friend.example/ws')).toBe('https://site.example/play/A7F2?server=wss%3A%2F%2Ffriend.example%2Fws');
+    // The server's canonical link wins: that server serves the page too.
+    expect(shareLink('A7F2', 'https://site.example', 'https://friend.example/play/A7F2', 'wss://friend.example/ws')).toBe('https://friend.example/play/A7F2');
+    expect(isOwnServer('https://site.example', 'wss://site.example/ws')).toBe(true);
+    expect(isOwnServer('https://site.example', 'ws://site.example/ws')).toBe(false);
+    expect(isOwnServer('https://site.example', 'not a url')).toBe(false);
+    // The page keeps ?server= across a room switch, so the link's server stays the page's.
+    expect(pageAddress('A7F2', '?server=wss%3A%2F%2Ffriend.example%2Fws&create=1')).toBe('/play/A7F2?server=wss%3A%2F%2Ffriend.example%2Fws');
   });
 });

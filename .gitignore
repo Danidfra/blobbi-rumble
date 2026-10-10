@@ -5,3 +5,4 @@ dist
 .headless
 .server
 .serve
+.bench

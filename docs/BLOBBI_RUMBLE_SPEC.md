@@ -1,7 +1,7 @@
 # Blobbi Rumble — Specification v1
 
 **Status:** living specification · **Version:** v1 ·
-**Implementation baseline:** `0342ec4` (M9B.1 diagnostics) plus the M9C–M9F batch ·
+**Implementation baseline:** `d28e60f` (M9C–M9F) plus the M10 batch ·
 **Last major completed milestone:** M9A (validated for real). M9B (adult
 Rumble forms) is implemented and partly validated for real (the look
 changes, legacy forms, persistence, manual reconnect); its animation and
@@ -762,6 +762,48 @@ stage, generation and 2D look are unchanged, and nothing is published.
 - **Physics untouched**: a look never reaches the match, and no gameplay
   number or collider depends on it (tested on the host's state).
 
+### 15e. Online play: servers, public rooms, links, deployment (M10, implemented)
+
+- **Servers (M10A).** A page knows official servers (build-time
+  `VITE_RUMBLE_SERVERS`, none by default), its own origin at `/ws` (or the
+  dev server), and community servers the player adds (localStorage, at
+  most 12, checked on the way back); a link's `?server=` applies to that
+  page only. Addresses are `ws(s)://` only, no credentials or fragments;
+  an https page uses only `wss://`, never downgraded; plain `ws://` is for
+  local addresses, and anywhere only in development. Nothing connects to a
+  server from untrusted metadata.
+- **Compatibility.** The welcome carries `protocol: 1` and `features`. A
+  newer protocol is `incompatible` (no play, no retry); a pre-M10 server
+  (no number) plays with fewer features; an origin refusal (4005) is
+  `rejected`. A socket opening is never called compatibility.
+- **Public rooms (M10B).** A room is listed or unlisted; the open room is
+  always listed. `{ t: 'rooms' }` returns at most 32 rooms with counts and
+  state only (never who), at most every 2 s per connection; the page asks
+  while the panel is open, every 10 s. Request / response over the
+  existing socket was chosen over a subscription: the list changes slowly,
+  the page is already connected, and nothing is pushed to pages that are
+  not looking. The listing is the room manager's memory; no database.
+- **Hosting (M10C).** Host a public game (listed) or a private game
+  (unlisted, by code or link only). A code is an address, not a secret:
+  this is privacy from browsing, not access control (§16). Links are
+  `/play/CODE` on the server's `PUBLIC_URL`; a page served elsewhere adds
+  `?server=`, checked on arrival. NIP-17 invites are unchanged.
+- **Deployment (M10D).** A Dockerfile and compose file run the one
+  process (page and match) behind a TLS-terminating proxy; `/healthz`;
+  SIGTERM shutdown; `ALLOWED_ORIGINS` enforces browser origins; the
+  existing payload, rate, room and heartbeat limits stay. `npm run bench`
+  measures rooms × ticks; capacity is what it says on the machine, not a
+  promise.
+- **Online UX (M10E).** Connection states: connecting, playing / watching,
+  lost (reconnecting with back-off), unable to connect, full,
+  incompatible, refused; latency from the existing ping. The game
+  connection, the Nostr identity and the relays are three systems; a guest
+  plays with no relay at all. A reconnect is a new connection: no session
+  recovery is promised (§15e limitations).
+- **Not done:** session recovery, server-side proof of a Blobbi's
+  existence, access control, browser-hosted servers (nothing here
+  precludes an authoritative host elsewhere later).
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -843,7 +885,8 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M8C-C | Choosing whom to invite | **Real two-identity test** (2026-10-09): Danidfra's follows listed, NotASage found by name and selected, the invite sent, received automatically, Join entered the room. |
 | M9A | The player's Blobbis, a local choice | **Real test** (2026-10-09): owned Blobbis listed, one selected, restored after reload, no leak across identities, default restored, guest play unchanged. |
 | M9B | Adult Rumble forms | Automated tests; **partly validated for real** (2026-10-09): selecting a Blobbi changes the local fighter, V1/V2 Blobbis get their adult forms, the choice persists across reloads and manual reconnection restores it. **Still open**: the animation checks (facing, grab arm pose, carried attachment, throw release, foot contact, transitions), geometry cleanup, room navigation and game reconnect. |
-| M9C–M9F | Looks for everyone, identity presentation, picker, lifecycle | Automated tests (declaration parsing, owner binding, host rules, two proven players with different Blobbis, a guest, spectators, a late joiner, change, default, logout, disconnect, room switch, not-yours, malformed and oversized, states carry nothing; client planning for every slot, roster forms re-checked). **Awaiting real multiplayer browser validation** (§15d). |
+| M9C–M9F | Looks for everyone, identity presentation, picker, lifecycle | Automated tests, and a **real two-browser test** (2026-10-10): two proven players with different Blobbis saw each other's forms, a change mid-match and the default were followed, a guest played beside them, Nostr disconnect / reconnect behaved. **Not yet tested for real**: spectators, a late joiner, room switching with a form, the server restarting. |
+| M10A–M10E | Online play: servers, public rooms, links, deployment, UX | Automated tests (endpoints, official / own / community servers, the choice and links, protocol version and incompatibility, origin refusal, listed / unlisted rooms, the listing over the socket and its rate limit, full rooms, server-aware links); the container builds from the Dockerfile here only as a file (not run). **Awaiting real online validation**; nothing deployed. |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -891,8 +934,8 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation and lifecycle checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: looks for everyone, identity presentation, picker, lifecycle (§15d) |
-| **Next** | To be decided after the multiplayer validation |
+| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) |
+| **Next** | A first official server, deployed from the compose file, and the real online validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
 | **Insert when useful** | NIP-46 remote signers (does not block M8C) |
 

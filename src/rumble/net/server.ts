@@ -52,7 +52,7 @@ import type { HavokInstance } from '../sim/physics';
 import { AUTH, ChallengeBook, authAddress, verifyAuth } from '../../social/auth';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
-import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo } from './protocol';
+import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage } from './protocol';
 import { RoomManager, type Room } from './rooms';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
 
@@ -114,6 +114,14 @@ export interface ServerConfig {
   roomGraceMs?: number;
   /** New private rooms per source address per minute. */
   roomsPerMinute?: number;
+  /**
+   * M10D: browser origins allowed to connect (exact origins, e.g.
+   * https://rumble.example). Empty or absent: any origin (a LAN, a dev
+   * machine, a server that serves its own page and is reached through it).
+   * A connection with an Origin header not in the list is refused with 4005;
+   * one without an Origin (not a browser) is allowed and logged.
+   */
+  allowedOrigins?: string[];
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -224,6 +232,9 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
   const configuredAddresses = [...(config.authUrls ?? []), ...(identity.public ? [identity.public.websocket] : [])].map(authAddress).filter((a): a is string => !!a);
   const creations = creationLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  const allowedOrigins = (config.allowedOrigins ?? []).map((o) => o.trim().replace(/\/$/, '').toLowerCase()).filter(Boolean);
+  /** M10D: whether a browser from this Origin may connect (no list: anyone; no Origin: not a browser, allowed). */
+  const originAllowed = (origin: string | undefined) => !allowedOrigins.length || origin === undefined || allowedOrigins.includes(origin.replace(/\/$/, '').toLowerCase());
   /** Who drives each slot in a room (bot, guest, proven pubkey) to everyone in it: on any change, never droppable. */
   const sendRoster = (room: Room) => {
     const roster = room.host.roster();
@@ -236,11 +247,12 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if (q.has('create')) {
       const key = req.socket.remoteAddress ?? '?';
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
-      const room = rooms.create();
+      // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
+      const room = rooms.create({ listed: q.get('public') === '1' });
       if (!room) return { code: 4003, why: 'room limit reached' };
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
-      log(`room ${room.id} created by ${from} · ${rooms.size} rooms`);
+      log(`room ${room.id} created by ${from} (${room.listed ? 'listed' : 'unlisted'}) · ${rooms.size} rooms`);
       return { room };
     }
     if (!q.has('room')) return { room: rooms.open };
@@ -264,6 +276,12 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
 
   wss.on('connection', (ws, req: IncomingMessage) => {
     const from = `${req.socket.remoteAddress ?? '?'}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
+    if (!originAllowed(req.headers.origin)) {
+      stats.refused += 1;
+      log(`refused ${from}: origin not allowed`);
+      ws.close(4005, 'origin not allowed');
+      return;
+    }
     if (clients.size >= maxConnections) {
       // Full: refused cleanly, before it takes a slot, a room or any state.
       stats.refused += 1;
@@ -294,6 +312,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     let droppedSince = performance.now();
     let warnedMalformed = false;
     let lastChallenge = -Infinity;
+    let lastRooms = -Infinity;
     // The address a proof must name: the configured public one(s), or the one this connection came in on.
     const pathname = new URL(req.url ?? '/', 'http://x').pathname;
     const addresses = configuredAddresses.length ? configuredAddresses : [authAddress(`ws://${req.headers.host ?? ''}${pathname}`)].filter((a): a is string => !!a);
@@ -318,9 +337,9 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
     log(`conn ${id} from ${from}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
+    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
-    client.send(JSON.stringify({ ...welcome, features: ['nostr-auth', 'rooms', 'looks'], room: info, server }));
+    client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list'], room: info, server }));
     sendRoster(room);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
     const identityMessage = (msg: ClientMessage) => {
@@ -337,6 +356,14 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         challenges.drop(id);
         if (host.setIdentity(id, null)) sendRoster(room);
         return reply({ t: 'auth', ok: false, reason: 'logged-out' });
+      }
+      // M10B: the public rooms, counts only, bounded, not more often than the protocol allows per connection.
+      if (msg.t === 'rooms') {
+        const t = performance.now();
+        if (t - lastRooms < PROTOCOL.roomsEveryMs) return;
+        lastRooms = t;
+        client.send(JSON.stringify({ t: 'rooms', rooms: rooms.listing() } satisfies RoomsMessage));
+        return;
       }
       // M9C: the look of this connection's own fighter; the host binds it to the proven identity.
       if (msg.t === 'look') {
@@ -386,7 +413,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       }
       inbound(() => {
         if (!clients.has(ws)) return;
-        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout' || msg.t === 'look') return identityMessage(msg);
+        if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout' || msg.t === 'look' || msg.t === 'rooms') return identityMessage(msg);
         const reply = host.receive(id, raw);
         if (reply) client.send(JSON.stringify(reply));
       });

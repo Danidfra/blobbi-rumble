@@ -13,7 +13,7 @@
  */
 import { OPEN_ROOM, normalizeRoomId } from '../net/roomId';
 
-export type RoomIntent = { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create' } | { kind: 'invalid'; raw: string };
+export type RoomIntent = { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create'; listed?: boolean } | { kind: 'invalid'; raw: string };
 
 export function roomIntent(loc: { pathname: string; search: string }): RoomIntent {
   const q = new URLSearchParams(loc.search);
@@ -29,7 +29,7 @@ export function roomIntent(loc: { pathname: string; search: string }): RoomInten
     if (!id) return { kind: 'invalid', raw: raw.slice(0, 16) };
     return id === OPEN_ROOM ? { kind: 'open' } : { kind: 'join', id };
   }
-  return q.has('create') ? { kind: 'create' } : { kind: 'open' };
+  return q.has('create') ? { kind: 'create', listed: q.get('public') === '1' } : { kind: 'open' };
 }
 
 /** The WebSocket URL for a room: the server's URL with `room=` or `create=1` (any other query kept). */
@@ -37,8 +37,12 @@ export function socketUrl(serverUrl: string, intent: RoomIntent): string {
   const u = new URL(serverUrl);
   u.searchParams.delete('room');
   u.searchParams.delete('create');
+  u.searchParams.delete('public');
   if (intent.kind === 'join') u.searchParams.set('room', intent.id);
-  else if (intent.kind === 'create') u.searchParams.set('create', '1');
+  else if (intent.kind === 'create') {
+    u.searchParams.set('create', '1');
+    if (intent.listed) u.searchParams.set('public', '1');
+  }
   return u.toString();
 }
 
@@ -59,10 +63,13 @@ export function pageAddress(roomId: string | null, search: string): string {
 
 /**
  * The link to share for a room: the server's canonical one when it gave
- * one (its PUBLIC_URL: what friends elsewhere can reach), else this page's
- * own origin. Only http(s) links are ever shown.
+ * one (its PUBLIC_URL: what friends elsewhere can reach; that server
+ * serves the page too), else this page's own origin, and, when the game
+ * server is not this page's own (M10A: a picked or linked server without a
+ * public address), with `?server=` so the link names it. Only http(s)
+ * links are ever shown.
  */
-export function shareLink(roomId: string, origin: string, serverUrl?: string): string {
+export function shareLink(roomId: string, origin: string, serverUrl?: string, gameServer?: string): string {
   if (serverUrl) {
     try {
       const u = new URL(serverUrl);
@@ -71,5 +78,19 @@ export function shareLink(roomId: string, origin: string, serverUrl?: string): s
       // Fall through to this page's origin.
     }
   }
-  return roomId === OPEN_ROOM ? `${origin}/` : `${origin}/play/${roomId}`;
+  const base = roomId === OPEN_ROOM ? `${origin}/` : `${origin}/play/${roomId}`;
+  if (gameServer && !isOwnServer(origin, gameServer)) return `${base}?server=${encodeURIComponent(gameServer)}`;
+  return base;
+}
+
+/** Whether a game server URL is this page's own origin at /ws (the hosted game), so a link needs no `?server=`. */
+export function isOwnServer(origin: string, gameServer: string): boolean {
+  try {
+    const o = new URL(origin);
+    const g = new URL(gameServer);
+    const wsScheme = o.protocol === 'https:' ? 'wss:' : 'ws:';
+    return g.protocol === wsScheme && g.host === o.host && (g.pathname === '/ws' || g.pathname === '/');
+  } catch {
+    return false;
+  }
 }

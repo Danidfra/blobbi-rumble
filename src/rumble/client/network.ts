@@ -38,7 +38,9 @@
  */
 import { canAct, type CombatState } from '../combat/combat';
 import { Keyboard, PlayerInput, type KeyBindings, type MoveIntent } from '../control/input';
-import { resolveServerUrl } from '../net/endpoint';
+import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
+import { PROTOCOL, type RoomListing } from '../net/protocol';
+import { onProtocol } from './connection';
 import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
@@ -121,7 +123,42 @@ class Window {
 export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) {
   const q = new URLSearchParams(location.search);
   /** The server's WebSocket address (the room goes in its query); identity proofs name it. */
-  const url = resolveServerUrl(location, location.search, { dev: import.meta.env.DEV, configured: import.meta.env.VITE_RUMBLE_SERVER as string | undefined });
+  // M10A: which game server. Built-in official servers (none unless configured), this page's own (or the dev server),
+  // the player's community servers (localStorage), and this page's ?server= for a link; never a server from untrusted metadata.
+  const rules = { secure: location.protocol === 'https:', dev: import.meta.env.DEV };
+  const prefs = safeStorage();
+  let community: GameServer[] = loadCommunityServers(prefs, rules);
+  const knownServers = (): GameServer[] => [...officialServers({ VITE_RUMBLE_SERVERS: import.meta.env.VITE_RUMBLE_SERVERS as string | undefined, VITE_RUMBLE_SERVER: import.meta.env.VITE_RUMBLE_SERVER as string | undefined }, rules), ...ownServers(location, import.meta.env.DEV), ...community];
+  const picked = chooseServer(knownServers(), loadChosenServer(prefs), location.search, rules);
+  const server: GameServer = picked.server;
+  const url = server.url;
+  /** M10B: the server's public rooms, as last listed, and when. */
+  let rooms: RoomListing[] | null = null;
+  let roomsAskedAt = 0;
+  let roomsSupported = false;
+  const askRooms = (force = false) => {
+    const nowMs = performance.now();
+    if (!ws || conn.phase === 'connecting' || !roomsSupported) return;
+    if (!force && nowMs - roomsAskedAt < 10_000) return;
+    if (nowMs - roomsAskedAt < PROTOCOL.roomsEveryMs) return;
+    roomsAskedAt = nowMs;
+    send({ t: 'rooms' });
+  };
+  /** M10A: go to another server: this page reloads at that server's open room (one socket at a time, nothing carried over by accident). */
+  const useServer = (id: string) => {
+    const s = knownServers().find((x) => x.id === id);
+    if (!s) return;
+    saveChosenServer(prefs, s.source === 'community' || s.source === 'official' ? s.id : null);
+    const q = new URLSearchParams(location.search);
+    q.delete('room');
+    q.delete('create');
+    q.delete('public');
+    q.set('network', '1');
+    // The chosen server is remembered; a built-in or own server needs no ?server= in the address.
+    if (s.source === 'community' || s.source === 'link') q.set('server', s.url);
+    else q.delete('server');
+    location.assign(`/rumble.html?${q.toString()}`);
+  };
   // Which room: from the page's address; after a create, the room it made.
   let target: RoomIntent = roomIntent(location);
   let room: RoomInfo | null = null;
@@ -424,7 +461,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       lookup: (profiles(), relayPool!),
       publishPool: () => new SimplePool({ enablePing: false, enableReconnect: false }),
       lookupRelays: devRelays ?? LOOKUP_RELAYS,
-      link: shareLink(room.id, location.origin, room.url),
+      link: shareLink(room.id, location.origin, room.url, url),
       inviterName: clip(displayName(profileOf(me), me), 40),
       onStatus: (st) => {
         if (room?.id !== forRoom) return;
@@ -438,7 +475,22 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (conn.phase !== 'connecting' && conn.phase !== 'playing' && conn.phase !== 'watching') connect();
     },
     openRoom: () => switchTo({ kind: 'open' }),
-    hostGame: () => switchTo({ kind: 'create' }),
+    hostGame: (listed) => switchTo({ kind: 'create', listed }),
+    // M10A / M10B: servers and public rooms.
+    useServer,
+    addServer: (input) => {
+      const r = addCommunityServer(community, input, rules);
+      if ('error' in r) return r.error;
+      community = r.servers;
+      saveCommunityServers(prefs, community);
+      return null;
+    },
+    removeServer: (id) => {
+      community = removeCommunityServer(community, id);
+      saveCommunityServers(prefs, community);
+      if (loadChosenServer(prefs) === id) saveChosenServer(prefs, null);
+    },
+    refreshRooms: () => askRooms(true),
     joinGame: (id) => switchTo({ kind: 'join', id }),
     connectNostr: () => {
       seeStart();
@@ -594,6 +646,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         serverFeatures = m.features ?? [];
         declared = null;
         declaredOn = null;
+        // M10A: a server speaking a newer protocol than this build is not played with (no pretending, no retry loop).
+        conn = onProtocol(conn, m.protocol, PROTOCOL.version);
+        if (conn.phase === 'incompatible') {
+          socket.close(1000, 'incompatible');
+          return;
+        }
+        roomsSupported = serverFeatures.includes('rooms-list');
+        rooms = null;
+        roomsAskedAt = 0;
         identity.onWelcome(m.features);
       } else if (m.t === 'state') {
         // Late or repeated states are dropped: the newest tick wins.
@@ -618,6 +679,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         }
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
+      } else if (m.t === 'rooms') {
+        rooms = Array.isArray(m.rooms) ? m.rooms.slice(0, PROTOCOL.maxListedRooms) : [];
       } else if (m.t === 'roster') {
         // Who came and went (not you), briefly.
         if (roster)
@@ -736,6 +799,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (blobbis && identity.verified && (shell.panelOpen || blobbis.state.selected)) blobbis.load();
     declareLook();
     syncLooks();
+    // M10B: the public rooms, while the panel is open (every 10 s at most; nothing per frame, nothing while closed).
+    if (shell.panelOpen) askRooms();
     if (inbox && nowMs - inboxExpiredAt > 1000) {
       inboxExpiredAt = nowMs;
       inbox.expire();
@@ -744,7 +809,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       conn,
       now,
       room,
-      share: room && room.kind === 'private' ? shareLink(room.id, location.origin, room.url) : null,
+      share: room && room.kind === 'private' ? shareLink(room.id, location.origin, room.url, url) : null,
+      servers: { current: server, known: knownServers(), linkError: picked.linkError ?? null, rooms, roomsSupported },
       trust,
       server: serverInfo,
       identity: identity.state,
@@ -881,7 +947,18 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       get server() {
         return serverInfo;
       },
-      host: () => switchTo({ kind: 'create' }),
+      host: (listed = false) => switchTo({ kind: 'create', listed }),
+      /** M10: servers and rooms, for scripted checks. */
+      get gameServer() {
+        return server;
+      },
+      get servers() {
+        return knownServers();
+      },
+      get rooms() {
+        return rooms;
+      },
+      refreshRooms: () => askRooms(true),
       join: (id: string) => switchTo({ kind: 'join', id }),
       openRoom: () => switchTo({ kind: 'open' }),
       shell,

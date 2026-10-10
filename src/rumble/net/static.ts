@@ -72,7 +72,8 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
       return;
     }
     if (path === '/healthz') {
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(health()));
+      // Readable from any origin: a page on another site may show whether a server is up (M10A), nothing more is in it.
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' }).end(JSON.stringify(health()));
       return;
     }
     const file = resolveStatic(root, isPlayPath(path) ? GAME_PAGE : url);

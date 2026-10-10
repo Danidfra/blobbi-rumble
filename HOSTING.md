@@ -102,25 +102,146 @@ PUBLIC_URL=https://rumble.example SERVER_NAME="Daniel's garden" OPERATOR_PUBKEY=
 cloudflared tunnel --url http://localhost:8080      # or tailscale funnel 8080, a reverse proxy, a VPS
 ```
 
-## Which server a page connects to
+## Which server a page connects to (M10A)
 
-1. `?server=` in the page URL (`ws://`, `wss://`, or `http(s)://host` which means `ws(s)://host/ws`);
-2. `VITE_RUMBLE_SERVER` at build time;
-3. in dev: `ws(s)://<page host>:8787`;
-4. otherwise the page's own origin: `ws://host/ws`, or `wss://host/ws` on an HTTPS page.
+A page knows a few game servers and uses one:
 
-The room goes in the query (`?room=A7F2`); the page reads it from its own
-path (`/play/A7F2`) or `?room=`.
+1. `?server=` in the page URL (a link, a test: this page only): `wss://`,
+   `ws://`, or `http(s)://host` meaning `ws(s)://host/ws`;
+2. the server the player chose in the session panel (remembered in this
+   browser), if it is still known;
+3. the first **official** server, from build-time configuration:
+   `VITE_RUMBLE_SERVERS`, a JSON list of `{ "name", "url", "region"?,
+   "operator"? }`, or the older `VITE_RUMBLE_SERVER` (one address). There
+   is none by default: no production address is invented;
+4. the page's own origin at `/ws` (`wss://` on an HTTPS page): the hosted
+   game, where one process serves page and match; in dev, the dev server
+   `ws(s)://<page host>:8787`.
 
-## HTTPS / WSS
+**Community servers** are added by the player in the session panel
+(Server → Game servers → Add server): a name and an address, kept in this
+browser's localStorage (never a secret), at most 12; **Use** connects by
+reloading the page at that server's open room. Nothing connects to a
+server found in untrusted metadata (an invite, a profile, a relay).
+
+**Addresses are checked strictly**: `ws://` or `wss://` only (other
+schemes, credentials and fragments are refused); an **https page may only
+use wss://**, never downgraded; plain `ws://` is accepted for local
+addresses, and anywhere only in development.
+
+**Compatibility**: the welcome carries `protocol` (1) and `features`
+(`nostr-auth`, `rooms`, `looks`, `rooms-list`). A server speaking a newer
+protocol than the page is shown as incompatible (no play, no retry loop); an
+older one (no number) plays with fewer features. A server that refuses the
+page's origin (4005) is shown as having turned the page away. Neither is
+called "connected" merely because a socket opened.
+
+The room goes in the query (`?room=A7F2`, `?create=1`, `&public=1`); the
+page reads it from its own path (`/play/A7F2`) or `?room=`.
+
+## Public rooms (M10B)
+
+The session panel lists the server's **public rooms**: the open room and
+every game hosted as public, with players / slots, watchers, the match's
+phase and round, and whether a newcomer gets in. The list comes over the
+existing socket (`{ t: 'rooms' }` → `{ t: 'rooms', rooms }`), at most 32
+rooms, counts only (never who is in them), not more than once every 2 s
+per connection, and the page asks only while the panel is open (every
+10 s). There is no room database: the listing is the server's in-memory
+room manager, as it is.
+
+**Host a public game** lists the new room; **Host a private game** does
+not: a private room is reached by its code or link only. A private room's
+code is an **address, not a secret**: anyone who has it joins, as before.
+Privacy here means "not browsable", not access control; invitations grant
+nothing (see the spec, §16).
+
+## Links (M10C)
+
+A room link is `https://<server>/play/<CODE>` on the server's `PUBLIC_URL`
+(that server serves the page too). A page served elsewhere (a static site,
+a dev page) that plays on another server appends `?server=<its address>`,
+so the link selects the right server; the server address in a link is
+checked like any other and, if refused, reported and not used. Old links
+keep working. NIP-17 invitations carry the same link and are unchanged.
+
+## Deploying the server (M10D)
+
+The repo has a `Dockerfile` (multi-stage: builds the page and the server
+bundle, runs them as `node` with production dependencies) and a
+`compose.yaml`:
+
+```
+cp .env.example .env    # or export the variables below
+docker compose up -d --build
+curl -s http://127.0.0.1:8080/healthz
+```
+
+Environment (`npm run serve` and the container read the same):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT`, `HOST` | 8080, 0.0.0.0 | where to listen |
+| `PUBLIC_URL` | unset | the one address people open (`https://rumble.example`); identity proofs must name it, share links and the well-known document use it. Set it when hosting publicly. |
+| `SERVER_NAME`, `OPERATOR_PUBKEY` | unset | the server's claims (name; npub or hex) |
+| `ALLOWED_ORIGINS` | unset (any) | browser origins that may connect, comma-separated; a browser from another origin is refused (4005); non-browser clients (no Origin) are let in. Usually equal to `PUBLIC_URL`. |
+| `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once |
+| `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
+| `STATIC_DIR` | dist | the built page |
+
+The process answers `GET /healthz` (`{ ok, clients, rooms, tick }`,
+readable from any origin) and `/.well-known/rumble.json`; it closes
+sockets and exits on SIGTERM / SIGINT (compose gives it 15 s); the
+container's `HEALTHCHECK` and `restart: unless-stopped` bring it back.
+Logs are compact lines about connections, rooms and abnormal traffic
+(remote address and Origin; never message contents, never keys).
+
+## HTTPS / WSS and the reverse proxy
 
 The app never handles TLS and no certificates live in the repo. A browser
-on an `https://` page must use `wss://`, which (4) does automatically, so
-terminate TLS in front of port 8080 with whatever you have, e.g.
+on an `https://` page must use `wss://`, which the page does on its own
+origin, so terminate TLS in front of port 8080 with whatever you have, e.g.
 `tailscale funnel 8080`, `cloudflared tunnel --url http://localhost:8080`,
-`ngrok http 8080`, or Caddy/nginx (`reverse_proxy localhost:8080`; nginx
-needs the `Upgrade`/`Connection` headers for `/ws`). Firewall: the host
-must accept inbound TCP 8080 for LAN play (macOS asks the first time).
+`ngrok http 8080`, or Caddy / nginx / Traefik. The proxy must forward the
+WebSocket upgrade for `/ws` (Caddy's `reverse_proxy localhost:8080` does;
+nginx needs `proxy_http_version 1.1`, `Upgrade` and `Connection` headers,
+and a read timeout above the 10 s heartbeat). Open only the proxy's port
+(443) to the Internet; 8080 stays local to the host or the compose
+network. Firewall: the host must accept inbound TCP 8080 for plain LAN
+play (macOS asks the first time).
+
+## Resources (M10D)
+
+Each room is its own Havok world and `RumbleHost`; every room steps on the
+same 60 Hz beat whether or not anyone is in it (a bot match plays on), and
+empty private rooms close after 120 s. Spectators cost sends, not
+simulation. `npm run bench` measures it here (`ROOMS=16 SECONDS=10`): on
+the development machine this was written on, 16 rooms with four players
+each took **0.39 ms per tick for all rooms together** (0.025 ms per room),
+against a 16.7 ms budget; a state message is about 2.6 KB, so a full room
+of 8 connections receives about 0.42 Mbit/s. That is one machine's
+number, not a promise: run the benchmark where you deploy, and size
+`MAX_ROOMS` / `MAX_CONNECTIONS` from it, leaving the sockets and the
+operating system their share.
+
+## Security notes
+
+- Fresh-challenge Nostr identity on every connection; nothing weakened for
+  convenience; guests always play.
+- Origin validation (`ALLOWED_ORIGINS`), payload (4 KB) and message limits,
+  per-connection rate limit, room-creation limit per address, heartbeat
+  cleanup, bounded rooms and connections, strict parsing of every message.
+- The server holds no keys: identity stays in the player's extension.
+- Not provided: session recovery across a disconnect (a reconnect is a new
+  connection with whatever slot is free), server-side proof that a
+  declared Blobbi exists (the form binds to the owner's address; the rest
+  is cosmetic), access control for rooms (a code is an address).
+
+## Known bugs
+
+- Automatic Nostr session restoration after a reload is intermittent
+  (M9B.1); manual Connect / Reconnect works. Diagnostics are in the
+  session panel in dev builds.
 
 ## Server limits
 
@@ -129,7 +250,8 @@ Besides the room limits: 4 KB per message · 120 messages/s per connection
 malformed messages counted and ignored · a client more than 256 KB behind
 skips states, more than 2 MB behind is disconnected · ws ping every 10 s,
 silent sockets terminated · one identity challenge per second per
-connection. The Origin header is logged, not enforced.
+connection · one room listing per 2 s per connection. The Origin header is
+enforced when `ALLOWED_ORIGINS` is set, logged otherwise.
 
 ## Disconnects
 

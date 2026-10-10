@@ -95,3 +95,32 @@ describe('the room manager', () => {
     m.dispose();
   });
 });
+
+describe('the public listing (M10B)', () => {
+  it('the open room and listed code rooms, counts only, busiest first, bounded; unlisted rooms never appear', () => {
+    const m = new RoomManager({ havok, maxRooms: 6 });
+    const pub = m.create({ listed: true })!;
+    const priv = m.create()!;
+    const pub2 = m.create({ listed: true })!;
+    expect(priv.listed).toBe(false);
+    m.enter(pub2, 1);
+    pub2.host.connect(1);
+    m.enter(pub2, 2);
+    pub2.host.connect(2);
+    const rows = m.listing();
+    expect(rows.map((r) => r.id)).toEqual(['OPEN', pub2.id, pub.id]);
+    expect(rows.find((r) => r.id === pub2.id)).toMatchObject({ kind: 'private', players: 2, maxPlayers: 4, spectators: 0, maxConnections: m.perRoom, joinable: true });
+    expect(rows.find((r) => r.id === 'OPEN')).toMatchObject({ kind: 'open', players: 0, joinable: true });
+    expect(JSON.stringify(rows)).not.toContain(priv.id);
+    expect(JSON.stringify(rows)).not.toMatch(/pubkey|nostr|conn/);
+    for (const r of rows) expect(Object.keys(r).sort()).toEqual(['age', 'id', 'joinable', 'kind', 'maxConnections', 'maxPlayers', 'phase', 'players', 'round', 'spectators']);
+    // Full: not joinable; spectators counted.
+    for (let c = 3; c <= m.perRoom; c++) {
+      m.enter(pub2, c);
+      pub2.host.connect(c);
+    }
+    const full = m.listing().find((r) => r.id === pub2.id)!;
+    expect(full).toMatchObject({ players: 4, spectators: m.perRoom - 4, joinable: false });
+    m.dispose();
+  });
+});

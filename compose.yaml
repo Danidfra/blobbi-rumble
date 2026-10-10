@@ -1,0 +1,34 @@
+# Blobbi Rumble, one dedicated server. TLS is the reverse proxy's job (Caddy,
+# nginx, Traefik, or a platform): it terminates https and forwards the
+# WebSocket upgrade for /ws to this container. See HOSTING.md.
+services:
+  rumble:
+    build: .
+    image: blobbi-rumble
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # The one address people open, e.g. https://rumble.example (required when hosting publicly).
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      SERVER_NAME: ${SERVER_NAME:-Blobbi Rumble}
+      OPERATOR_PUBKEY: ${OPERATOR_PUBKEY:-}
+      # Browser origins allowed to connect (comma-separated); empty: any origin. Usually the same as PUBLIC_URL.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      MAX_CONNECTIONS: ${MAX_CONNECTIONS:-64}
+      MAX_ROOMS: ${MAX_ROOMS:-16}
+      TICK_HZ: 60
+      SNAPSHOT_HZ: 20
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    # One Node process; 16 rooms of Havok at 60 Hz fit comfortably in this (see the benchmark in HOSTING.md).
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
+    stop_grace_period: 15s

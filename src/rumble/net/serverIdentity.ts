@@ -102,7 +102,7 @@ export function identityFromEnv(env: Record<string, string | undefined>): { iden
 /** The share link for a room on a server known by its public origin. */
 export const roomShareUrl = (origin: string, roomId: string) => (roomId === OPEN_ROOM ? `${origin}/` : `${origin}/play/${roomId}`);
 
-export const CAPABILITIES = Object.freeze(['rooms', 'nostr-auth']);
+export const CAPABILITIES = Object.freeze(['rooms', 'nostr-auth', 'looks', 'rooms-list']);
 
 /** The well-known document. Only what is true and useful now. */
 export function wellKnown(id: ServerIdentity) {

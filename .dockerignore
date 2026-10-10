@@ -1,0 +1,8 @@
+node_modules
+dist
+.serve
+.server
+.headless
+.git
+*.log
+docs

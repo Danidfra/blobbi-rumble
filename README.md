@@ -273,6 +273,7 @@ src/rumble/
   net/                the network boundary (M7B):
     protocol.ts         the wire messages, validation of untrusted input, state freshness (pure); M8A identity messages; M9C look messages
     looks.ts            M9C: a fighter's Rumble form on the wire, bound to the sender's proven pubkey (the seed derived from (pubkey, d) here, never taken from a client)
+    bench-cli.ts        M10D: `npm run bench`: rooms × ticks on this machine (ms per tick for all rooms, state size)
     host.ts             one match and its slots: people, bots, inputs, acks, the input timeout, auto-restart; the roster
     server.ts           the WebSocket server, the fixed 60 Hz loop with bounded catch-up, dev-only lag; the identity handshake; room routing
     rooms.ts            RoomManager: the open room and private rooms, one RumbleHost each; limits, grace period, disposal
@@ -287,7 +288,8 @@ src/rumble/
                       local.ts (the match in the page), network.ts (a client of the server),
                       interp.ts (remote interpolation, pure), predict.ts (local prediction and reconciliation, pure),
                       connection.ts (connect / lost / retry / missing-room states and their words, pure),
-                      room.ts (which room a page wants, its links; pure), shell.ts (the interface: chips, scoreboard, panels,
+                      room.ts (which room a page wants, its links; pure), servers.ts (M10A: official, own, dev and community game servers;
+                      strict endpoints, wss on https, the choice; pure), shell.ts (the interface: chips, scoreboard, panels,
                       help, banner), dom.ts (text-only DOM helpers), identity.ts (the optional Nostr identity session),
                       invites.ts (the kind-14 invite message; reading one back), inviteSender.ts (recipient → inbox → wrap → publish, as statuses),
                       inviteInbox.ts (M8C-B: check, bounded newest-first unwrap, live invites, dedup, ids-only session memory;

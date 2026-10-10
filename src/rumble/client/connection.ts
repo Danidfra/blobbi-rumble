@@ -13,7 +13,7 @@
  * A reconnect is a new connection: it gets whatever slot is free, never a
  * promise of the fighter it had (that fighter went to a bot).
  */
-export type ConnectionPhase = 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'missing' | 'refused';
+export type ConnectionPhase = 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'missing' | 'refused' | 'incompatible' | 'rejected';
 /** What the banner may offer: try again, go to the open room, make a new room. */
 export type BannerAction = 'retry' | 'open' | 'host';
 
@@ -60,6 +60,9 @@ export function onClose(s: ConnectionState, code: number, reason: string, now: n
   const attempts = s.attempts + 1;
   if (code === 4004) return { ...s, phase: 'missing', you: null, attempts, retryAt: Infinity, why: reason };
   if (code === 4003) return { ...s, phase: 'refused', you: null, attempts, retryAt: Infinity, why: reason };
+  // M10: the server would not have this page (its origin, or a policy): no retry; the player picks another server.
+  if (code === 4005 || code === 1008) return { ...s, phase: 'rejected', you: null, attempts, retryAt: Infinity, why: reason };
+  if (s.phase === 'incompatible') return { ...s, you: null, attempts, retryAt: Infinity };
   const full = code === 1013 && /full/i.test(reason);
   const wait = full ? CONNECTION.retryFull : Math.min(CONNECTION.retryMax, CONNECTION.retryBase * 2 ** (attempts - 1));
   const phase: ConnectionPhase = full ? 'full' : s.everConnected ? 'lost' : 'failed';
@@ -67,6 +70,17 @@ export function onClose(s: ConnectionState, code: number, reason: string, now: n
 }
 
 export const onRetry = (s: ConnectionState): ConnectionState => ({ ...s, phase: 'connecting' });
+
+/**
+ * M10A: the welcome said which protocol the server speaks. A number this
+ * build does not know (newer) is incompatible: the page does not pretend to
+ * play, and does not retry. Absent means a pre-M10 server, which still plays.
+ */
+export function onProtocol(s: ConnectionState, serverVersion: number | undefined, mine: number): ConnectionState {
+  const v = serverVersion ?? 0;
+  if (Number.isSafeInteger(v) && v <= mine) return s;
+  return { ...s, phase: 'incompatible', you: null, retryAt: Infinity, why: `protocol ${String(serverVersion)}` };
+}
 
 /** What to show: a headline, a line of detail, and what to offer. Null while simply playing. */
 export function describe(s: ConnectionState, now: number): { title: string; detail: string; retry: boolean; actions: BannerAction[] } | null {
@@ -85,6 +99,10 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
       return { title: `${room} isn’t here`, detail: 'It may have ended (empty rooms close after a couple of minutes), or the code is mistyped.', retry: false, actions: ['open', 'host'] };
     case 'refused':
       return { title: 'Couldn’t start a new game', detail: /minute/.test(s.why) ? 'Too many new games from here: wait a minute and try again.' : 'This server is hosting as many games as it can right now.', retry: false, actions: ['open', 'retry'] };
+    case 'incompatible':
+      return { title: 'This server speaks a newer Rumble', detail: 'Update the game (reload a newer page) or pick another server in the session panel.', retry: false, actions: ['retry'] };
+    case 'rejected':
+      return { title: 'This server turned this page away', detail: /origin/i.test(s.why) ? 'It does not accept connections from this site. Pick another server in the session panel.' : `It refused the connection${s.why ? ` (${s.why})` : ''}. Pick another server in the session panel.`, retry: false, actions: ['retry'] };
     default:
       return null;
   }
@@ -102,6 +120,10 @@ export function statusLine(s: ConnectionState, rttMs: number): string {
       return '○ connecting…';
     case 'full':
       return '○ server full';
+    case 'incompatible':
+      return '○ incompatible server';
+    case 'rejected':
+      return '○ server refused this page';
     default:
       return '○ offline';
   }

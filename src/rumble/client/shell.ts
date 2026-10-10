@@ -34,6 +34,8 @@ import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
 import type { PeopleState, PersonRow } from './people';
+import type { GameServer } from './servers';
+import type { RoomListing } from '../net/protocol';
 import type { PickerState } from './blobbis';
 import type { RumbleForm } from './rumbleForm';
 import type { SetupState } from './inboxSetup';
@@ -43,7 +45,14 @@ import { isLocalHost } from '../net/serverTrust';
 export interface ShellActions {
   retry(): void;
   openRoom(): void;
-  hostGame(): void;
+  /** Host a new game: listed in this server's public rooms, or reached by its code and link only. */
+  hostGame(listed: boolean): void;
+  /** M10A: servers. */
+  useServer(id: string): void;
+  addServer(input: { name?: string; url: string; region?: string; operator?: string }): string | null;
+  removeServer(id: string): void;
+  /** M10B: list the public rooms now. */
+  refreshRooms(): void;
   joinGame(code: string): void;
   connectNostr(): void;
   disconnectNostr(): void;
@@ -100,6 +109,8 @@ export interface ShellView {
   share: string | null;
   trust: ServerTrust | null;
   server: ServerInfo | null;
+  /** M10: the game servers this page knows and uses, and the current server's public rooms. */
+  servers: { current: GameServer; known: GameServer[]; linkError: string | null; rooms: RoomListing[] | null; roomsSupported: boolean };
   identity: IdentityState;
   /** Development only: the Nostr connection lifecycle, stage by stage (null: off). */
   diag: string[] | null;
@@ -637,6 +648,85 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
+  /** M10B: the current server's public rooms: counts and state, Join, Refresh; never who is in them. */
+  const roomsSection = (v: ShellView): Node[] => {
+    const out: Node[] = [el('h5', undefined, 'Public rooms on this server')];
+    const sv = v.servers;
+    if (!sv.roomsSupported) return [...out, el('div', 'rs-sub', v.conn.phase === 'playing' || v.conn.phase === 'watching' ? 'This server does not list its rooms (an older server).' : 'Not connected.')];
+    if (!sv.rooms) return [...out, el('div', 'rs-sub', 'Listing…')];
+    if (!sv.rooms.length) out.push(el('div', 'rs-sub', 'No public rooms right now.'));
+    for (const r of sv.rooms) {
+      const row = el('div', 'rs-row');
+      const here = v.room?.id === r.id;
+      const words = `${r.players}/${r.maxPlayers} playing${r.spectators ? ` · ${r.spectators} watching` : ''} · ${r.phase === 'playing' ? `round ${r.round}` : r.phase}${r.joinable ? '' : ' · full'}`;
+      row.append(el('b', undefined, r.kind === 'open' ? 'Open room' : r.id), el('span', 'rs-sub', words));
+      if (here) row.append(el('span', 'rs-ok', 'you are here'));
+      else if (r.joinable) row.append(button('Join', () => (r.kind === 'open' ? a.openRoom() : a.joinGame(r.id)), 'rs-btn go'));
+      out.push(row);
+    }
+    const r = el('div', 'rs-row');
+    r.append(button('Refresh', a.refreshRooms), el('span', 'rs-sub', 'Private games are not listed: join them by code or link.'));
+    out.push(r);
+    return out;
+  };
+
+  /** M10A: the game servers this page knows: the current one, the others to switch to, and a form for a community server. */
+  let serverDraft = { name: '', url: '' };
+  const serversSection = (v: ShellView): Node[] => {
+    const sv = v.servers;
+    const out: Node[] = [el('h5', undefined, 'Game servers')];
+    if (sv.linkError) out.push(el('div', 'rs-err', `The server in this page’s link was not used: ${sv.linkError}.`));
+    const words: Record<GameServer['source'], string> = { official: 'official', page: 'this site', dev: 'development', community: 'added by you', link: 'from this link' };
+    for (const s of sv.known) {
+      const row = el('div', 'rs-row');
+      const here = s.id === sv.current.id;
+      const who = el('div', 'who');
+      who.append(el('b', undefined, clip(s.name, 28)), el('span', 'rs-sub', `${s.url.replace(/\/$/, '')} · ${words[s.source]}${s.region ? ` · ${s.region}` : ''}${s.operator ? ` · ${clip(s.operator, 24)}` : ''}`));
+      row.append(who);
+      if (here) row.append(el('span', 'rs-ok', v.conn.phase === 'playing' || v.conn.phase === 'watching' ? 'connected' : v.conn.phase === 'connecting' ? 'connecting…' : v.conn.phase === 'incompatible' ? 'incompatible' : v.conn.phase === 'rejected' ? 'refused this page' : 'unavailable'));
+      else row.append(button('Use', () => a.useServer(s.id)));
+      if (s.source === 'community') row.append(button('Remove', () => a.removeServer(s.id)));
+      out.push(row);
+    }
+    if (sv.current.source === 'link') out.push(el('div', 'rs-sub', 'This page’s link named this server. It is used for this page only.'));
+    const form = el('div', 'rs-row');
+    const name = el('input', 'rs-link');
+    name.placeholder = 'Name';
+    name.maxLength = 40;
+    name.value = serverDraft.name;
+    const addr = el('input', 'rs-link');
+    addr.placeholder = location.protocol === 'https:' ? 'wss://host/ws' : 'ws://host:8787 or wss://host/ws';
+    addr.maxLength = 256;
+    addr.value = serverDraft.url;
+    const formErr = el('div', 'rs-err');
+    const add = () => {
+      const r = a.addServer({ name: name.value, url: addr.value });
+      if (r) {
+        formErr.textContent = `Not added: ${r}.`;
+        return;
+      }
+      formErr.textContent = '';
+      serverDraft = { name: '', url: '' };
+      name.value = '';
+      addr.value = '';
+      toast('Server added');
+    };
+    for (const i of [name, addr]) {
+      i.autocomplete = 'off';
+      i.spellcheck = false;
+      i.addEventListener('focus', () => a.releaseKeys());
+      i.addEventListener('input', () => (serverDraft = { name: name.value, url: addr.value }));
+      i.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') i.blur();
+        if (e.key === 'Enter') add();
+      });
+    }
+    form.append(name, addr, button('Add server', add));
+    out.push(el('div', 'rs-sub', 'Add a community or self-hosted server (its address only; nothing else is stored). You connect only when you choose Use.'), form, formErr);
+    return out;
+  };
+
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
     // Room.
@@ -677,15 +767,17 @@ export function createShell(a: ShellActions) {
         parts.push(row, hint);
       }
       parts.push(el('div', 'rs-row'));
-      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a new game', a.hostGame));
+      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom), button('Host a public game', () => a.hostGame(true)), button('Host a private game', () => a.hostGame(false)));
       parts.push(...inviteSection(v));
     } else {
       parts.push(el('div', 'rs-sub', 'The open room: anyone who opens this server plays here, with bots in the empty slots.'));
       parts.push(el('div', 'rs-row'));
-      (parts.at(-1) as HTMLElement).append(button('Host a game', a.hostGame, 'rs-btn go'));
+      (parts.at(-1) as HTMLElement).append(button('Host a public game', () => a.hostGame(true), 'rs-btn go'), button('Host a private game', () => a.hostGame(false)));
+      parts.push(el('div', 'rs-sub', 'A public game is listed below for anyone on this server; a private one is reached by its code or link only (a code is an address, not a secret).'));
     }
     const err = el('div', 'rs-err');
     parts.push(el('div', 'rs-sub', 'Join a game by its code:'), joinRow(err), err);
+    parts.push(...roomsSection(v));
     // Players.
     parts.push(el('h4', undefined, 'Players'));
     const list = el('div', 'rs-players');
@@ -768,6 +860,7 @@ export function createShell(a: ShellActions) {
       }
       parts.push(el('div', 'rs-sub', v.trust.detail));
     }
+    parts.push(...serversSection(v));
     panel.replaceChildren(...parts);
   };
 
@@ -782,7 +875,7 @@ export function createShell(a: ShellActions) {
       button('Play', () => a.startSeen(), 'rs-btn go'),
       button('Host a game', () => {
         a.startSeen();
-        a.hostGame();
+        a.hostGame(true);
       }),
       button('Join a game', () => {
         joining.style.display = '';
@@ -877,7 +970,7 @@ export function createShell(a: ShellActions) {
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
         const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([inboxKey, v.blobbis, v.diag?.length, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const pKey = JSON.stringify([inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;
@@ -917,7 +1010,7 @@ export function createShell(a: ShellActions) {
           const acts: Record<BannerAction, () => HTMLButtonElement> = {
             retry: () => button(c.phase === 'refused' ? 'Try again' : 'Retry now', a.retry, 'rs-btn go'),
             open: () => button('Play in the open room', a.openRoom, c.phase === 'missing' ? 'rs-btn go' : 'rs-btn'),
-            host: () => button('Host a new game', a.hostGame),
+            host: () => button('Host a new game', () => a.hostGame(true)),
           };
           bannerBox.replaceChildren(el('h2', undefined, d.title), el('p', undefined, d.detail), ...d.actions.map((k) => acts[k]()));
         }

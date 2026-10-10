@@ -1,6 +1,6 @@
 /** The connection as a player sees it: connecting, playing or watching, lost (and retrying), failed, full. */
 import { describe, expect, it } from 'vitest';
-import { CONNECTION, describe as words, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
+import { CONNECTION, describe as words, initialConnection, onClose, onRetry, onWelcome, statusLine, onProtocol } from './connection';
 
 describe('the connection', () => {
   it('connecting, then playing as the slot the server gave, or watching when all four are taken', () => {
@@ -47,5 +47,31 @@ describe('the connection', () => {
     expect(s.phase).toBe('full');
     expect(s.retryAt).toBe(CONNECTION.retryFull);
     expect(words(s, 0)?.title).toMatch(/full/);
+  });
+});
+
+describe('servers a page cannot play with (M10)', () => {
+  it('a newer protocol is incompatible: no play, no retry; an older or absent one still plays', () => {
+    const s = initialConnection('wss://x.example/ws');
+    expect(onProtocol(s, 1, 1).phase).toBe('connecting');
+    expect(onProtocol(s, undefined, 1).phase).toBe('connecting');
+    expect(onProtocol(s, 0, 1).phase).toBe('connecting');
+    const newer = onProtocol(s, 2, 1);
+    expect(newer.phase).toBe('incompatible');
+    expect(newer.retryAt).toBe(Infinity);
+    expect(words(newer, 0)?.title).toMatch(/newer/);
+    expect(statusLine(newer, NaN)).toMatch(/incompatible/);
+    // The close that follows keeps it incompatible.
+    expect(onClose(newer, 1000, 'incompatible', 5).phase).toBe('incompatible');
+    expect(onProtocol(s, 1.5, 1).phase).toBe('incompatible');
+  });
+  it('a server that refuses this page (origin, policy) is rejected: no retry, and the words say to pick another server', () => {
+    const s = initialConnection('wss://x.example/ws');
+    const r = onClose(s, 4005, 'origin not allowed', 1);
+    expect(r.phase).toBe('rejected');
+    expect(r.retryAt).toBe(Infinity);
+    expect(words(r, 1)?.detail).toMatch(/another server/);
+    expect(onClose(s, 1008, 'flooding', 1).phase).toBe('rejected');
+    expect(statusLine(r, NaN)).toMatch(/refused/);
   });
 });

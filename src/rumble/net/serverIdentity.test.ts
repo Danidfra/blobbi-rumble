@@ -53,8 +53,8 @@ describe('the operator key and the environment', () => {
   });
 
   it('the well-known document says only what is configured, and the share links follow the canonical origin', () => {
-    expect(wellKnown({ name: null, operator: null, public: null })).toEqual({ protocol: 'blobbi-rumble', version: 1, websocket: '/ws', capabilities: ['rooms', 'nostr-auth'] });
-    expect(wellKnown(identityFromEnv({ PUBLIC_URL: 'https://rumble.example', SERVER_NAME: 'Garden', OPERATOR_PUBKEY: pk }).identity)).toEqual({ protocol: 'blobbi-rumble', version: 1, websocket: 'wss://rumble.example/ws', capabilities: ['rooms', 'nostr-auth'], name: 'Garden', operator: pk, url: 'https://rumble.example' });
+    expect(wellKnown({ name: null, operator: null, public: null })).toEqual({ protocol: 'blobbi-rumble', version: 1, websocket: '/ws', capabilities: ['rooms', 'nostr-auth', 'looks', 'rooms-list'] });
+    expect(wellKnown(identityFromEnv({ PUBLIC_URL: 'https://rumble.example', SERVER_NAME: 'Garden', OPERATOR_PUBKEY: pk }).identity)).toEqual({ protocol: 'blobbi-rumble', version: 1, websocket: 'wss://rumble.example/ws', capabilities: ['rooms', 'nostr-auth', 'looks', 'rooms-list'], name: 'Garden', operator: pk, url: 'https://rumble.example' });
     expect(roomShareUrl('https://rumble.example', 'A7F2')).toBe('https://rumble.example/play/A7F2');
     expect(roomShareUrl('https://rumble.example', 'OPEN')).toBe('https://rumble.example/');
   });

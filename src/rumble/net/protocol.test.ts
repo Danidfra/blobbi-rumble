@@ -87,3 +87,13 @@ describe('look messages (M9C)', () => {
     expect(parseClientMessage(JSON.stringify({ t: 'look', form: { v: 1, d, gen: 'v3', name: 'n'.repeat(600) } }))).toBeNull();
   });
 });
+
+describe('rooms and the protocol version (M10)', () => {
+  it('reads the rooms request (and nothing rides along); the version is a small integer this build speaks', () => {
+    expect(parseClientMessage('{"t":"rooms"}')).toEqual({ t: 'rooms' });
+    expect(parseClientMessage(JSON.stringify({ t: 'rooms', filter: { kinds: [1] } }))).toEqual({ t: 'rooms' });
+    expect(parseClientMessage(JSON.stringify({ t: 'rooms', pad: 'x'.repeat(PROTOCOL.maxClientMessage) }))).toBeNull();
+    expect(PROTOCOL.version).toBe(1);
+    expect(PROTOCOL.maxListedRooms).toBeGreaterThan(0);
+  });
+});

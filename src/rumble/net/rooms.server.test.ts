@@ -11,7 +11,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { loadHavokNode } from '../sim/havokNode';
 import type { HavokInstance } from '../sim/physics';
-import { inputMessage, type RosterMessage, type ServerMessage, type StateMessage, type WelcomeMessage } from './protocol';
+import { inputMessage, type RoomsMessage, type RosterMessage, type ServerMessage, type StateMessage, type WelcomeMessage } from './protocol';
 import { startRumbleServer, type RumbleServer } from './server';
 
 let havok: HavokInstance;
@@ -77,7 +77,7 @@ describe('rooms over the socket', () => {
     server = await startRumbleServer({ havok, port: 0, manual: true });
     const base = `ws://127.0.0.1:${server.port}`;
     const plain = await open(base);
-    expect(plain.welcome!.room).toEqual({ id: 'OPEN', kind: 'open', mode: 'casual' });
+    expect(plain.welcome!.room).toEqual({ id: 'OPEN', kind: 'open', mode: 'casual', listed: true });
     expect(plain.welcome!.you).toBe('P1');
     const host = await open(`${base}/?create=1`);
     const id = host.welcome!.room!.id;
@@ -221,7 +221,60 @@ describe('rooms over the socket', () => {
     const c = await open(`${base}/?create=1`);
     expect(c.welcome!.room!.url).toBe(`https://rumble.example/play/${c.welcome!.room!.id}`);
     expect(c.welcome!.server).toEqual({ name: 'Garden', operator, url: 'https://rumble.example' });
-    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks']);
+    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks', 'rooms-list']);
     expect((await open(base)).welcome!.room!.url).toBe('https://rumble.example/');
+  });
+});
+
+describe('public rooms over the socket (M10)', () => {
+  const roomsMsg = (c: Conn) => [...c.messages].reverse().find((m): m is RoomsMessage => m.t === 'rooms');
+
+  it('the welcome says the protocol and lists rooms; a public creation is listed, a private one is not; the listing is rate-limited', async () => {
+    server = await startRumbleServer({ havok, port: 0, manual: true });
+    const base = `ws://127.0.0.1:${server.port}`;
+    const pub = await open(`${base}/?create=1&public=1`);
+    const priv = await open(`${base}/?create=1`);
+    expect(pub.welcome!.protocol).toBe(1);
+    expect(pub.welcome!.features).toContain('rooms-list');
+    expect(pub.welcome!.room).toMatchObject({ kind: 'private', listed: true });
+    expect(priv.welcome!.room).toMatchObject({ kind: 'private', listed: false });
+    const viewer = await open(base);
+    viewer.send({ t: 'rooms' });
+    await waitFor(() => !!roomsMsg(viewer));
+    const rooms = roomsMsg(viewer)!;
+    expect(rooms.rooms.map((r) => r.id).sort()).toEqual(['OPEN', pub.welcome!.room!.id].sort());
+    expect(JSON.stringify(rooms)).not.toContain(priv.welcome!.room!.id);
+    expect(rooms.rooms.find((r) => r.id === pub.welcome!.room!.id)).toMatchObject({ players: 1, joinable: true });
+    expect(rooms.rooms.find((r) => r.id === 'OPEN')).toMatchObject({ players: 1 });
+    // Asked again at once: ignored (the protocol's minimum interval).
+    const n = viewer.messages.filter((m) => m.t === 'rooms').length;
+    viewer.send({ t: 'rooms' });
+    viewer.send({ t: 'rooms' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(viewer.messages.filter((m) => m.t === 'rooms')).toHaveLength(n);
+    // The private room is still joinable by its code, as before.
+    const guest = await open(`${base}/?room=${priv.welcome!.room!.id}`);
+    expect(guest.welcome!.room!.id).toBe(priv.welcome!.room!.id);
+  });
+
+  it('with allowed origins, a browser from elsewhere is refused with 4005 before it takes anything; a listed origin and a non-browser get in', async () => {
+    server = await startRumbleServer({ havok, port: 0, manual: true, allowedOrigins: ['https://rumble.example'] });
+    const base = `ws://127.0.0.1:${server.port}`;
+    const refused = await new Promise<{ code: number; reason: string }>((resolve) => {
+      const ws = new WebSocket(base, { headers: { origin: 'https://evil.example' } });
+      sockets.push(ws);
+      ws.on('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    expect(refused).toEqual({ code: 4005, reason: 'origin not allowed' });
+    expect(server.stats.refused).toBe(1);
+    const ok = await new Promise<boolean>((resolve) => {
+      const ws = new WebSocket(base, { headers: { origin: 'https://rumble.example/' } });
+      sockets.push(ws);
+      ws.on('message', () => resolve(true));
+      ws.on('close', () => resolve(false));
+    });
+    expect(ok).toBe(true);
+    const bot = await open(base);
+    expect(bot.welcome).toBeDefined();
   });
 });

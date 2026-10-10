@@ -14,6 +14,7 @@
  *     { t: 'look', form }                             M9C: the Rumble form my fighter wears (null: the default);
  *                                                     only for a connection with a proven identity, and only a
  *                                                     Blobbi address that identity owns (`looks.ts`)
+ *     { t: 'rooms' }                                  M10B: list this server's public rooms (bounded, rate-limited)
  *
  *   server → client
  *     { t: 'welcome', you, players, tickHz, snapshotHz, features?, room?, server? }
@@ -28,6 +29,13 @@
  *                                                     a guest, or a person proven to hold a pubkey;
  *                                                     M9C: and the form their fighter wears, if any
  *     { t: 'look', ok, reason? }                      M9C: the answer to a look
+ *     { t: 'rooms', rooms }                           M10B: the public rooms, counts only (never who is in them)
+ *
+ * VERSION (M10A): the welcome carries `protocol`, the number below. A client
+ * plays with a server whose number it knows (older ones are missing some
+ * features, which the `features` list says); a server with a higher number
+ * than the client knows is "incompatible" and the client does not pretend
+ * otherwise. A welcome without the number is a pre-M10 server (0).
  *
  * IDENTITY (M8A) is optional and separate from play: a connection plays as
  * a guest from its welcome on; proving a Nostr key later only labels the
@@ -48,8 +56,13 @@ import type { MatchSnapshot } from '../sim/snapshot';
 import { parseLookDeclaration, type LookDeclaration, type SlotForm } from './looks';
 
 export const PROTOCOL = Object.freeze({
+  /** The wire protocol this build speaks (M10A); see the header. */
+  version: 1,
   /** A client message longer than this, in characters, is dropped unread. */
   maxClientMessage: 512,
+  /** Rooms in one listing at most, and the shortest interval one connection may ask at, ms. */
+  maxListedRooms: 32,
+  roomsEveryMs: 2000,
   /** An auth message (a signed event) may be this long, characters. */
   maxAuthMessage: 2048,
   /** The largest input sequence number accepted (it must stay an exact integer). */
@@ -84,7 +97,10 @@ export interface LookMessage {
   /** The form, or null: the default fighter. */
   form: LookDeclaration | null;
 }
-export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage;
+export interface RoomsRequest {
+  t: 'rooms';
+}
+export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage | RoomsRequest;
 
 export interface WelcomeMessage {
   t: 'welcome';
@@ -98,6 +114,8 @@ export interface WelcomeMessage {
   room?: RoomInfo;
   /** M8B: what the server says about itself (claims, not proofs). */
   server?: ServerInfo;
+  /** M10A: the wire protocol version (absent: a pre-M10 server, 0). */
+  protocol?: number;
 }
 export interface RoomInfo {
   id: string;
@@ -105,6 +123,30 @@ export interface RoomInfo {
   mode: 'casual';
   /** The canonical share link, when the server knows its public address. */
   url?: string;
+  /** M10B: whether the room appears in the public listing (the open room always does; a code room as it was made). */
+  listed?: boolean;
+}
+/** M10B: one public room as the listing shows it: counts, never who. */
+export interface RoomListing {
+  id: string;
+  kind: 'open' | 'private';
+  /** People playing (slots held by a connection) and the slots there are. */
+  players: number;
+  maxPlayers: number;
+  /** Connections watching, and how many connections the room takes in all. */
+  spectators: number;
+  maxConnections: number;
+  /** The match's phase and round. */
+  phase: string;
+  round: number;
+  /** Whether a new connection would get in (as a player or a spectator). */
+  joinable: boolean;
+  /** Seconds since the room was made. */
+  age: number;
+}
+export interface RoomsMessage {
+  t: 'rooms';
+  rooms: RoomListing[];
 }
 export interface ServerInfo {
   name?: string;
@@ -158,7 +200,7 @@ export interface RosterMessage {
   /** M8B: how many connections in the room are watching. */
   spectators?: number;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply;
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -200,6 +242,7 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (v.t !== 'auth' && raw.length > PROTOCOL.maxClientMessage) return null;
   if (v.t === 'challenge') return { t: 'challenge' };
   if (v.t === 'logout') return { t: 'logout' };
+  if (v.t === 'rooms') return { t: 'rooms' };
   if (v.t === 'look') {
     if (v.form === null) return { t: 'look', form: null };
     const form = parseLookDeclaration(v.form);
