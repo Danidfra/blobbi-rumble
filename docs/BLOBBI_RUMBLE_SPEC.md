@@ -995,6 +995,205 @@ with no new mechanics.
   perch and step are reached by a jump, deliberately; the lake's slide is
   tuned by numbers, not yet by hands.
 
+### 15h. Mobile support, touch controls and responsive play (M12, IMPLEMENTED — AWAITING REAL DEVICE VALIDATION)
+
+Phones join the same rooms as desktops and play the same fighter through
+the same intent. Nothing in the match, the server or the protocol changed:
+a touch page sends the `input` and `throw` messages a keyboard page sends,
+and the server validates them the same way.
+
+**Audit (what existed before M12).** The canvas already had
+`touch-action: none`; the viewport meta had no `viewport-fit`; the page
+was sized with `100vh` (taller than the visible page on phone browsers);
+the HUD had one breakpoint (`max-width: 860px`) that wrapped the
+scoreboard into a second row; the orbit camera kept Babylon's pointer
+input, so a finger on the arena turned the view (and with it the meaning
+of "forward"); the engine drew at the full device pixel ratio (3× on many
+phones) with a 2048 PCF shadow map; there was no post-processing and no
+particle system. Input was keyboard only (`control/input.ts`), already
+reduced to one transport-neutral intent; the struggle was already counted
+from movement alone in any frame (`combat/struggle.ts`); NIP-07 was the
+only signer.
+
+**Controls** (`control/stick.ts`, `control/touch.ts`, `client/touchControls.ts`).
+
+- *The stick* (left thumb, lower-left 48 % × 72 % of the screen) FLOATS:
+  it appears where the thumb lands and its base trails a thumb that
+  overshoots the rim. Chosen over a fixed stick because phones differ in
+  size and grip and a thumb that lands off a fixed stick starts with an
+  unwanted direction; a floating one cannot be missed. Its resting place is
+  drawn faintly. Numbers: dead zone 18 % of the radius; then a walk from
+  35 % to 100 % of walking speed (linear, `curve` adjustable); at 90 % of
+  the radius and beyond, a run (the rim is the touch Shift). Directions
+  are rounded to 128 around the circle and strength to 0.05, so a still
+  thumb repeats the same numbers and the page sends no more messages than
+  a keyboard does. Full deflection equals a key: a unit direction, never
+  longer (tested).
+- *The buttons* (right thumb): Punch (big), Jump and Grab around it,
+  68–96 px from the screen's short side, inside the safe area. They fire on
+  touch-down, once per press (no auto-repeat, as keys), show the press at
+  once, and change their words with the moment (§ table). Grab and throw
+  are one button, as G is one key.
+- *Fingers* are tracked by pointer id and captured: the stick and any
+  number of buttons at once. A finger lets go on lift, cancel or lost
+  capture; the whole pad lets go on blur, a hidden page, an orientation
+  change, and whenever the controls hide.
+- *When shown*: a coarse primary pointer (`(pointer: coarse)`), `?touch=1`,
+  or the first touch on the page (`?touch=0` never). Hidden (and
+  released) while the session panel, the help, the start card, the banner
+  or the rotate hint is up, for spectators, and before a slot is held. In
+  touch play the orbit camera's pointer input is detached.
+
+| Moment (`touchContext`) | Punch slot | Jump slot | Grab slot |
+| --- | --- | --- | --- |
+| fighting | Punch | Jump | Grab |
+| holding someone | Punch | (dimmed) | **Throw** (the grab action) |
+| held | **Break free** (a struggle stroke) | (dimmed) | (dimmed) |
+| hanging on a ledge | (dimmed) | **Climb** (the jump action) | **Let go** (the grab action) |
+| out of the round | **Throw** a peel, with "🍌 ×n", the cooldown, "none left" or "not now" | hidden | hidden |
+| between rounds / no fighter | dimmed | dimmed | dimmed |
+
+**Grab escape by touch.** Each tap of Break free is one stroke: the
+movement goes to one side for 0.09 s (several server ticks), the next tap
+to the other side. The server counts it exactly as it counts a keyboard's
+alternation: 6 counted reversals, at most one per 0.15 s (plus 1.5 of
+slack credit). Tests drive both through `stepStruggle` and through the
+host: tapping at 4–6 a second progresses as alternating keys at the same
+pace, and 20–30 taps a second is never faster than the cap. Wiggling the
+stick left–right counts too (it is the same movement). The cue and the
+pulsing button say what to do; the progress bar is the server's.
+
+**Ledges by touch.** Climb is the jump; Let go is the grab; holding the
+stick away from the wall for `LEDGE.awayHold` also lets go, exactly as the
+keys do. Pushing toward the wall keeps hanging (tested through `tickLedge`).
+
+**Banana peels by touch.** Out of the round the stick moves the reticle
+over the floor at most `BANANAS.aimSpeed` (the keys' speed; tested), and
+Throw asks for a throw only when the server's last word says one could go.
+The rule is shared with the keyboard (`control/aim.ts`); the server judges
+every throw as before.
+
+**Layout** (`client/shell.ts`, `rumble.html`). `viewport-fit=cover` and
+`env(safe-area-inset-*)` on every corner element (notches, rounded corners,
+the home indicator); the canvas is `position: fixed; inset: 0` and cards
+use `100dvh`, so nothing sits behind a phone browser's bars;
+`interactive-widget=resizes-content` so the on-screen keyboard resizes the
+page instead of covering fields. On a short screen (`max-height: 520px`, a
+phone on its side) the top bar is one slim row (the scoreboard packs into
+it), cards fit the height and scroll on their own (`overscroll-behavior:
+contain`, `touch-action: pan-y`), the cue under the action shrinks. On a
+small phone on its side (also `max-width: 760px`) the chips keep only the
+room and the Nostr button. Under a coarse pointer, buttons are taller and
+fields are 16 px (no iOS zoom on focus); the room-code field asks for
+capitals, no autocorrect and a Go key. In touch play the help chip moves
+to the top right ("? Help"), toasts and the invite question move to the
+top, the duplicate struggle box hides (the cue shows it), the help card
+lists the touch controls, and nothing on the game selects text or opens
+the long-press menu. Desktop is unchanged: no touch UI, the same chips,
+the keyboard words.
+
+**Orientation and camera.** Landscape is the intended orientation.
+Babylon fixes the vertical angle, so a wide landscape phone (about 2.2:1)
+only sees more to the sides; the shared camera's framing, bounds and
+per-arena drop lines are unchanged. A touch phone held upright (short
+side under 600 px) gets a friendly "Rotate your phone" overlay over the
+running match ("Play in portrait anyway" dismisses it for the visit); the
+connection is untouched and nothing forces orientation. Upright anyway,
+the view keeps the arena's width (`view/camera.ts fovFor`: below a 1.25
+aspect the horizontal angle is fixed at what 1.25 shows). Orientation
+changes resize the engine and release every finger; the match goes on.
+*Full screen*: optional, from the session panel (Graphics), only where
+the Fullscreen API exists (Android Chrome and most desktop browsers; not
+iPhone Safari), only on that click; no orientation lock is requested.
+
+**Graphics quality** (`view/quality.ts`, `presenter.setQuality`). The
+renderer's real costs are the pixels drawn and the one shadow map, so a
+profile changes only those; meshes, materials, colours, the Blobbi
+appearance, shadows themselves and all gameplay feedback are the same at
+every level.
+
+| Level | Pixel ratio cap | Shadow map | PCF |
+| --- | --- | --- | --- |
+| High | 2 | 2048 | medium |
+| Medium | 1.5 | 1024 | low |
+| Low | 1 (budget may go to 0.75) | 512 | low |
+
+*Auto* (the default) starts from standard hints only (a coarse primary
+pointer → Medium; ≤ 2 cores or ≤ 2 GB `deviceMemory` → Low; else High;
+never the user agent) and then follows measured frame times: a 2 s window
+averaging slower than 1/40 s lowers the pixel ratio by 0.25 (down to the
+profile's floor); three windows faster than 1/55 s raise it back (up to
+the cap). The choice is saved per device (`rumble:graphics`) and shown
+live in the panel (level, drawn size, ratio, shadow, fps). Desktop at
+Auto is High: on a 2× screen it draws exactly what it drew before.
+*Measured* (2026-10-10, this development Mac's GPU, `rumble.measureRender(120)`
+— GPU-synchronised `scene.render()` at an 844 × 390 page): High 2.9 ms
+median (1688 × 780 px), Medium 2.1 ms (1266 × 585), Low 1.6 ms (844 × 390).
+For scale, an uncapped 3× phone would draw 2532 × 1170 = 2.96 M pixels,
+2.2× High's and 4× Medium's. **No phone has been measured yet.** The text
+HUD (F3 / F4) is no longer built on frames where it is hidden. Simulation
+and server tick rates are unchanged.
+
+**Nostr on phones.** Rumble uses NIP-07 only (`window.nostr`), unchanged.
+It works wherever the browser provides `window.nostr`: a mobile browser
+that runs a NIP-07 signer extension, or a Nostr app's built-in browser
+that injects one. Plain Android Chrome and iOS Safari without such an
+extension have none: Connect Nostr then says so in plain words ("This
+browser has no Nostr signer (NIP-07)… Rumble never asks for your private
+key. You can keep playing as a guest."). Guest play never needs Nostr.
+No key is requested, stored or generated. Remote signing (NIP-46,
+"bunker" or Nostr Connect) is the way to serve signer-less phones and is a
+**separate future milestone**, not part of M12.
+
+**Tests.** `control/touch.test.ts` (stick direction, magnitude, dead zone,
+run, quantisation, response curve; fingers apart; once per press; cancel
+and releaseAll; struggle strokes vs keys and the cap; stick wiggle;
+Climb / Let go / push-away through `tickLedge`; banana aim speed and
+throw gating; button roles per moment; touch intent = keyboard intent,
+over `parseClientMessage`, and a forged vector cut to one),
+`client/touchControls.test.ts` (with a stand-in DOM: hidden is deaf; move
+and press at once; cancel, lost capture, blur, hidden page and
+orientation change release; hiding releases unread presses; words and
+roles follow the moment; no context menu or selection; when touch is
+offered; when to ask for rotation), `net/touchHost.test.ts` (through the
+authoritative host: keys and touch move the fighter the same; a touch
+player breaks free no sooner than the cap; a forged message is clamped),
+`view/quality.test.ts` (profiles, ratio caps, the budget's steps,
+hysteresis and ignored stalls; the field of view per aspect), and the
+mobile no-signer words in `client/identity.test.ts`.
+
+**Known limitations.** Validated only in desktop Chrome with forced touch
+mode and same-origin iframes of phone sizes (640 × 360, 844 × 390,
+390 × 844, 1024 × 768): that checks layout, not touch hardware, real
+safe areas, a real on-screen keyboard or mobile GPUs. In that session the
+Chrome window was reported hidden to the page, so live movement was
+verified through the host tests and local-mode stepping, not by dragging.
+iPhone Safari has no element Fullscreen API (no button there). A device
+in a 30 fps power-saving mode will make Auto step the ratio down. Tablets
+upright are not asked to rotate. In local mode the touch controls drive
+P1 only, and the cue's touch wording shows for both keyboard players.
+
+**Manual device validation** (to do): `npm run serve` on the LAN, open
+`http://<LAN IP>:8080/` on each phone (and a desktop in the same room).
+On a small and a large Android phone (Chrome), an iPhone (Safari) and a
+tablet, in landscape: (1) the start card, Play, Host and Join by code
+(field: capitals, the keyboard does not hide it); (2) move in every
+direction, walk slowly, run at the rim, jump, punch while moving, grab
+and Throw; (3) get grabbed and Break free by tapping, then by wiggling;
+(4) on Skyfall or Factory catch a ledge, Climb, then Let go; (5) get
+knocked out, aim a peel, Throw three, see the cooldown and "none left";
+(6) open the session panel mid-match: the controls vanish and nothing
+stays held; switch apps and come back; receive a call or pull down the
+notification shade mid-move; (7) turn the phone upright: the rotate
+overlay, the match still running; back to landscape; (8) the scoreboard,
+the round messages and cues are readable and do not cover the
+fighters; the notch and home indicator cover nothing; (9) Graphics: note
+the fps at Auto, Low, Medium, High (and `rumble.measureRender()` from a
+remote inspector if available); (10) Connect Nostr without a signer: the
+explanation, guest play continues; with a signer-capable mobile browser,
+if available: proof, profile, Blobbi picker; (11) a desktop keyboard
+player in the same room sees nothing different.
+
 ### 16. Invites are not access control
 
 - An M8C invite is a **social message**. It carries a room link and
@@ -1080,6 +1279,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M10A–M10E | Online play: servers, public rooms, links, deployment, UX | Automated tests (endpoints, official / own / community servers, the choice and links, protocol version and incompatibility, origin refusal, listed / unlisted rooms, the listing over the socket and its rate limit, full rooms, server-aware links); the container builds from the Dockerfile here only as a file (not run). **Awaiting real online validation**; nothing deployed. |
 | M11A–M11F | Arena chaos, vertical survival, eliminated-player interactions | Automated tests (registry, geometry, pieces, the match on every arena, host rotation, the socket, links and listings, ledges, belts, ice, peels, bots), headless bot matches finishing on all four arenas, `npm run bench` before and after, and a visual check of each arena in Chrome. **IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15f). |
 | M11.1 | Gameplay polish and balance: geometry, scale, grab, ledges | Automated tests (geometry rules, walkable transitions, the grab exchange, escapes, immunities, ledges), headless matches on all arenas with escapes happening, bench, Chrome screenshots of the flat bridges and the cue. **M11.1 IMPLEMENTED — AWAITING MANUAL GAMEPLAY VALIDATION** (§15g). |
+| M12 | Mobile support: touch controls, responsive HUD, landscape, graphics quality | Automated tests (stick, touch pad, roles, struggle parity and cap, ledge, peels, cleanup, a stand-in DOM, through the authoritative host, quality and field of view); typecheck, build, headless matches on all four arenas, bench; Chrome screenshots of phone- and tablet-sized viewports with forced touch mode; render cost measured on a desktop GPU only. **M12 IMPLEMENTED — AWAITING REAL DEVICE VALIDATION** (§15h). |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---
@@ -1128,10 +1328,10 @@ immutable forever.
 | | |
 | --- | --- |
 | **Completed** | M1–M6 · Gameplay Pass 1 · Visual Pass 1 · M7A · M7B · M7C · M7D · M8A0 · M8A · M8B (+ clipboard follow-up) · M8C-A · M8C-B · M8C-B.1 · M8C-B.2 · M8C-C · M9A |
-| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) · M11.1: gameplay polish and balance (§15g; implemented, awaiting manual gameplay validation) |
+| **In validation** | M9B: adult Rumble forms (§15c; animation checks open) · M9B.1: Nostr session restoration (§13; the automatic restore still fails intermittently, diagnostics in place) · M9C–M9F: remaining multiplayer cases (§15d) · M10: online play (§15e; awaiting a real deployment) · M11: arenas, pieces, ledges, belts, ice, banana peels (§15f; implemented, awaiting manual validation) · M11.1: gameplay polish and balance (§15g; implemented, awaiting manual gameplay validation) · M12: mobile support and touch controls (§15h; implemented, awaiting real device validation) |
 | **Next** | A first official server, deployed from the compose file, and the real online validation |
 | **Possible after** | M8C.1: invite-only rooms / capabilities, if justified · M8D: public discovery, if justified · M9: real Blobbi identity and character selection · M10: sats, LNbits, rewards |
-| **Insert when useful** | NIP-46 remote signers (does not block M8C) |
+| **Insert when useful** | NIP-46 remote signers (does not block M8C; the way to serve phones without a NIP-07 signer, §15h) |
 
 ---
 

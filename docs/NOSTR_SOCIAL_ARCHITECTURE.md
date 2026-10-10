@@ -1717,3 +1717,30 @@ connections; idempotence is per look (`sameForm`).
 A verification that a 31124 exists at the declared address (it would
 need a relay read on the server; the brief asked for a bounded protocol).
 Real multiplayer browser validation.
+
+## M12 note (2026-10-10): Nostr on phones
+
+M12 (mobile support) changed nothing in the identity protocol. What it
+found and did:
+
+- **Rumble's only signer is NIP-07** (`social/signer.ts`, `findNip07`
+  polls `window.nostr` for a short window after Connect Nostr). On a phone
+  that works only where the browser provides `window.nostr`: a mobile
+  browser running a NIP-07 signer extension, or a Nostr app's built-in
+  browser that injects one. Plain Android Chrome and plain iOS Safari
+  provide none. None of these combinations has been tested on a real
+  device yet.
+- **No signer, plain words.** On a coarse-pointer device the "no signer"
+  error now says that the browser has no Nostr signer (NIP-07), where one
+  can come from on a phone, that Rumble never asks for a private key, and
+  that guest play continues (`IdentityDeps.unavailable`). Every other
+  error keeps its words; nothing is retried by itself.
+- **Not done, on purpose.** No embedded key manager, no `nsec` field, no
+  generated keys: a page holding keys is the risk §5 rules out. The way to
+  serve signer-less phones is **NIP-46** (a remote signer: a "bunker" URI
+  or Nostr Connect QR, an app such as Amber on Android or a hosted
+  bunker), which changes how the proof is signed but not the proof itself
+  (the M8A challenge and its kind 22242 event over the game socket). It
+  needs its own milestone: connection UX, a relay for the signer channel,
+  permission prompts for `sign_event` and `nip44_*`, session restore, and
+  the invite and Blobbi features over a slower, asynchronous signer.

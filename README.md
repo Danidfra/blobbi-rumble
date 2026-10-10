@@ -60,6 +60,32 @@ heights, bridges that break, pads that fall, ledges to catch and climb),
 the round, you aim and throw banana peels. See
 [docs/BLOBBI_RUMBLE_SPEC.md](docs/BLOBBI_RUMBLE_SPEC.md) §5 and §15f.
 
+PHONES AND TABLETS (M12, implemented — awaiting real device validation):
+open the same page on a phone (`npm run serve`, then
+`http://<your LAN IP>:8080/` on the phone) and turn it sideways; it joins
+the same rooms as desktop players. Touch controls appear for a finger as
+the main pointer (or `?touch=1`; `?touch=0` never; a touch screen laptop
+gets them at its first touch):
+
+```
+left thumb    a floating stick: lands where you touch; push to the rim to run
+right thumb   Punch (big) · Jump · Grab (Grab is also Throw while holding)
+grabbed       tap Break free (or wiggle the stick left-right): the same capped strokes as A-D-A-D
+on a ledge    Climb (the jump) · Let go (the grab), or hold the stick away from the wall
+out           the stick aims a banana peel; Throw shows the peels left and the cooldown
+```
+
+The controls hide (and let go of everything) while a panel or card is
+open, and on blur, a hidden tab or an orientation change. Landscape is the
+intended orientation; a phone held upright is asked to rotate (the match
+goes on; "Play in portrait anyway" dismisses it). Session panel →
+Graphics: Auto / Low / Medium / High (pixel ratio cap and shadow map only;
+Auto adapts to measured frame times) and, where the browser allows, Full
+screen. Nostr on a phone needs a browser that provides a NIP-07 signer;
+without one you play as a guest (NIP-46 is a later milestone). Details,
+measurements, limitations and the device checklist:
+[docs/BLOBBI_RUMBLE_SPEC.md](docs/BLOBBI_RUMBLE_SPEC.md) §15h.
+
 PLAYING WITH OTHER MACHINES (M7D): see [HOSTING.md](HOSTING.md). In short,
 `npm run serve` builds the game and runs one Node process that serves it
 and the match's WebSocket (`/ws`) on one port; friends on the LAN open
