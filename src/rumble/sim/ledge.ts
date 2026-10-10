@@ -54,9 +54,26 @@ export function canCatch(s: LedgeState, c: CombatState, grounded: boolean, vy: n
   return canAct(c) || (!isDown(c) && !c.held && !isHolding(c) && c.stun <= 0);
 }
 
-/** The ledge within the hands' reach of a body (capsule centre `c`, feet at `feetY`), on platforms that can bear it, or null. */
+/**
+ * The ledge within the hands' reach of a body (capsule centre `c`, feet at
+ * `feetY`), on platforms that can bear it, or null. The top must be a real
+ * fall above the feet (not a step down), and the place the body would hang
+ * must be clear of every platform's bulk: an edge behind a wall, or one
+ * whose hang would sit inside a neighbouring slab, is no ledge.
+ */
 export function reachableLedge(platforms: readonly Platform[], c: { x: number; y: number; z: number }, feetY: number, skip?: (index: number) => boolean, t: LedgeTuning = LEDGE): Ledge | null {
-  return findLedge(platforms, c, feetY, { reach: RUMBLE_BODY.capsuleRadius + t.reachOut, minBelow: -t.reachDown, maxBelow: t.reachUp, skip });
+  const clear = (l: Ledge) => {
+    const a = hangAnchor(l, t);
+    const r = RUMBLE_BODY.capsuleRadius;
+    const top = a.y + RUMBLE_BODY.capsuleCenterY;
+    const bottom = a.y - RUMBLE_BODY.capsuleCenterY;
+    return !platforms.some((p, i) => {
+      if (skip?.(i)) return false;
+      const inside = Math.abs(a.x - p.x) < p.halfWidth + r * 0.5 && Math.abs(a.z - p.z) < p.halfDepth + r * 0.5;
+      return inside && bottom < p.y && top > p.y - p.thickness;
+    });
+  };
+  return findLedge(platforms, c, feetY, { reach: RUMBLE_BODY.capsuleRadius + t.reachOut, minBelow: t.minAbove, maxBelow: t.reachUp, skip, accept: clear });
 }
 
 /** Where the capsule's centre hangs from a ledge: just clear of the wall, feet `hangDrop` below the top. */

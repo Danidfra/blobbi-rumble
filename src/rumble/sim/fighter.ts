@@ -95,6 +95,10 @@ export class FighterSim {
   fallRules: FallRules = FALL_RULES;
   /** M11C: the ledge it holds (one pair of hands), its grip endurance and regrab delay. */
   readonly ledge: LedgeState = createLedgeState();
+  /** M11.1: seconds of settling left after a climb, in which the keys do not move it (no walking straight back off). */
+  afterClimb = 0;
+  /** M11.1: how hard the body it carries struggles (0..1), set by the match: it slows the carrier. */
+  carryDrag = 0;
   spawn: Vector3;
   spawnYaw: number;
 
@@ -168,6 +172,10 @@ export class FighterSim {
    * then pushes as a bounded spring, with this fighter's push authority.
    */
   update(dt: number, intent: PlayerIntent, contest?: Contest): StepResult {
+    if (this.afterClimb > 0) {
+      this.afterClimb = Math.max(0, this.afterClimb - dt);
+      intent = { ...intent, x: 0, z: 0, run: false, jump: false };
+    }
     const control = controlFactor(this.combat);
     const carrying = isHolding(this.combat);
     const v = this.body.velocity();
@@ -190,8 +198,12 @@ export class FighterSim {
     if (control < 1) p = { ...p, acceleration: p.acceleration * control, braking: p.braking * control };
     // M11E: on ice the keys bite less and nothing brakes much: the same steering, with less grip (never a different body).
     if (this.grip < 1 && grounded) p = { ...p, acceleration: p.acceleration * this.grip, braking: p.braking * this.grip * 0.1 };
-    if (carrying) p = { ...p, walkSpeed: p.walkSpeed * COMBAT.carrySpeed, runSpeed: p.runSpeed * COMBAT.carrySpeed };
-    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...intent, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
+    // M11.1: a carrier walks, never runs, slower still as its load struggles.
+    if (carrying) {
+      const share = COMBAT.carrySpeed * (1 - COMBAT.struggleDrag * this.carryDrag);
+      p = { ...p, walkSpeed: p.walkSpeed * share, runSpeed: p.walkSpeed * share };
+    }
+    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...intent, run: intent.run && !carrying, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
     const b = this.body.body;
     if (s.dvx !== 0 || s.dvz !== 0) b.applyImpulse(new Vector3(s.dvx * this.profile.mass, 0, s.dvz * this.profile.mass), this.body.position());
     let jumped = false;
@@ -243,6 +255,7 @@ export class FighterSim {
       this.body.setGravityFactor(1);
       this.body.body.setLinearVelocity(new Vector3(h.ledge.inX * this.profile.walkSpeed * 0.5, 0, h.ledge.inZ * this.profile.walkSpeed * 0.5));
       this.ledge.hold = null;
+      this.afterClimb = LEDGE.settle;
       this.grounded = true;
     } else this.dropLedge();
     this.grounded = out === 'climbed';
@@ -371,6 +384,8 @@ export class FighterSim {
     this.supported = 0;
     this.grip = 1;
     this.carry.x = this.carry.z = 0;
+    this.afterClimb = 0;
+    this.carryDrag = 0;
     resetLedgeState(this.ledge);
     this.body.setFriction(this.profile.friction);
   }

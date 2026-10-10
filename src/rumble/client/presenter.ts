@@ -81,6 +81,8 @@ export class RumblePresenter {
   private arenaView: Arena;
   private def: ArenaDef;
   private cameraPose: CameraPose | null = null;
+  /** M11.1: the cue under the action for the people at this screen (grabbed: how to break free; hanging; out: how to throw), shown whatever the text HUD does. */
+  private readonly cue: HTMLElement;
   private previous: MatchSnapshot | null = null;
   private message = '';
   private readonly lastHazard: Record<string, string> = {};
@@ -109,6 +111,9 @@ export class RumblePresenter {
     this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows));
     this.orbView = new OrbView(this.scene, orbs, this.env.shadows);
     this.bananaView = new BananaView(this.scene, this.env.shadows);
+    this.cue = document.createElement('div');
+    this.cue.setAttribute('style', 'position:fixed;left:50%;bottom:12%;transform:translateX(-50%);display:none;flex-direction:column;gap:6px;align-items:center;z-index:6;pointer-events:none;font:600 15px ui-monospace,Menlo,monospace;color:#2b2b3a;');
+    (hud.parentElement ?? document.body).appendChild(this.cue);
     if (this.def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(this.def.theme), this.def.sweeper);
     cam.upperRadiusLimit = this.def.camera.maxRadius;
     window.addEventListener('keydown', (e) => {
@@ -123,6 +128,52 @@ export class RumblePresenter {
   }
 
   /** The camera's yaw, for camera-relative keys. */
+  /**
+   * M11.1: the cue lines. Held: who holds you and the keys that break free,
+   * with the progress; carrying: the throw key; hanging: grip and keys;
+   * out of the round and playing: the aim. Nothing while nothing applies.
+   */
+  private showCues(s: MatchSnapshot, info: HudInfo) {
+    const lines: { text: string; bar?: number; tone: string }[] = [];
+    for (const { index, keys } of info.strugglers ?? []) {
+      const f = s.fighters[index];
+      if (!f || f.eliminated || s.phase !== 'playing') continue;
+      if (f.heldBy) lines.push({ text: `GRABBED by ${f.heldBy} · tap ${keys} to break free`, bar: f.combat.struggle, tone: '#ffe9a8' });
+      else if (f.holding) lines.push({ text: `HOLDING ${f.holding} · grab again to throw · they can break free`, bar: s.fighters.find((o) => o.id === f.holding)?.combat.struggle, tone: '#d6f0ff' });
+      else if (f.ledge) lines.push({ text: `${f.ledge.phase === 'climb' ? 'CLIMBING' : 'HANGING'} · jump to climb · grab or push away to let go`, bar: f.ledge.grip, tone: '#dff5e3' });
+    }
+    for (const a of info.aimers ?? []) {
+      const f = s.fighters[a.index];
+      if (!f?.eliminated || s.phase !== 'playing') continue;
+      const alive = s.fighters.filter((x) => x.alive).length;
+      const why = alive < BANANAS.minAlive ? `no peels with ${alive} left` : f.bananas.left === 0 ? 'no peels left this round' : f.bananas.cooldown > 0 ? `next peel in ${f.bananas.cooldown.toFixed(1)} s` : `${f.bananas.left} peel${f.bananas.left === 1 ? '' : 's'} left`;
+      lines.push({ text: `OUT · aim ${a.keys} · ${why}`, tone: '#f4f4f4' });
+    }
+    const key = lines.map((l) => `${l.text}|${l.bar === undefined ? '-' : Math.round(l.bar * 20)}`).join('\n');
+    if (key === this.cueKey) return;
+    this.cueKey = key;
+    this.cue.style.display = lines.length ? 'flex' : 'none';
+    this.cue.replaceChildren(
+      ...lines.map((l) => {
+        const row = document.createElement('div');
+        row.setAttribute('style', `padding:8px 14px;border-radius:12px;background:${l.tone};box-shadow:0 4px 16px rgba(40,50,80,0.18);display:flex;gap:10px;align-items:center;`);
+        const text = document.createElement('span');
+        text.textContent = l.text;
+        row.appendChild(text);
+        if (l.bar !== undefined) {
+          const track = document.createElement('span');
+          track.setAttribute('style', 'display:inline-block;width:110px;height:10px;border-radius:5px;background:rgba(0,0,0,0.12);overflow:hidden;');
+          const fill = document.createElement('span');
+          fill.setAttribute('style', `display:block;height:100%;width:${Math.round(Math.max(0, Math.min(1, l.bar)) * 100)}%;background:#2b2b3a;`);
+          track.appendChild(fill);
+          row.appendChild(track);
+        }
+        return row;
+      }),
+    );
+  }
+  private cueKey = '';
+
   /** M11F: the floor's height under a point (for the aim reticle), or 0. */
   private floorHeight(p: { x: number; z: number }): number {
     return platformUnder(this.def.platforms, p)?.y ?? 0;
@@ -253,6 +304,7 @@ export class RumblePresenter {
       lines.push(`${who} ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot && !f.eliminated ? `  ${bot}` : ''}`);
     });
     lines.push('', this.message || (s.phase === 'playing' ? '' : '…'));
+    this.showCues(s, info);
     for (const a of info.aimers ?? []) {
       const f = s.fighters[a.index];
       if (!f?.eliminated || s.phase !== 'playing') continue;

@@ -591,6 +591,7 @@ export class RumbleMatch {
     const holder = this.fighters[h];
     endGrab(holder.combat, victim.combat);
     holder.letGo(victim);
+    holder.carryDrag = 0;
     const a = holder.at();
     const b = victim.at();
     const d = Math.hypot(b.x - a.x, b.z - a.z);
@@ -625,7 +626,10 @@ export class RumbleMatch {
         const victim = this.fighters[v];
         const thrown = release(me.combat, victim.combat, me.holdDir(), me.velocity(), me.power);
         me.letGo(victim);
+        me.carryDrag = 0;
         victim.react(thrown, COMBAT.throwSpin);
+        // M11.1: a thrown body lands, rights itself and has a moment before anyone may grab it again (no throw chains).
+        victim.combat.grabImmune = Math.max(victim.combat.grabImmune, COMBAT.throwImmunity);
         this.emit({ kind: 'throw', who: me.id, on: victim.id, reaction: thrown.kind, impact: thrown.impact });
       } else {
         const j = grabTarget(list, i);
@@ -642,8 +646,11 @@ export class RumbleMatch {
       if (holdBreaks(me.combat, anchor, victim.feet()) || isTumbling(me.combat)) {
         endGrab(me.combat, victim.combat);
         me.letGo(victim);
+        me.carryDrag = 0;
+        victim.combat.grabImmune = Math.max(victim.combat.grabImmune, STRUGGLE.regrabImmunity);
         this.emit({ kind: 'drop', who: me.id, on: victim.id, note: 'hold broke' });
       } else {
+        me.carryDrag = victim.combat.struggle;
         const pull = holdPull(anchor, me.velocity(), victim.feet(), victim.velocity3(), dt);
         victim.push(pull.victim.x, pull.victim.y, pull.victim.z);
         me.push(pull.grabber.x, 0, pull.grabber.z);

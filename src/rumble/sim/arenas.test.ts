@@ -94,7 +94,7 @@ describe('the arena in play (M11A)', () => {
     expect(m.snapshot().arena).toBe(FROZEN.id);
     expect(m.snapshot().sweeper).toBeNull();
     expect(m.snapshot().pieces).toHaveLength(FROZEN.dynamics.length);
-    m.debugPlace('a', { x: 6.5, z: 2.6 });
+    m.debugPlace('a', { x: 7.6, z: 3.2 });
     const out = secs(m, 2);
     expect(out).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
     m.dispose();
@@ -102,11 +102,11 @@ describe('the arena in play (M11A)', () => {
 
   it('the elimination boundary is the arena’s: a Skyfall fighter below the classic line is still in play until its own line', () => {
     const m = make(SKYFALL);
-    m.debugPlace('a', { x: -8.4, z: -1.2, y: -0.5 });
+    m.debugPlace('a', { x: 0, z: 5.3, y: -1.2 });
     secs(m, 0.5);
     expect(fighter(m.snapshot(), 'a').alive).toBe(true);
-    expect(feetY(fighter(m.snapshot(), 'a'))).toBeLessThan(-0.3);
-    m.debugPlace('a', { x: -8.4, z: 4, y: -0.5 });
+    expect(feetY(fighter(m.snapshot(), 'a'))).toBeLessThan(-1);
+    m.debugPlace('a', { x: 0, z: 7.5, y: -1.2 });
     const events = secs(m, 2);
     expect(events).toContainEqual(expect.objectContaining({ kind: 'out', who: 'a' }));
     m.dispose();
@@ -286,9 +286,9 @@ describe('the frozen lake (M11E)', () => {
 });
 
 describe('ledges (M11C)', () => {
-  /** A fighter walking south off the centre's free south edge (z -4) at x 2: no bridge, no step there. */
+  /** A fighter walking south off the centre's free south edge (z -4.5) at x 3: no bridge, no step there. */
   const walkOff = (m: RumbleMatch, id = 'a') => {
-    m.debugPlace(id, { x: 2, z: -3.3, yaw: Math.PI });
+    m.debugPlace(id, { x: 3, z: -3.8, yaw: Math.PI });
     m.setInput(id, { x: 0, z: -1 });
   };
   /** Walk off, step until caught (the stick still pushed off the edge), then let the stick go. Returns the steps' events. */
@@ -318,8 +318,8 @@ describe('ledges (M11C)', () => {
     expect(a.ledge!.y).toBe(0);
     expect(a.ledge!.inZ).toBe(1);
     expect(feetY(a)).toBeCloseTo(-LEDGE.hangDrop, 1);
-    expect(a.position.z).toBeLessThan(-4);
-    expect(a.position.z).toBeGreaterThan(-4.6);
+    expect(a.position.z).toBeLessThan(-4.5);
+    expect(a.position.z).toBeGreaterThan(-5.1);
     expect(Math.hypot(a.velocity.x, a.velocity.y, a.velocity.z)).toBeLessThan(0.3);
     expect(Math.cos(a.yaw)).toBeCloseTo(1, 1);
     expect(a.grounded).toBe(false);
@@ -362,8 +362,8 @@ describe('ledges (M11C)', () => {
     expect(a.alive).toBe(true);
     expect(a.grounded).toBe(true);
     expect(Math.abs(feetY(a))).toBeLessThan(0.1);
-    expect(a.position.z).toBeGreaterThan(-4 + 0.3);
-    expect(a.position.z).toBeLessThan(-2.5);
+    expect(a.position.z).toBeGreaterThan(-4.5 + 0.3);
+    expect(a.position.z).toBeLessThan(-3);
     m.dispose();
   });
 
@@ -394,7 +394,7 @@ describe('ledges (M11C)', () => {
     expect(none.filter((e) => e.kind === 'punch' && e.who === 'a')).toEqual([]);
     expect(fighter(m.snapshot(), 'a').ledge).not.toBeNull();
     // The one above punches down over the edge.
-    m.debugPlace('b', { x: 2, z: -3.5, yaw: Math.PI, powerLevel: 1 });
+    m.debugPlace('b', { x: 3, z: -4.1, yaw: Math.PI, powerLevel: 1 });
     m.setInput('b', { punch: true });
     const events = secs(m, 2);
     expect(events).toContainEqual(expect.objectContaining({ kind: 'punch', who: 'b', on: 'a' }));
@@ -417,8 +417,8 @@ describe('ledges (M11C)', () => {
     }
     const m = make(SKYFALL);
     // 'b' grabs 'a' at the south edge and throws it over: no catch for a thrown body.
-    m.debugPlace('a', { x: 2, z: -3.4, yaw: Math.PI });
-    m.debugPlace('b', { x: 2, z: -2.6, yaw: Math.PI });
+    m.debugPlace('a', { x: 3, z: -3.9, yaw: Math.PI });
+    m.debugPlace('b', { x: 3, z: -3.1, yaw: Math.PI });
     still(m, 'a');
     still(m, 'b');
     steps(m, 5);
@@ -451,6 +451,116 @@ describe('ledges (M11C)', () => {
     const events = secs(m, rule.arm + rule.warn + 0.3);
     expect(ledgeNotes(events)).toEqual(['ledge gone']);
     expect(fighter(m.snapshot(), 'a').ledge).toBeNull();
+    m.dispose();
+  });
+});
+
+describe('walkable transitions (M11.1)', () => {
+  /** Walk `id` from `from` along `dir` for `seconds`; fail if it ever leaves the ground, dips under the floor, or jumps. */
+  const walk = (m: RumbleMatch, id: string, from: { x: number; z: number; y?: number }, dir: { x: number; z: number }, seconds: number) => {
+    m.debugPlace(id, { ...from, yaw: Math.atan2(dir.x, dir.z) });
+    steps(m, 10);
+    m.setInput(id, { x: dir.x, z: dir.z });
+    let minFeet = Infinity;
+    let airborne = 0;
+    for (let i = 0; i < Math.ceil(seconds / DT); i++) {
+      const ev = m.step(DT);
+      expect(ev.filter((e) => e.kind === 'jump' && e.who === id)).toEqual([]);
+      const f = fighter(m.snapshot(), id);
+      if (i > 15) {
+        minFeet = Math.min(minFeet, feetY(f));
+        if (!f.grounded) airborne++;
+      }
+    }
+    still(m, id);
+    return { at: fighter(m.snapshot(), id), minFeet, airborne };
+  };
+
+  it('Skyfall: a fighter walks from the centre over each bridge onto its island and back without jumping, sinking or snagging', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: 0, z: 3 });
+    still(m, 'b');
+    const east = walk(m, 'a', { x: 4, z: 1.2 }, { x: 1, z: 0 }, 3.6);
+    expect(east.at.position.x).toBeGreaterThan(8.6);
+    expect(east.at.alive).toBe(true);
+    expect(east.minFeet).toBeGreaterThan(-0.08);
+    expect(east.airborne).toBeLessThan(4);
+    const back = walk(m, 'a', { x: 10, z: 1.2 }, { x: -1, z: 0 }, 3.6);
+    expect(back.at.position.x).toBeLessThan(5.6);
+    expect(back.minFeet).toBeGreaterThan(-0.08);
+    const west = walk(m, 'a', { x: -4, z: -1.2 }, { x: -1, z: 0 }, 3.6);
+    expect(west.at.position.x).toBeLessThan(-8.6);
+    expect(west.at.alive).toBe(true);
+    expect(west.minFeet).toBeGreaterThan(-0.08);
+    m.dispose();
+  });
+
+  it('Factory: belts and pads join the floor flush: a fighter walks from the crate’s side to the east pad over the belt without a hop', () => {
+    const m = make(FACTORY);
+    m.debugPlace('b', { x: 0, z: -1.5 });
+    still(m, 'b');
+    const r = walk(m, 'a', { x: 2.5, z: 3.2 }, { x: 1, z: 0 }, 2.0);
+    expect(r.at.position.x).toBeGreaterThan(6.5);
+    expect(r.at.position.x).toBeLessThan(9.2);
+    expect(r.at.alive).toBe(true);
+    expect(r.minFeet).toBeGreaterThan(-0.08);
+    expect(r.airborne).toBeLessThan(4);
+    m.dispose();
+  });
+});
+
+const ledgeNotesOf = (events: ReturnType<RumbleMatch['step']>, who = 'a') => events.filter((e) => e.kind === 'ledge' && e.who === who).map((e) => e.note);
+
+describe('ledges, tightened (M11.1)', () => {
+  it('a step down is not a fall to catch: walking off the south step onto the centre (half a metre) just lands', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: 3, z: 2 });
+    still(m, 'b');
+    m.debugPlace('a', { x: -1, z: -5.0, y: 0.5, yaw: 0 });
+    m.setInput('a', { x: 0, z: 1 });
+    const events = secs(m, 1.5);
+    expect(events.filter((e) => e.kind === 'ledge')).toEqual([]);
+    const a = fighter(m.snapshot(), 'a');
+    expect(a.alive).toBe(true);
+    expect(Math.abs(feetY(a))).toBeLessThan(0.1);
+    expect(a.position.z).toBeGreaterThan(-4.5);
+    m.dispose();
+  });
+
+  it('after a climb the keys do not walk the fighter straight back off: a stick still pushed off the edge is ignored for a moment, and a later fall is caught again', () => {
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: 3, z: 2 });
+    still(m, 'b');
+    m.debugPlace('a', { x: 3, z: -3.8, yaw: Math.PI });
+    m.setInput('a', { x: 0, z: -1 });
+    const caught: ReturnType<RumbleMatch['step']> = [];
+    for (let i = 0; i < 180 && !caught.some((e) => e.kind === 'ledge'); i++) caught.push(...m.step(DT));
+    expect(fighter(m.snapshot(), 'a').ledge).not.toBeNull();
+    // Climb while still pushing off the edge.
+    m.setInput('a', { x: 0, z: -1, jump: true });
+    const climb = secs(m, LEDGE.climbTime + 0.05);
+    expect(ledgeNotesOf(climb)).toEqual(['climbed']);
+    const settled = secs(m, LEDGE.settle - 0.05);
+    expect(settled.filter((e) => e.kind === 'ledge' || e.kind === 'out')).toEqual([]);
+    expect(fighter(m.snapshot(), 'a').grounded).toBe(true);
+    expect(fighter(m.snapshot(), 'a').alive).toBe(true);
+    // Still pushing: it walks off again and is caught again, never rung out.
+    const later = secs(m, 1.2);
+    expect(ledgeNotesOf(later)).toEqual(['caught centre']);
+    expect(later.filter((e) => e.kind === 'out')).toEqual([]);
+    m.dispose();
+  });
+
+  it('a ledge whose hang would sit inside a neighbouring slab is no ledge: the centre’s north edge over the ledge below is still caught (the hang clears it), the step’s inner edge against the centre is not', () => {
+    // Falling off the centre's north edge: the hang is at feet -0.85, above the north ledge's top (-1.2): caught.
+    const m = make(SKYFALL);
+    m.debugPlace('b', { x: 3, z: -2 });
+    still(m, 'b');
+    m.debugPlace('a', { x: 0, z: 3.8, yaw: 0 });
+    m.setInput('a', { x: 0, z: 1 });
+    const events = secs(m, 1.5);
+    expect(ledgeNotesOf(events)[0]).toBe('caught centre');
+    expect(events.filter((e) => e.kind === 'out')).toEqual([]);
     m.dispose();
   });
 });

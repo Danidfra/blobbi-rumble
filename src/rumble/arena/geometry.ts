@@ -126,7 +126,7 @@ export interface Ledge {
   inZ: number;
 }
 
-export function findLedge(platforms: readonly Platform[], c: { x: number; y: number; z: number }, feetY: number, opts: { reach: number; minBelow: number; maxBelow: number; minSize?: number; skip?: (index: number) => boolean }): Ledge | null {
+export function findLedge(platforms: readonly Platform[], c: { x: number; y: number; z: number }, feetY: number, opts: { reach: number; minBelow: number; maxBelow: number; minSize?: number; skip?: (index: number) => boolean; accept?: (ledge: Ledge) => boolean }): Ledge | null {
   let best: Ledge | null = null;
   let bestD = Infinity;
   const minSize = opts.minSize ?? 0.8;
@@ -149,8 +149,10 @@ export function findLedge(platforms: readonly Platform[], c: { x: number; y: num
     const inX = Math.abs(dx) >= Math.abs(dz) ? -Math.sign(dx || 1) : 0;
     const inZ = inX === 0 ? -Math.sign(dz || 1) : 0;
     void len;
+    const candidate: Ledge = { platform: i, x: nx, y: r.y, z: nz, inX, inZ };
+    if (opts.accept && !opts.accept(candidate)) return;
     bestD = d;
-    best = { platform: i, x: nx, y: r.y, z: nz, inX, inZ };
+    best = candidate;
   });
   return best;
 }

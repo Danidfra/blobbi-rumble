@@ -43,18 +43,22 @@ export const COMBAT = Object.freeze({
   holdMaxPull: 45,
   /** The share of the pull the grabber feels back: the held body has presence. */
   holdReaction: 0.45,
-  /** A carrying grabber moves at this share of its speeds. */
-  carrySpeed: 0.85,
-  /** The held body's steering authority, the longest a hold lasts, seconds, and how far from the anchor it may be pushed before the hold breaks, metres. */
+  /** A carrying grabber WALKS (never runs) at this share of its walk speed (M11.1: a carrier that could run outpaced any escape). */
+  carrySpeed: 0.75,
+  /** The held body's struggle drags on the carrier: at full struggle the carrier is slowed by this share more. */
+  struggleDrag: 0.5,
+  /** The held body's steering authority, the longest a hold lasts, seconds (M11.1: 2.5, so a carrier must decide), and how far from the anchor it may be pushed before the hold breaks, metres. */
   grabbedControl: 0.2,
-  grabMaxHold: 4,
+  grabMaxHold: 2.5,
   grabBreakDistance: 1.6,
 
   // ── Throw ──
   /** Release: the thrown body leaves along the hold direction at base + gain × grabber speed that way, capped by impactMax, with a lift. */
   throwBase: 3.0,
-  throwGain: 1.3,
+  throwGain: 1.0,
   throwLift: 1.6,
+  /** A thrown body cannot be grabbed again for this long after the throw, seconds: it lands, rights itself and has a moment (M11.1). */
+  throwImmunity: 1.6,
   /** The spin a throw gives, rad/s, pitching the body over its direction of travel. */
   throwSpin: 7,
 
@@ -100,7 +104,7 @@ export const STRUGGLE = Object.freeze({
   breakAwayLift: 1.2,
   holderRecoil: 0.6,
   /** After breaking free, nobody may grab the fighter for this long, seconds (punches, throws and the sweeper still count). */
-  regrabImmunity: 0.6,
+  regrabImmunity: 1.2,
 });
 
 export const ROUND = Object.freeze({
@@ -281,7 +285,7 @@ export const BOT = Object.freeze({
   /** M11A: a bot never walks down onto a platform more than this far below its own (a drop it could not jump back from). */
   maxDrop: 0.7,
   /** M11C: a gap is leapt when floor is missing ahead but a platform lies within `leapReach` metres, no more than `leapUp` above nor `leapDown` below; the leap is run at, the jump taken when the floor ends, and given up after `leapTime` seconds. */
-  leapReach: 2.6,
+  leapReach: 2.8,
   leapUp: 0.6,
   leapDown: 1.25,
   leapTime: 1.4,
@@ -312,10 +316,10 @@ export const BOT = Object.freeze({
  */
 export const LEDGE = Object.freeze({
   /** How far beyond the capsule's radius the hands reach sideways, metres. */
-  reachOut: 0.35,
-  /** The ledge's top may be this far above the feet (hands over the head) and this little below them. */
+  reachOut: 0.5,
+  /** The ledge's top must be at least `minAbove` over the feet (a step down is not a fall to catch) and at most `reachUp` (hands over the head). */
   reachUp: 1.3,
-  reachDown: 0.25,
+  minAbove: 0.55,
   /** Falling at least this fast (m/s downward) to catch: a step down is not a fall. */
   minFallSpeed: 0.5,
   /** Hanging: the feet this far below the top; the capsule this far clear of the wall. */
@@ -332,6 +336,8 @@ export const LEDGE = Object.freeze({
   climbOver: 0.06,
   /** No new catch for this long after letting go or being knocked off, seconds. */
   regrab: 0.4,
+  /** After a climb the keys do not move the fighter for this long: a stick still pushed off the edge does not walk it straight back off. */
+  settle: 0.3,
   /** The hang is a stiff spring to its anchor (1/s). */
   spring: 16,
   /** Pushing the stick away from the wall at least this much, held for `awayHold` seconds, lets go (a push that walked off an edge is over before that). */

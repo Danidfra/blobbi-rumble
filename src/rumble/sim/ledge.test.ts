@@ -42,19 +42,19 @@ describe('catching a ledge', () => {
   it('finds the edge within the hands’ reach, above the feet up to arm’s length, never a platform under the body, and skips what is told', () => {
     const ps = SKYFALL.platforms;
     const centre = 0;
-    // Just south of the centre's south edge (z -4), feet 0.5 below its top.
-    const l = reachableLedge(ps, { x: 2, y: -0.5 + RUMBLE_BODY.capsuleCenterY, z: -4.5 }, -0.5);
+    // Just south of the centre's south edge (z -4.5), feet 0.7 below its top.
+    const l = reachableLedge(ps, { x: 3, y: -0.7 + RUMBLE_BODY.capsuleCenterY, z: -5.0 }, -0.7);
     expect(l).not.toBeNull();
     expect(l!.platform).toBe(centre);
-    expect(l!.z).toBe(-4);
+    expect(l!.z).toBe(-4.5);
     expect(l!.inZ).toBe(1);
     expect(l!.inX).toBe(0);
     // Too far out, too far below, above the top: nothing.
-    expect(reachableLedge(ps, { x: 2, y: 0, z: -4.9 }, -0.5)).toBeNull();
-    expect(reachableLedge(ps, { x: 2, y: -1.2, z: -4.5 }, -1.6)).toBeNull();
-    expect(reachableLedge(ps, { x: 2, y: 1, z: -4.5 }, 0.5)).toBeNull();
+    expect(reachableLedge(ps, { x: 3, y: 0, z: -5.6 }, -0.7)).toBeNull();
+    expect(reachableLedge(ps, { x: 3, y: -1.2, z: -5.0 }, -1.6)).toBeNull();
+    expect(reachableLedge(ps, { x: 3, y: 1, z: -5.0 }, 0.5)).toBeNull();
     // Skipped (a piece that is gone).
-    expect(reachableLedge(ps, { x: 2, y: 0, z: -4.5 }, -0.5, (i) => i === centre)).toBeNull();
+    expect(reachableLedge(ps, { x: 3, y: 0, z: -5.0 }, -0.7, (i) => i === centre)).toBeNull();
   });
 
   it('hangs just clear of the wall with the feet below the top, and climbs to a little in from the edge on top', () => {
