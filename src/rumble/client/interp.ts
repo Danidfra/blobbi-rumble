@@ -103,6 +103,7 @@ function blendFighter(a: FighterSnapshot, b: FighterSnapshot, k: number): Fighte
     yaw: lerpAngle(a.yaw, b.yaw, k),
     tilt: lerp(a.tilt, b.tilt, k),
     ledge: b.ledge,
+    bananas: b.bananas,
     combat: {
       ...a.combat,
       punchTime: timer(a.combat.punchTime, b.combat.punchTime, k),
@@ -129,6 +130,7 @@ export function interpolate(a: MatchSnapshot, b: MatchSnapshot, k: number, t: Ne
     arena: b.arena,
     pieces: b.pieces,
     roundTime: b.roundTime,
+    bananas: b.bananas,
   };
 }
 

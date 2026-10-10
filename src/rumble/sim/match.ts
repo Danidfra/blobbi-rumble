@@ -25,14 +25,16 @@ import { CLASSIC, arenaSpawns, type ArenaDef } from '../arena/arenas';
 import { inPlatform, platformUnder } from '../arena/geometry';
 import { createPieces, drop as pieceDrop, pieceImpact, pieceSolid, resetPieces, tickPiece, type PieceState } from '../arena/pieces';
 import { createSweeper, resetSweeper, sweeperHit, tickSweeper, type SweeperState } from '../arena/sweeper';
-import { endGrab, holdBreaks, holdPull, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
+import { endGrab, holdBreaks, holdPull, isDown, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
 import { freeHolds, grabTarget, holdsConsistent, punchTarget, settleHolds, type Combatant, type Hold } from '../combat/melee';
+import { createThrowers, judgeThrow, resetThrowers, slips, tickBananas, type Banana, type Thrower, type ThrowRefusal } from '../pickups/bananas';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from '../pickups/orbs';
 import { nearestContacts } from '../physics/contact';
 import { RUMBLE_BODY } from '../profile';
 import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch, type MatchState } from '../rounds';
 import { stepStruggle } from '../combat/struggle';
-import { COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
+import { BANANAS, COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
+import { reactionKind } from '../combat/impact';
 import { createArenaBody, type ArenaBody } from './arenaBody';
 import { FighterSim, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
@@ -73,6 +75,11 @@ export class RumbleMatch {
   private def: ArenaDef;
   private pieces: PieceState[];
   private roundTime = 0;
+  /** M11F: the banana peels on the floor, and each fighter's throws (as an eliminated player). */
+  private bananas: Banana[] = [];
+  private throwers: Thrower[];
+  /** Events decided between steps (a throw judged on arrival), reported by the next step. */
+  private queued: MatchEvent[] = [];
   /** Each player's current movement intent, and the action requests waiting for the next step. */
   private readonly intents: PlayerIntent[];
   private readonly pending: { jump: boolean; punch: boolean; grab: boolean }[];
@@ -109,6 +116,28 @@ export class RumbleMatch {
     this.wasTouching = Array(n).fill(false);
     this.lastIntents = this.ids.map(() => ({ ...IDLE_INTENT }));
     this.contacts = Array(n).fill(-1);
+    this.throwers = createThrowers(n);
+  }
+
+  /**
+   * M11F: a player out of the round throws a banana peel at a point on the
+   * floor. The match judges it (the round on, the thrower out, enough still
+   * in, a budget, a cooldown, a cap on peels, solid floor) and says why not.
+   */
+  throwBanana(id: PlayerId, x: unknown, z: unknown): { ok: true } | { ok: false; reason: ThrowRefusal } {
+    const i = this.indexOf(id);
+    const f = this.fighters[i];
+    const unusable = (index: number) => {
+      const k = this.def.dynamics.findIndex((d) => d.platform === index);
+      return k >= 0 && !pieceSolid(this.pieces[k]);
+    };
+    const judged = judgeThrow(this.throwers[i], this.bananas.length, x, z, { playing: this.match.phase === 'playing', eliminated: f.eliminated, alive: aliveCount(this.match), platforms: this.def.platforms, unusable });
+    if (!judged.ok) return judged;
+    this.throwers[i].thrown += 1;
+    this.throwers[i].since = 0;
+    this.bananas.push({ ...judged.banana, owner: i });
+    this.queued.push({ tick: this.tickCount, t: +this.clock.toFixed(3), round: this.match.round, kind: 'banana', who: id, note: `thrown at ${judged.banana.x.toFixed(1)}, ${judged.banana.z.toFixed(1)}` });
+    return { ok: true };
   }
 
   get tick() {
@@ -207,7 +236,8 @@ export class RumbleMatch {
 
   /** Advance the match by `dt` seconds. Returns what it decided during the step. */
   step(dt: number): MatchEvent[] {
-    this.events = [];
+    this.events = this.queued;
+    this.queued = [];
     this.clock += dt;
     this.tickCount += 1;
     const fighters = this.fighters;
@@ -345,6 +375,32 @@ export class RumbleMatch {
     }
     tickOrbs(this.orbs, dt, bodies);
 
+    // M11F: the peels lie, age and go; a fighter running over one tumbles along its way.
+    tickBananas(this.bananas, this.throwers, dt);
+    if (playing && this.bananas.length) {
+      const walkers = fighters.map((f) => {
+        if (f.eliminated) return null;
+        const feet = f.body.feet();
+        const v = f.velocity();
+        return { x: feet.x, y: feet.y, z: feet.z, speed: Math.hypot(v.x, v.z), canSlip: f.grounded && !f.onLedge && !f.combat.held && !isDown(f.combat) };
+      });
+      const slipped = slips(this.bananas, walkers);
+      const list = this.combatants();
+      // Remove from the highest index down, so each slip's peel is the one it stepped on.
+      const order = slipped.map((b, i) => [b, i]).filter(([b]) => b >= 0).sort((p, q) => q[0] - p[0]);
+      for (const [b, i] of order) {
+        const peel = this.bananas[b];
+        const v = fighters[i].velocity();
+        const speed = Math.hypot(v.x, v.z) || 1;
+        const dir = { x: v.x / speed, z: v.z / speed };
+        const impact = BANANAS.impact;
+        const reaction: Reaction = { kind: reactionKind(impact, true), impact, dvx: dir.x * BANANAS.push, dvy: BANANAS.lift, dvz: dir.z * BANANAS.push, dir };
+        this.bananas.splice(b, 1);
+        this.strike(list, i, reaction, -1);
+        this.emit({ kind: 'banana', who: this.ids[i], on: this.ids[peel.owner], reaction: 'tumble', impact, note: 'slipped' });
+      }
+    }
+
     // The sweeper turns; a fighter under its leading face takes its blow, through the same reaction as a punch (no player power in it).
     if (this.sweeper && this.sweeperBody && this.def.sweeper) {
       const tuning = this.def.sweeper;
@@ -441,6 +497,7 @@ export class RumbleMatch {
           tilt: f.tilt,
           lastImpact: f.lastImpact,
           ledge: f.ledge.hold ? { phase: f.ledge.hold.phase, x: f.ledge.hold.ledge.x, y: f.ledge.hold.ledge.y, z: f.ledge.hold.ledge.z, inX: f.ledge.hold.ledge.inX, inZ: f.ledge.hold.ledge.inZ, grip: +f.ledge.endurance.toFixed(3) } : null,
+          bananas: { left: Math.max(0, BANANAS.perRound - this.throwers[i].thrown), cooldown: +Math.max(0, BANANAS.cooldown - this.throwers[i].since).toFixed(2) },
           hits: f.hits,
           jumps: f.jumps,
           escapes: f.escapes,
@@ -457,6 +514,7 @@ export class RumbleMatch {
       arena: this.def.id,
       pieces: this.pieces.map((p, k) => ({ phase: p.phase, t: +p.t.toFixed(3), drop: +pieceDrop(p, this.def.dynamics[k].rule).toFixed(3) })),
       roundTime: +this.roundTime.toFixed(3),
+      bananas: this.bananas.map((b) => ({ x: b.x, y: b.y, z: b.z, owner: this.ids[b.owner], age: +b.age.toFixed(2) })),
     };
   }
 
@@ -489,6 +547,8 @@ export class RumbleMatch {
     resetPieces(this.pieces);
     this.pieces.forEach((_, k) => this.arenaBody.setPiece(k, 0, true));
     this.roundTime = 0;
+    this.bananas = [];
+    resetThrowers(this.throwers);
   }
 
   private combatants(): Combatant[] {

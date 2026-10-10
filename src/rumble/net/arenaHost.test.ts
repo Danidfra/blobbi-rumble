@@ -20,6 +20,44 @@ beforeAll(async () => {
   havok = await loadHavokNode();
 });
 
+let server: RumbleServer | null = null;
+const sockets: WebSocket[] = [];
+afterEach(async () => {
+  for (const s of sockets.splice(0)) s.terminate();
+  await server?.close();
+  server = null;
+});
+interface Conn {
+  ws: WebSocket;
+  welcome?: WelcomeMessage;
+  messages: ServerMessage[];
+  send: (m: unknown) => void;
+}
+const open = (url: string) =>
+  new Promise<Conn>((resolve) => {
+    const ws = new WebSocket(url);
+    sockets.push(ws);
+    const c: Conn = { ws, messages: [], send: (m) => ws.send(JSON.stringify(m)) };
+    ws.on('message', (d) => {
+      const m = JSON.parse(d.toString()) as ServerMessage;
+      c.messages.push(m);
+      if (m.t === 'welcome') {
+        c.welcome = m;
+        resolve(c);
+      }
+    });
+    ws.on('close', () => resolve(c));
+    ws.on('error', () => {});
+  });
+const waitFor = async (cond: () => boolean, ms = 3000) => {
+  const until = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > until) throw new Error('timed out');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
+
 describe('the host’s arena (M11A)', () => {
   const ticks = (h: RumbleHost, seconds: number) => {
     for (let i = 0; i < Math.ceil(seconds * h.tickHz); i++) h.tick();
@@ -84,43 +122,6 @@ describe('the host’s arena (M11A)', () => {
 });
 
 describe('the arena over the socket (M11A)', () => {
-  let server: RumbleServer | null = null;
-  const sockets: WebSocket[] = [];
-  afterEach(async () => {
-    for (const s of sockets.splice(0)) s.terminate();
-    await server?.close();
-    server = null;
-  });
-  interface Conn {
-    ws: WebSocket;
-    welcome?: WelcomeMessage;
-    messages: ServerMessage[];
-    send: (m: unknown) => void;
-  }
-  const open = (url: string) =>
-    new Promise<Conn>((resolve) => {
-      const ws = new WebSocket(url);
-      sockets.push(ws);
-      const c: Conn = { ws, messages: [], send: (m) => ws.send(JSON.stringify(m)) };
-      ws.on('message', (d) => {
-        const m = JSON.parse(d.toString()) as ServerMessage;
-        c.messages.push(m);
-        if (m.t === 'welcome') {
-          c.welcome = m;
-          resolve(c);
-        }
-      });
-      ws.on('close', () => resolve(c));
-      ws.on('error', () => {});
-    });
-  const waitFor = async (cond: () => boolean, ms = 3000) => {
-    const until = Date.now() + ms;
-    while (!cond()) {
-      if (Date.now() > until) throw new Error('timed out');
-      await new Promise((r) => setTimeout(r, 10));
-    }
-  };
-
   it('a creation names its arena and rotation; a joiner is told them; an unknown arena is the classic island; the listing names arenas; nothing of the arena rides a snapshot but its id', async () => {
     server = await startRumbleServer({ havok, port: 0, manual: false });
     const base = `ws://127.0.0.1:${server.port}`;
@@ -143,5 +144,71 @@ describe('the arena over the socket (M11A)', () => {
     const rooms = viewer.messages.find((m): m is RoomsMessage => m.t === 'rooms')!;
     expect(rooms.rooms.find((r) => r.id === host.welcome!.room!.id)?.arena).toBe(FACTORY.id);
     expect(rooms.rooms.find((r) => r.id === 'OPEN')?.arena).toBe(CLASSIC.id);
+  });
+});
+
+describe('banana peels over the host and the socket (M11F)', () => {
+  const ticks = (h: RumbleHost, seconds: number) => {
+    for (let i = 0; i < Math.ceil(seconds * h.tickHz); i++) h.tick();
+  };
+
+  it('a throw from a player still in the round, a spectator or a malformed message is nothing; an out player’s lands, and every state (a late joiner’s first too) carries it', () => {
+    const h = new RumbleHost({ havok, players: ['a', 'b', 'c', 'd'] });
+    h.connect(1);
+    h.connect(2);
+    expect(h.slot(2)).toBe('b');
+    // Bots drive 'c' and 'd'; freeze them by connecting (idle) humans would change the test; instead 'a' is put out.
+    expect(h.receive(1, JSON.stringify({ t: 'throw', x: 0, z: 0 }))).toBeNull();
+    ticks(h, 0.1);
+    expect(h.state().snapshot.bananas).toEqual([]);
+    const pos = h.state().snapshot.fighters[0].position;
+    h.match.debugPlace('a', { x: pos.x, y: h.match.arena.fallY + 0.5, z: pos.z });
+    ticks(h, 1);
+    const s0 = h.state().snapshot;
+    expect(s0.fighters[0].eliminated).toBe(true);
+    expect(s0.phase).toBe('playing');
+    // Malformed, out of range, and from a spectator: ignored.
+    expect(h.receive(1, JSON.stringify({ t: 'throw', x: 'a', z: 0 }))).toBeNull();
+    expect(h.receive(1, JSON.stringify({ t: 'throw', x: 500, z: 0 }))).toBeNull();
+    for (let c = 3; c <= 5; c++) h.connect(c);
+    expect(h.slot(5)).toBeNull();
+    expect(h.receive(5, JSON.stringify({ t: 'throw', x: 0, z: 0 }))).toBeNull();
+    ticks(h, 0.1);
+    expect(h.state().snapshot.bananas).toEqual([]);
+    // The out player's throw lands; the same again at once is refused by the cooldown.
+    h.receive(1, JSON.stringify({ t: 'throw', x: 1.25, z: -0.5 }));
+    h.receive(1, JSON.stringify({ t: 'throw', x: 2, z: 0 }));
+    h.tick();
+    const s1 = h.state().snapshot;
+    expect(s1.bananas).toHaveLength(1);
+    expect(s1.bananas[0]).toMatchObject({ x: 1.25, z: -0.5, owner: 'a' });
+    expect(s1.fighters[0].bananas.left).toBe(2);
+    // A late joiner's first state is the same state.
+    h.connect(6);
+    expect(h.state().snapshot.bananas).toHaveLength(1);
+    expect(JSON.stringify(h.state())).toContain('"bananas"');
+    h.dispose();
+  });
+
+  it('over the socket: a throw message from an out player shows in the next states for everyone in the room', async () => {
+    const started = await startRumbleServer({ havok, port: 0, manual: false });
+    try {
+      const base = `ws://127.0.0.1:${started.port}`;
+      const a = await open(`${base}/?create=1`);
+      const room = a.welcome!.room!.id;
+      const b = await open(`${base}/?room=${room}`);
+      expect(a.welcome!.you).toBe('P1');
+      const hostOf = started.rooms.get(room)!.host;
+      await waitFor(() => a.messages.some((m) => m.t === 'state'));
+      const pos = hostOf.state().snapshot.fighters[0].position;
+      hostOf.match.debugPlace('P1', { x: pos.x, y: hostOf.match.arena.fallY + 0.5, z: pos.z });
+      await waitFor(() => a.messages.some((m) => m.t === 'state' && m.snapshot.fighters[0].eliminated && m.snapshot.phase === 'playing'));
+      a.send({ t: 'throw', x: 0.5, z: 0.5 });
+      await waitFor(() => b.messages.some((m) => m.t === 'state' && m.snapshot.bananas.length === 1));
+      const seen = b.messages.find((m) => m.t === 'state' && m.snapshot.bananas.length === 1)!;
+      expect(seen.t === 'state' && seen.snapshot.bananas[0]).toMatchObject({ x: 0.5, z: 0.5, owner: 'P1' });
+    } finally {
+      await started.close();
+    }
   });
 });

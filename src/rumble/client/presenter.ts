@@ -31,6 +31,9 @@ import { themeFor } from '../view/theme';
 import { FighterView } from '../view/fighterView';
 import type { Arena } from '../view/arenaView';
 import { OrbView } from '../view/orbView';
+import { BananaView } from '../view/bananaView';
+import { extentOf, platformUnder } from '../arena/geometry';
+import { BANANAS } from '../tuning';
 import { SweeperView } from '../view/sweeperView';
 
 export interface PresentedFighter {
@@ -53,6 +56,8 @@ export interface HudInfo {
   controls: string[];
   /** The fighters people at this screen play, and the keys each one struggles with (shown when it is held). */
   strugglers?: { index: number; keys: string }[];
+  /** M11F: a player at this screen who is out of the round and aiming a banana peel: where, and the keys. */
+  aimers?: { index: number; aim: { x: number; z: number }; keys: string }[];
   /** Debug only: whether the holds are consistent (known where the match runs). */
   holdsConsistent?: boolean;
   /** Show the text HUD (default true). Network mode shows it only for F4; F3 always shows it. */
@@ -70,6 +75,7 @@ export class RumblePresenter {
   private readonly env;
   private readonly debug: PhysicsDebug;
   private orbView: OrbView;
+  private bananaView: BananaView;
   private sweeperView: SweeperView | null = null;
   /** M11A: the arena drawn, and its definition; rebuilt when the snapshot names another. */
   private arenaView: Arena;
@@ -102,6 +108,7 @@ export class RumblePresenter {
     this.defaults = new Map(fighters.map((f) => [f.id, seedFromLabel(f.identity)]));
     this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows));
     this.orbView = new OrbView(this.scene, orbs, this.env.shadows);
+    this.bananaView = new BananaView(this.scene, this.env.shadows);
     if (this.def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(this.def.theme), this.def.sweeper);
     cam.upperRadiusLimit = this.def.camera.maxRadius;
     window.addEventListener('keydown', (e) => {
@@ -116,6 +123,17 @@ export class RumblePresenter {
   }
 
   /** The camera's yaw, for camera-relative keys. */
+  /** M11F: the floor's height under a point (for the aim reticle), or 0. */
+  private floorHeight(p: { x: number; z: number }): number {
+    return platformUnder(this.def.platforms, p)?.y ?? 0;
+  }
+
+  /** M11F: keep an aim point within the arena's extent. */
+  clampAim(p: { x: number; z: number }): { x: number; z: number } {
+    const e = extentOf(this.def.platforms);
+    return { x: Math.max(-e.halfWidth, Math.min(e.halfWidth, p.x)), z: Math.max(-e.halfDepth, Math.min(e.halfDepth, p.z)) };
+  }
+
   cameraYaw(): number {
     const look = this.env.camera.target.subtract(this.env.camera.position);
     return Math.atan2(look.x, look.z);
@@ -210,6 +228,8 @@ export class RumblePresenter {
     this.previous = s;
     s.fighters.forEach((f, i) => this.views[i].apply(f, dt, jumped.has(f.id)));
     this.orbView.update(dt, s.orbs);
+    const aimer = info.aimers?.find((a) => s.fighters[a.index]?.eliminated && s.phase === 'playing');
+    this.bananaView.update(dt, s.bananas, aimer ? { x: aimer.aim.x, y: this.floorHeight(aimer.aim), z: aimer.aim.z } : null);
     if (this.sweeperView && s.sweeper) this.sweeperView.apply(s.sweeper.angle);
     this.arenaView.applyPieces(s.pieces, s.time);
     this.arenaView.applyTime(s.time);
@@ -232,6 +252,13 @@ export class RumblePresenter {
       lines.push(`${who} ${state}  ${'●'.repeat(f.score)}${'○'.repeat(Math.max(0, ROUND.target - f.score))}  ${power.padEnd(11)}${bot && !f.eliminated ? `  ${bot}` : ''}`);
     });
     lines.push('', this.message || (s.phase === 'playing' ? '' : '…'));
+    for (const a of info.aimers ?? []) {
+      const f = s.fighters[a.index];
+      if (!f?.eliminated || s.phase !== 'playing') continue;
+      const alive = s.fighters.filter((x) => x.alive).length;
+      const why = alive < BANANAS.minAlive ? `no peels with ${alive} left in the round` : f.bananas.left === 0 ? 'no peels left this round' : f.bananas.cooldown > 0 ? `next peel in ${f.bananas.cooldown.toFixed(1)} s` : `${f.bananas.left} peel${f.bananas.left === 1 ? '' : 's'} left`;
+      lines.push(`${f.id} OUT · aim ${a.keys} · ${why}`);
+    }
     for (const { index, keys } of info.strugglers ?? []) {
       const f = s.fighters[index];
       if (!f || f.eliminated) continue;
@@ -279,6 +306,10 @@ export class RumblePresenter {
     s.orbs.forEach((o, i) => {
       if (prev.orbs[i].active && !o.active) this.orbView.taken(i);
     });
+    // M11F: a peel that went before its time was slipped on: a burst where it lay.
+    for (const b of prev.bananas) {
+      if (b.age < BANANAS.lifetime - 0.2 && !s.bananas.some((n) => n.owner === b.owner && Math.abs(n.x - b.x) < 1e-6 && Math.abs(n.z - b.z) < 1e-6)) this.bananaView.burst(b.x, b.y, b.z);
+    }
     if (newRound) return;
     const outs = s.fighters.filter((f, i) => prev.fighters[i].alive && !f.alive).map((f) => f.id);
     if (prev.phase === 'playing' && s.phase === 'roundOver') {

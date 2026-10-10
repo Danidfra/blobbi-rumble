@@ -231,6 +231,7 @@ const HELP: [string, string][] = [
   ['← → (A D) fast', 'break free when grabbed'],
   ['fall past an edge', 'catch the ledge and hang (Skyfall, Factory)'],
   ['Space / Enter · G / L', 'hanging: climb up · let go (or push away)'],
+  ['out of the round', 'WASD aims a banana peel, F or G throws it (3 a round, while 3+ still play)'],
 ];
 
 export function createShell(a: ShellActions) {

@@ -59,6 +59,8 @@ export interface FighterSnapshot {
   lastImpact: number;
   /** M11C: the ledge it hangs from or climbs, with the edge point, the inward direction and its grip left (0..1); null on its feet. */
   ledge: { phase: 'hang' | 'climb'; x: number; y: number; z: number; inX: number; inZ: number; grip: number } | null;
+  /** M11F: as a player out of the round: banana throws left this round, and seconds of cooldown still to wait. */
+  bananas: { left: number; cooldown: number };
   /** Blows, throws and sweeper hits received, and jumps made, over the match: compare two snapshots to see one happen. */
   hits: number;
   jumps: number;
@@ -102,6 +104,8 @@ export interface MatchSnapshot {
   pieces: { phase: PiecePhase; t: number; drop: number }[];
   /** Seconds since the round began. */
   roundTime: number;
+  /** M11F: the banana peels on the floor: where, whose (player id), how old. */
+  bananas: { x: number; y: number; z: number; owner: PlayerId; age: number }[];
 }
 
 /** Something the match decided this step, for clients to show (and tests to read). */
@@ -109,7 +113,7 @@ export interface MatchEvent {
   tick: number;
   t: number;
   round: number;
-  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch' | 'piece' | 'arena' | 'ledge';
+  kind: 'punch' | 'grab' | 'throw' | 'escape' | 'interrupt' | 'drop' | 'orb' | 'sweeper' | 'jump' | 'out' | 'round' | 'match' | 'newRound' | 'newMatch' | 'piece' | 'arena' | 'ledge' | 'banana';
   /** A piece's index (for a `piece` event). */
   piece?: number;
   /** Who acted (or whom it happened to, for a sweeper hit, a ring-out, a won round); null for nobody (a draw) or the arena. */

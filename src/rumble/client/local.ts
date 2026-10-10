@@ -4,7 +4,8 @@
  * once per frame and the presenter draws its snapshot. No server.
  */
 import { BotInput, botWorldFrom } from '../control/bot';
-import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, type MoveIntent } from '../control/input';
+import { Keyboard, P1_BINDINGS, P2_BINDINGS, PlayerInput, ScriptableInput, moveIntent, type MoveIntent } from '../control/input';
+import { BANANAS } from '../tuning';
 import { loadHavok } from '../physics/world';
 import { rosterFor, rosterOptions } from '../roster';
 import { createRumbleMatch } from '../sim/match';
@@ -50,13 +51,29 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
     if (e.code === 'KeyR' && snapshot.phase === 'matchOver') newMatch();
   });
 
+  /** M11F: each keyboard player's aim while out of the round (null: not aiming). */
+  const aims: ({ x: number; z: number } | null)[] = roster.map(() => null);
   const frame = (dt: number) => {
     const before = snapshot;
     const playing = before.phase === 'playing';
     inputs.forEach((input, i) => (input.enabled = playing && !before.fighters[i].eliminated && (botsOn || !bots[i] || input.script !== null)));
     bots.forEach((b, i) => b?.plan(botWorldFrom(before, ids[i]), dt));
     const yaw = presenter.cameraYaw();
-    inputs.forEach((input, i) => match.setInput(ids[i], input.read(yaw)));
+    inputs.forEach((input, i) => {
+      const intent = input.read(yaw);
+      const keys = roster[i].keys;
+      const f = before.fighters[i];
+      if (keys && playing && f.eliminated) {
+        // Out of the round at this keyboard: the keys aim a banana peel; punch or grab throws it.
+        const raw = moveIntent(keyboard.held, yaw, keys);
+        const a = aims[i] ?? presenter.clampAim({ x: f.position.x, z: f.position.z });
+        aims[i] = presenter.clampAim({ x: a.x + raw.x * BANANAS.aimSpeed * dt, z: a.z + raw.z * BANANAS.aimSpeed * dt });
+        if (intent.punch || intent.grab) match.throwBanana(ids[i], aims[i]!.x, aims[i]!.z);
+        return;
+      }
+      aims[i] = null;
+      match.setInput(ids[i], intent);
+    });
     take(match.step(dt));
     presenter.present(snapshot, dt, {
       driver: (i) => (bots[i] ? 'bot' : 'keys'),
@@ -65,6 +82,7 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
       controls: CONTROLS,
       holdsConsistent: match.holdsConsistent(),
       strugglers: roster.flatMap((e, i) => (e.keys ? [{ index: i, keys: i === 0 ? 'A ↔ D' : '← ↔ →' }] : [])),
+      aimers: roster.flatMap((e, i) => (e.keys && aims[i] ? [{ index: i, aim: aims[i]!, keys: i === 0 ? 'WASD · throw F / G' : 'arrows · throw K / L' }] : [])),
     });
   };
 

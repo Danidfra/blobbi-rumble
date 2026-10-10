@@ -20,6 +20,7 @@ const at = (x: number, z = 0): Body => ({ x, y: RUMBLE_BODY.capsuleCenterY, z, v
 const auth = (b: Body, extra: Partial<FighterSnapshot> = {}): FighterSnapshot => ({
   id: 'P1',
   ledge: null,
+  bananas: { left: 0, cooldown: 0 },
   position: { x: b.x, y: b.y, z: b.z },
   rotation: { x: 0, y: 0, z: 0, w: 1 },
   upright: true,

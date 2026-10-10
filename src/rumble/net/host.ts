@@ -152,9 +152,14 @@ export class RumbleHost {
     const msg = parseClientMessage(raw);
     if (!msg) return null;
     if (msg.t === 'ping') return { t: 'pong', id: msg.id, ct: msg.ct, tick: this.match.tick };
-    if (msg.t !== 'input') return null;
+    if (msg.t !== 'input' && msg.t !== 'throw') return null;
     const slot = this.slotOf.get(conn);
     if (!slot || this.holder.get(slot) !== conn) return null;
+    if (msg.t === 'throw') {
+      // M11F: the match judges the throw (out of the round, budget, cooldown, floor); a refusal is silent.
+      this.match.throwBanana(slot, msg.x, msg.z);
+      return null;
+    }
     if (msg.seq <= (this.lastSeq.get(slot) ?? -1)) return null;
     this.lastSeq.set(slot, msg.seq);
     this.lastInputTick.set(slot, this.match.tick);

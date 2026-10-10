@@ -76,6 +76,12 @@ export interface InputMessage {
   seq: number;
   intent: PlayerIntent;
 }
+/** M11F: a player out of the round throws a banana peel at a point on the floor; the server judges it. */
+export interface ThrowMessage {
+  t: 'throw';
+  x: number;
+  z: number;
+}
 export interface PingMessage {
   t: 'ping';
   id: number;
@@ -100,7 +106,7 @@ export interface LookMessage {
 export interface RoomsRequest {
   t: 'rooms';
 }
-export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage | RoomsRequest;
+export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage | RoomsRequest | ThrowMessage;
 
 export interface WelcomeMessage {
   t: 'welcome';
@@ -264,6 +270,10 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (v.t === 'ping') {
     if (!finite(v.id) || !finite(v.ct)) return null;
     return { t: 'ping', id: v.id, ct: v.ct };
+  }
+  if (v.t === 'throw') {
+    if (!finite(v.x) || !finite(v.z) || Math.abs(v.x) > 100 || Math.abs(v.z) > 100) return null;
+    return { t: 'throw', x: v.x, z: v.z };
   }
   return null;
 }

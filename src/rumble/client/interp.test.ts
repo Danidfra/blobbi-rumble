@@ -11,6 +11,7 @@ import { continuous, extrapolate, interpolate, lerpAngle, NET_VIEW, slerp, Snaps
 const fighter = (id: string, x: number, z = 0, extra: Partial<FighterSnapshot> = {}): FighterSnapshot => ({
   id,
   ledge: null,
+  bananas: { left: 0, cooldown: 0 },
   position: { x, y: 0.525, z },
   rotation: { x: 0, y: 0, z: 0, w: 1 },
   upright: true,
@@ -48,6 +49,7 @@ const snap = (tick: number, fighters: FighterSnapshot[], extra: Partial<MatchSna
   arena: 'floating-islands-classic',
   pieces: [],
   roundTime: 0,
+  bananas: [],
   ...extra,
 });
 

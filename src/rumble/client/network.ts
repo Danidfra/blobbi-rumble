@@ -54,6 +54,7 @@ import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from '
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
 import { inputMessage, isNewer, type ClientMessage, type Control, type ServerMessage, type StateMessage } from '../net/protocol';
+import { BANANAS } from '../tuning';
 import { ROSTER } from '../roster';
 import { combatOf } from '../sim/read';
 import type { FighterSnapshot, MatchSnapshot } from '../sim/snapshot';
@@ -769,6 +770,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     };
   };
 
+  /** M11F: where this player, out of the round, aims the next banana peel (null: not aiming). */
+  let aim: { x: number; z: number } | null = null;
   const frame = (dt: number) => {
     const nowMs = performance.now();
     const now = nowMs / 1000;
@@ -776,12 +779,22 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     // Input: this frame's movement, and any press since the last frame, kept until it is sent.
     const yaw = presenter?.cameraYaw() ?? 0;
     const intent = input.read(yaw);
-    actions.jump ||= intent.jump;
-    actions.punch ||= intent.punch;
-    actions.grab ||= intent.grab;
-    const move = { x: intent.x, z: intent.z, run: intent.run };
     const latestSnap = buffer.newest;
     const meIndex = you && latestSnap ? latestSnap.players.indexOf(you) : -1;
+    const me = meIndex >= 0 ? latestSnap!.fighters[meIndex] : null;
+    const out = !!me && me.eliminated && latestSnap!.phase === 'playing';
+    if (out && presenter) {
+      // Out of the round: the keys move the aim over the floor, a punch or grab throws; nothing goes to the fighter.
+      if (!aim) aim = presenter.clampAim({ x: me!.position.x, z: me!.position.z });
+      aim = presenter.clampAim({ x: aim.x + intent.x * BANANAS.aimSpeed * dt, z: aim.z + intent.z * BANANAS.aimSpeed * dt });
+      if ((intent.punch || intent.grab) && me!.bananas.left > 0 && me!.bananas.cooldown <= 0) send({ t: 'throw', x: +aim.x.toFixed(2), z: +aim.z.toFixed(2) });
+    } else {
+      aim = null;
+      actions.jump ||= intent.jump;
+      actions.punch ||= intent.punch;
+      actions.grab ||= intent.grab;
+    }
+    const move = out ? { x: 0, z: 0, run: false } : { x: intent.x, z: intent.z, run: intent.run };
     // The cosmetic punch starts only when the server's last word says a punch could start.
     if (intent.punch && meIndex >= 0) {
       const c: CombatState = combatOf(latestSnap!.fighters[meIndex]);
@@ -892,6 +905,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         textHud: showNet,
         controls: CONTROLS,
         strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
+        aimers: meIndex >= 0 && aim ? [{ index: meIndex, aim, keys: 'WASD · throw F / G' }] : [],
         footer: showNet
           ? [
               `NET  ${status} · ${url} · ${conn.attempts ? `attempt ${conn.attempts}` : 'up'} · reconnects ${reconnects} · rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`,

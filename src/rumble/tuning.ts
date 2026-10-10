@@ -338,3 +338,31 @@ export const LEDGE = Object.freeze({
   awayPush: 0.5,
   awayHold: 0.35,
 });
+
+/**
+ * M11F: BANANA PEELS. A player out of the round may throw a few onto the
+ * floor; a fighter that runs over one tumbles. Every throw is the server's
+ * to accept: only while the round is on and enough are left in it, from
+ * someone out of it, within a budget and a cooldown, onto solid floor, and
+ * never past a cap of peels on the arena at once.
+ */
+export const BANANAS = Object.freeze({
+  /** Throws per eliminated player per round, and seconds between two. */
+  perRound: 3,
+  cooldown: 2.5,
+  /** Peels on the arena at once, at most; how long one lies there, seconds. */
+  maxActive: 4,
+  lifetime: 12,
+  /** Throws are refused while fewer than this many fighters are in the round (an out player never decides a duel). */
+  minAlive: 3,
+  /** A fighter's feet within this of a peel, moving at least this fast, slip. */
+  radius: 0.45,
+  minSpeed: 0.6,
+  /** The slip: a tumble along the fighter's way, with this push and lift (m/s); its impact for the record. */
+  impact: 5.4,
+  push: 1.6,
+  lift: 2.4,
+  /** How far a thrower's aim moves per second (client), and how high a peel sits over the floor. */
+  aimSpeed: 4.5,
+  height: 0.04,
+});
