@@ -189,6 +189,21 @@ Environment (`npm run serve` and the container read the same):
 | `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
 | `STATIC_DIR` | dist | the built page |
 
+**Without Docker** (a VPS with Node 22):
+
+```
+npm ci && npm run build
+npx vite build --ssr src/rumble/net/serve-cli.ts --outDir .serve --logLevel warn
+PUBLIC_URL=https://rumble.example ALLOWED_ORIGINS=https://rumble.example SERVER_NAME="…" node .serve/serve-cli.js
+```
+
+(`npm run serve` does the build and the run in one go.) Run it under a
+supervisor that restarts it and passes SIGTERM, e.g. a systemd unit with
+`ExecStart=/usr/bin/node /opt/rumble/.serve/serve-cli.js`,
+`WorkingDirectory=/opt/rumble`, `Restart=always`, `EnvironmentFile=/opt/rumble/.env`
+and `KillSignal=SIGTERM`. The process does not read `.env` itself: export
+the variables, or let the supervisor (or compose) do it.
+
 The process answers `GET /healthz` (`{ ok, clients, rooms, tick }`,
 readable from any origin) and `/.well-known/rumble.json`; it closes
 sockets and exits on SIGTERM / SIGINT (compose gives it 15 s); the

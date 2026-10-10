@@ -82,6 +82,15 @@ setInterval(() => {
   rumble!.resetStats();
 }, every * 1000).unref();
 
-const stop = () => rumble!.close().then(() => http.close(() => process.exit(0)));
+// Graceful stop: the match sockets close, then the HTTP server; browsers keep idle keep-alive connections open, which
+// `http.close` alone would wait for (the process lingered on SIGTERM with a page attached: found in local validation),
+// so they are closed too, and a lingering exit is forced after 5 s.
+const stop = () => {
+  setTimeout(() => process.exit(0), 5000).unref();
+  void rumble!.close().then(() => {
+    http.close(() => process.exit(0));
+    http.closeAllConnections();
+  });
+};
 process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
