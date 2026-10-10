@@ -46,6 +46,8 @@ class FakeEl {
       return want;
     },
     contains: (c: string) => this.className.split(' ').includes(c),
+    add: (c: string) => void this.classList.toggle(c, true),
+    remove: (c: string) => void this.classList.toggle(c, false),
   };
   constructor(readonly tagName: string) {}
   get firstElementChild() {
@@ -178,6 +180,50 @@ describe('the touch controls on a page', () => {
     c.update({ visible: true, context: 'out', peel: { left: 2, cooldown: 1.24, allowed: true } });
     expect(punch.children[1].textContent).toBe('1.2 s');
     expect(punch.classList.contains('dim')).toBe(true);
+  });
+
+  it('M12.1: a finger on the arena turns the camera while a thumb moves; the stick’s finger never turns it; hiding lets go', async () => {
+    const { c, zone, root } = await make();
+    const look = root.find('tc-look')!;
+    c.update({ visible: true, context: 'fight' });
+    zone.fire('pointerdown', { pointerId: 1, clientX: 100, clientY: 300 });
+    zone.fire('pointermove', { pointerId: 1, clientX: 100, clientY: 300 - c.pad.radius });
+    look.fire('pointerdown', { pointerId: 2, clientX: 500 });
+    look.fire('pointermove', { pointerId: 2, clientX: 540 });
+    // The stick's finger moving does nothing to the look.
+    look.fire('pointermove', { pointerId: 1, clientX: 900 });
+    expect(c.look.take()).toBeLessThan(0);
+    expect(c.pad.movement().y).toBe(1);
+    expect(look.captured.has(2)).toBe(true);
+    c.update({ visible: false, context: 'fight' });
+    expect(c.look.active).toBe(false);
+    expect(c.pad.fingers).toBe(0);
+  });
+
+  it('M12.1: the recenter button shows once the view is turned, and asks for a recenter on touch-down', async () => {
+    let recentered = 0;
+    const { TouchControls } = await import('./touchControls');
+    const c = new TouchControls(undefined, () => recentered++);
+    const root = doc.body.children.at(-1)!;
+    const r = root.find('tc-recenter')!;
+    c.update({ visible: true, context: 'fight', rotated: false });
+    expect(r.classList.contains('on')).toBe(false);
+    c.update({ visible: true, context: 'fight', rotated: true });
+    expect(r.classList.contains('on')).toBe(true);
+    r.fire('pointerdown', { pointerId: 9 });
+    expect(recentered).toBe(1);
+  });
+
+  it('M12.1: Safari’s double-tap zoom and pinch are cancelled on the controls (touch and gesture events), nowhere else', async () => {
+    const { root } = await make();
+    for (const k of ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'gesturechange', 'dblclick']) {
+      let prevented = 0;
+      for (const f of root.listeners[k] ?? []) f({ cancelable: true, preventDefault: () => prevented++ });
+      expect(prevented).toBe(1);
+    }
+    // The page itself is left alone (menus scroll and zoom as any page).
+    expect(win.listeners.touchstart ?? []).toHaveLength(0);
+    expect(doc.listeners.touchstart ?? []).toHaveLength(0);
   });
 
   it('the long-press menu and text selection never start on the controls', async () => {

@@ -42,7 +42,7 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
   let touch: TouchControls | null = null;
   const useTouch = () => {
     if (touch || !p1Input) return;
-    touch = new TouchControls();
+    touch = new TouchControls(undefined, () => presenter.recenterView());
     p1Input.touch = touch.pad;
     presenter.setTouchLayout(true);
   };
@@ -94,7 +94,8 @@ export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
     take(match.step(dt));
     if (touch && p1 >= 0) {
       const me = snapshot.fighters[p1];
-      touch.update({ visible: true, context: touchContext(me, snapshot.phase), peel: { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: snapshot.fighters.filter((f) => f.alive).length >= BANANAS.minAlive } });
+      presenter.turnView(touch.look.take());
+      touch.update({ rotated: presenter.viewTurned, visible: true, context: touchContext(me, snapshot.phase), peel: { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: snapshot.fighters.filter((f) => f.alive).length >= BANANAS.minAlive } });
     }
     presenter.present(snapshot, dt, {
       touch: !!touch,

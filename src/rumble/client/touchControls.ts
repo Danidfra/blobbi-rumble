@@ -26,8 +26,19 @@
  * focus, is hidden, turns, or the controls are hidden (a panel opened).
  * No gesture of the browser (scroll, zoom, selection, the long-press menu)
  * starts on them.
+ *
+ * M12.1: the rest of the arena is the LOOK area: a finger dragged across
+ * it turns the camera round the fight (horizontally; `control/look.ts`),
+ * with its own finger, alongside the stick and the buttons; a small ⟲
+ * button brings the view back. iOS Safari zooms on a quick double tap and
+ * pinches even where `touch-action` says not to, so the controls and the
+ * look area also cancel the touch events themselves (`touchstart`,
+ * `touchmove`, `touchend`) and Safari's `gesture*` events; the pointer
+ * events the controls read still arrive. Only the game's surfaces do this:
+ * menus and cards scroll and zoom as any page.
  */
 import { TouchPad, touchButtons, type ButtonFace, type ButtonSlot, type TouchContext } from '../control/touch';
+import { LookDrag } from '../control/look';
 import { el } from './dom';
 
 export interface TouchView {
@@ -36,12 +47,18 @@ export interface TouchView {
   context: TouchContext;
   /** Out of the round: the peels left, the cooldown, and whether throwing is allowed at all now. */
   peel?: { left: number; cooldown: number; allowed: boolean };
+  /** M12.1: the camera is turned away from the arena's own view (the recenter button shows). */
+  rotated?: boolean;
 }
 
 const CSS = `
-  .tc { position: fixed; inset: 0; pointer-events: none; z-index: 5; display: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  .tc { position: fixed; inset: 0; pointer-events: none; z-index: 4; display: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
   .tc.on { display: block; }
   .tc * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  .tc-look { position: absolute; inset: 0; pointer-events: auto; touch-action: none; }
+  .tc-recenter { position: absolute; display: none; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; pointer-events: auto; touch-action: none; background: rgba(255,255,255,0.82); box-shadow: 0 3px 12px rgba(40,50,80,0.18); color: #2b2b3a; font: 700 20px ui-sans-serif, system-ui, sans-serif; }
+  .tc-recenter.on { display: flex; }
+  .tc-recenter.down { background: #ffe9a8; }
   .tc-zone { position: absolute; left: 0; bottom: 0; width: 48%; height: 72%; pointer-events: auto; touch-action: none; }
   .tc-base { position: absolute; border-radius: 50%; background: rgba(255,255,255,0.22); border: 2px solid rgba(255,255,255,0.75); box-shadow: 0 4px 18px rgba(40,50,80,0.18); transform: translate(-50%, -50%); pointer-events: none; transition: opacity 0.12s; }
   .tc-base.rest { opacity: 0.55; }
@@ -67,7 +84,11 @@ const SLOTS: ButtonSlot[] = ['punch', 'jump', 'grab'];
 
 export class TouchControls {
   readonly pad: TouchPad;
+  /** M12.1: the camera look, by a finger on the rest of the arena. */
+  readonly look = new LookDrag();
   readonly root: HTMLElement;
+  private readonly lookArea: HTMLElement;
+  private readonly recenter: HTMLElement;
   private readonly zone: HTMLElement;
   private readonly base: HTMLElement;
   private readonly buttons = {} as Record<ButtonSlot, { el: HTMLElement; label: HTMLElement; sub: HTMLElement }>;
@@ -79,16 +100,23 @@ export class TouchControls {
   /** Sizes in CSS pixels, from the screen's short side (`layout`). */
   private size = { stick: 56, big: 84, small: 66, gap: 14 };
 
-  constructor(pad = new TouchPad()) {
+  constructor(
+    pad = new TouchPad(),
+    private readonly onRecenter: () => void = () => undefined,
+  ) {
     this.pad = pad;
     const style = el('style');
     style.textContent = CSS;
     document.head.appendChild(style);
     this.root = el('div', 'tc');
+    this.lookArea = el('div', 'tc-look');
     this.zone = el('div', 'tc-zone');
     this.base = el('div', 'tc-base rest');
     this.base.appendChild(el('div', 'tc-knob'));
-    this.root.append(this.zone, this.base);
+    this.recenter = el('div', 'tc-recenter', '⟲');
+    this.recenter.setAttribute('role', 'button');
+    this.recenter.setAttribute('aria-label', 'Recenter camera');
+    this.root.append(this.lookArea, this.zone, this.base, this.recenter);
     for (const slot of SLOTS) {
       const b = el('div', `tc-btn ${slot}`);
       const label = el('span');
@@ -101,8 +129,12 @@ export class TouchControls {
     }
     document.body.appendChild(this.root);
     this.listenStick();
+    this.listenLook();
     // Anything that takes the page away lets go of every finger.
-    const release = () => this.pad.releaseAll();
+    const release = () => {
+      this.pad.releaseAll();
+      this.look.releaseAll();
+    };
     window.addEventListener('blur', release);
     document.addEventListener('visibilitychange', () => document.hidden && release());
     window.addEventListener('orientationchange', release);
@@ -110,6 +142,12 @@ export class TouchControls {
     // No long-press menu, selection or double-tap zoom from the controls.
     this.root.addEventListener('contextmenu', (e) => e.preventDefault());
     this.root.addEventListener('selectstart', (e) => e.preventDefault());
+    // iOS Safari: a quick second tap zooms and two fingers pinch whatever touch-action says; cancelling the touch events (not
+    // the pointer events, which the controls still get) and Safari's gesture events stops both, on the game's surfaces only.
+    const cancel = (e: Event) => {
+      if (e.cancelable) e.preventDefault();
+    };
+    for (const k of ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'gesturechange', 'gestureend', 'dblclick'] as const) this.root.addEventListener(k, cancel, { passive: false });
     this.layout();
   }
 
@@ -135,6 +173,31 @@ export class TouchControls {
         this.draw();
       });
     }
+  }
+
+  /** M12.1: the look area (the arena behind the controls) and the recenter button. */
+  private listenLook() {
+    const a = this.lookArea;
+    a.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (!this.visible || !this.look.down(e.pointerId, e.clientX)) return;
+      try {
+        a.setPointerCapture(e.pointerId);
+      } catch {
+        // As for the stick.
+      }
+    });
+    a.addEventListener('pointermove', (e) => this.look.move(e.pointerId, e.clientX));
+    for (const k of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) a.addEventListener(k, (e) => this.look.up(e.pointerId));
+    const r = this.recenter;
+    r.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!this.visible) return;
+      r.classList.add('down');
+      this.onRecenter();
+    });
+    for (const k of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) r.addEventListener(k, () => r.classList.remove('down'));
   }
 
   private listenButton(b: HTMLElement, slot: ButtonSlot) {
@@ -180,6 +243,9 @@ export class TouchControls {
     place('jump', small, edge + big + gap, edge + Math.round(big * 0.05));
     place('grab', small, edge + Math.round(big * 0.12), edge + big + gap);
     this.base.style.width = this.base.style.height = `${stick * 2}px`;
+    const rs = this.recenter.style;
+    rs.right = `calc(env(safe-area-inset-right, 0px) + ${edge + Math.round(big * 0.12) + Math.round((small - 40) / 2)}px)`;
+    rs.bottom = `calc(env(safe-area-inset-bottom, 0px) + ${edge + big + gap + small + gap}px)`;
     this.stickKey = '';
     this.draw();
   }
@@ -224,8 +290,12 @@ export class TouchControls {
       this.visible = view.visible;
       this.root.classList.toggle('on', view.visible);
       // Hidden (a panel, the rotate hint, a spectator): nothing stays held.
-      if (!view.visible) this.pad.releaseAll();
+      if (!view.visible) {
+        this.pad.releaseAll();
+        this.look.releaseAll();
+      }
     }
+    if (view.visible) this.recenter.classList.toggle('on', !!view.rotated);
     if (!view.visible) return;
     const faces = touchButtons(view.context, view.peel);
     const peelText = view.context === 'out' && view.peel ? (!view.peel.allowed ? 'not now' : view.peel.left <= 0 ? 'none left' : view.peel.cooldown > 0 ? `${view.peel.cooldown.toFixed(1)} s` : `🍌 ×${view.peel.left}`) : '';

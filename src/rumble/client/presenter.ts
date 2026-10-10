@@ -26,6 +26,7 @@ import { createWorld } from '../view/world';
 import { applyCamera, followCamera, fovFor, framed, wantedCamera, type CameraPose } from '../view/camera';
 import { Camera } from '@babylonjs/core/Cameras/camera';
 import { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
+import { easeYaw } from '../control/look';
 import { FrameBudget, profileFor, ratioFor, type DeviceHints, type QualityChoice, type RenderProfile } from '../view/quality';
 import { PhysicsDebug } from '../view/debug';
 import type { BlobbiIdentityInput } from '@blobbi-kit/3d';
@@ -95,6 +96,10 @@ export class RumblePresenter {
   private quality: { choice: QualityChoice; profile: RenderProfile; ratio: number; budget: FrameBudget | null } | null = null;
   private lastFrameAt = 0;
   private readonly verticalFov: number;
+  /** M12.1: touch play turns the camera round the fight by dragging (its target), eased; desktop keeps Babylon's own mouse orbit. */
+  private touchLayout = false;
+  private yawTarget = 0;
+  private yawNow = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -158,8 +163,29 @@ export class RumblePresenter {
    * the stick); the presenter frames the fight by itself anyway.
    */
   setTouchLayout(on: boolean) {
+    this.touchLayout = on;
     if (on) this.env.camera.detachControl();
     else this.env.camera.attachControl(true);
+  }
+
+  /** M12.1: turn the touch camera by `radians` (horizontal only; the stick follows, being camera-relative). */
+  turnView(radians: number) {
+    if (!radians) return;
+    const twoPi = Math.PI * 2;
+    this.yawTarget = ((((this.yawTarget + radians + Math.PI) % twoPi) + twoPi) % twoPi) - Math.PI;
+    // Keep the eased value on the same side of the wrap as the target.
+    if (Math.abs(this.yawTarget - this.yawNow) > Math.PI) this.yawNow += Math.sign(this.yawTarget - this.yawNow) * twoPi;
+  }
+
+  /** M12.1: back to the arena's own view. */
+  recenterView() {
+    this.yawTarget = 0;
+    if (Math.abs(this.yawNow) > Math.PI) this.yawNow -= Math.sign(this.yawNow) * Math.PI * 2;
+  }
+
+  /** M12.1: whether the touch camera is turned away from the arena's own view. */
+  get viewTurned(): boolean {
+    return Math.abs(this.yawTarget) > 0.05;
   }
 
   /** M12: the graphics choice: the pixel ratio and the shadow map (`view/quality.ts`); auto also adapts to measured frames. */
@@ -204,7 +230,7 @@ export class RumblePresenter {
   get renderInfo() {
     return {
       choice: this.quality?.choice ?? 'auto',
-      level: this.quality?.profile.level ?? 'high',
+      level: !this.quality ? 'high' : this.quality.profile.label === 'auto' ? `auto (${this.quality.profile.level} shadows)` : this.quality.profile.level,
       ratio: this.quality?.ratio ?? 1 / this.engine.getHardwareScalingLevel(),
       width: this.engine.getRenderWidth(),
       height: this.engine.getRenderHeight(),
@@ -393,6 +419,10 @@ export class RumblePresenter {
     if (!this.cameraPose) this.cameraPose = wantedCamera(wanted, camRules);
     else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted, camRules), dt);
     applyCamera(this.env.camera, this.cameraPose);
+    if (this.touchLayout) {
+      this.yawNow = easeYaw(this.yawNow, this.yawTarget, dt);
+      this.env.camera.alpha = CAMERA.alpha + this.yawNow;
+    }
     this.showCues(s, info);
     // The text HUD, built only when it is shown (most frames it is not: no strings to make).
     const text = info.textHud !== false || this.debug.on;

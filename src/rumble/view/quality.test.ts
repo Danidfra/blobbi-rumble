@@ -11,10 +11,12 @@ describe('graphics profiles', () => {
   it('a chosen level is that level on any device; auto reads the pointer, cores and memory', () => {
     expect(profileFor('low', { coarse: false })).toBe(PROFILES.low);
     expect(profileFor('high', { coarse: true, cores: 2 })).toBe(PROFILES.high);
-    expect(profileFor('auto', { coarse: false, cores: 8 })).toBe(PROFILES.high);
-    expect(profileFor('auto', { coarse: true, cores: 8, memory: 4 })).toBe(PROFILES.medium);
-    expect(profileFor('auto', { coarse: true, cores: 2 })).toBe(PROFILES.low);
-    expect(profileFor('auto', { coarse: false, memory: 2 })).toBe(PROFILES.low);
+    // Auto on a desktop: High's shadows at the 2 it always drew.
+    expect(profileFor('auto', { coarse: false, cores: 8 })).toMatchObject({ level: 'high', label: 'auto', maxRatio: 2, shadowMap: 2048 });
+    // Auto on a phone: Medium's shadows at up to 2 (M12.1: was 1.5, half a 3× phone's resolution each way).
+    expect(profileFor('auto', { coarse: true, cores: 8, memory: 4 })).toMatchObject({ level: 'medium', label: 'auto', maxRatio: 2, shadowMap: 1024 });
+    expect(profileFor('auto', { coarse: true, cores: 2 })).toMatchObject({ level: 'low', label: 'auto' });
+    expect(profileFor('auto', { coarse: false, memory: 2 })).toMatchObject({ level: 'low', label: 'auto' });
   });
 
   it('every level keeps the shadows (a coarser map, never none), and costs less going down', () => {
@@ -26,10 +28,13 @@ describe('graphics profiles', () => {
   });
 
   it('draws at the screen’s ratio within the cap, never above what the screen has', () => {
-    expect(ratioFor(PROFILES.high, 3)).toBe(2);
+    // High is a 3× phone's native sharpness, and a 2× desktop's as before.
+    expect(ratioFor(PROFILES.high, 3)).toBe(3);
     expect(ratioFor(PROFILES.high, 2)).toBe(2);
     expect(ratioFor(PROFILES.high, 1)).toBe(1);
-    expect(ratioFor(PROFILES.medium, 3)).toBe(1.5);
+    expect(ratioFor(PROFILES.medium, 3)).toBe(2);
+    expect(ratioFor(profileFor('auto', { coarse: true }), 3)).toBe(2);
+    expect(ratioFor(profileFor('auto', { coarse: false }), 2)).toBe(2);
     expect(ratioFor(PROFILES.low, 3)).toBe(1);
     expect(ratioFor(PROFILES.medium, 0)).toBe(1);
   });

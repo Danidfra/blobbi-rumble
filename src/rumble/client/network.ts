@@ -309,7 +309,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let rotateDismissed = false;
   const ensureTouch = () => {
     if (!touchOn || touchControls) return;
-    touchControls = new TouchControls();
+    touchControls = new TouchControls(undefined, () => presenter?.recenterView());
     input.touch = touchControls.pad;
     shell.setTouch(true);
     presenter?.setTouchLayout(true);
@@ -327,6 +327,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       return null;
     }
   })());
+  // M12.1: the FPS counter, remembered on this device (off unless chosen).
+  const FPS_KEY = 'rumble:fps';
+  let showFps = (() => {
+    try {
+      return safeStorage()?.getItem(FPS_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })();
   const deviceHints = (): DeviceHints => {
     const nav = navigator as Navigator & { deviceMemory?: number };
     return { coarse: matchMedia('(pointer: coarse)').matches, cores: nav.hardwareConcurrency || undefined, memory: nav.deviceMemory };
@@ -542,6 +551,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     dismissRotate: () => {
       rotateDismissed = true;
     },
+    setFps: (on) => {
+      showFps = on;
+      try {
+        safeStorage()?.setItem(FPS_KEY, on ? '1' : '0');
+      } catch {
+        // Not remembered: this visit only.
+      }
+    },
+    recenterCamera: () => presenter?.recenterView(),
     startSeen: seeStart,
     // M8C-A: a private Nostr invite to a pasted npub / nprofile.
     sendInvite: (input) => doSendInvite(input),
@@ -880,14 +898,18 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       people: people && room?.kind === 'private' ? people.state : null,
       blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote, shared: serverLooks() } : null,
       blobbiNameOf: blobbiNameFor,
-      graphics: { choice: quality, info: () => presenter?.renderInfo ?? { level: '-', ratio: window.devicePixelRatio || 1, width: canvas.width, height: canvas.height, fps: 0, shadowMap: 0 } },
+      graphics: { choice: quality, info: () => presenter?.renderInfo ?? null },
       rotate: needsRotate({ width: window.innerWidth, height: window.innerHeight, touch: touchOn, dismissed: rotateDismissed }),
+      fps: showFps,
       inbox: inboxView(),
     });
     // M12: the touch controls: shown while this page plays a fighter and nothing is over the arena; the buttons' words follow the moment.
     if (touchControls) {
       const alive = latestSnap ? latestSnap.fighters.filter((f) => f.alive).length : 0;
+      // M12.1: a finger dragged across the arena turns the camera (the stick follows, being camera-relative).
+      presenter?.turnView(touchControls.look.take());
       touchControls.update({
+        rotated: !!presenter?.viewTurned,
         visible: conn.phase === 'playing' && !!you && !shell.modalOpen,
         context: touchContext(me, latestSnap?.phase ?? 'roundOver'),
         peel: me ? { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: alive >= BANANAS.minAlive } : undefined,

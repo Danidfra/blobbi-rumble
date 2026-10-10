@@ -96,7 +96,7 @@ export class FighterView {
     this.powerRing.material = this.powerRingMat;
     this.powerRing.isPickable = false;
     this.powerRing.setEnabled(false);
-    this.gripBar = MeshBuilder.CreatePlane(`${label}-grip`, { width: 0.7, height: 0.1 }, scene);
+    this.gripBar = MeshBuilder.CreatePlane(`${label}-grip`, { width: 1.0, height: 0.14 }, scene);
     this.gripBar.billboardMode = MeshClass.BILLBOARDMODE_ALL;
     this.gripBar.isPickable = false;
     this.gripTex = new DynamicTexture(`${label}-grip-tex`, { width: 128, height: 18 }, scene, false);
@@ -109,7 +109,7 @@ export class FighterView {
     this.gripMat.backFaceCulling = false;
     this.gripBar.material = this.gripMat;
     this.gripBar.setEnabled(false);
-    this.edgeGlow = MeshBuilder.CreateBox(`${label}-edge`, { width: 1.1, height: 0.035, depth: 0.09 }, scene);
+    this.edgeGlow = MeshBuilder.CreateBox(`${label}-edge`, { width: 1.5, height: 0.06, depth: 0.16 }, scene);
     this.edgeGlow.isPickable = false;
     this.edgeMat = new StandardMaterial(`${label}-edge-mat`, scene);
     this.edgeMat.emissiveColor = Color3.FromHexString('#fff3b0');
@@ -325,11 +325,12 @@ export class FighterView {
       return;
     }
     // Along the edge, a hair above the top and in from it: the line the hands are on.
-    this.edgeGlow.position.set(l.x + l.inX * 0.05, l.y + 0.02, l.z + l.inZ * 0.05);
+    this.edgeGlow.position.set(l.x + l.inX * 0.08, l.y + 0.035, l.z + l.inZ * 0.08);
     this.edgeGlow.rotation.y = Math.atan2(l.inX, l.inZ);
     this.edgeMat.alpha = 0.65 + 0.35 * Math.abs(Math.sin(this.hangTime * 3));
     if (l.phase !== 'hang') return;
-    this.gripBar.position.set(centre.x, centre.y + 0.78, centre.z);
+    // Over the name tag, where nothing else is drawn.
+    this.gripBar.position.set(centre.x, centre.y + 1.28, centre.z);
     const grip = Math.max(0, Math.min(1, l.grip));
     const low = grip < 0.25;
     const blink = low && Math.floor(this.hangTime * 6) % 2 === 0;

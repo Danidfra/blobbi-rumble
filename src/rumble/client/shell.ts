@@ -43,6 +43,7 @@ import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
 import { QUALITY_CHOICES, type QualityChoice } from '../view/quality';
+import { fullscreenNote, fullscreenState, isStandalone, toggleFullscreen } from './fullscreen';
 
 export interface ShellActions {
   retry(): void;
@@ -95,6 +96,10 @@ export interface ShellActions {
   setQuality(choice: QualityChoice): void;
   /** M12: the player chose to play on in portrait (the rotate hint goes for this visit). */
   dismissRotate(): void;
+  /** M12.1: show or hide the FPS counter (saved on this device). */
+  setFps(on: boolean): void;
+  /** M12.1: the touch camera back to the arena's own view. */
+  recenterCamera(): void;
 }
 
 /** A received invite as the panel shows it. */
@@ -140,9 +145,11 @@ export interface ShellView {
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
   /** M12: the graphics choice, and what the renderer does with it now (read live, outside the panel's rebuild). */
-  graphics: { choice: QualityChoice; info: () => { level: string; ratio: number; width: number; height: number; fps: number; shadowMap: number } };
+  graphics: { choice: QualityChoice; info: () => { level: string; ratio: number; width: number; height: number; fps: number; shadowMap: number } | null };
   /** M12: ask to turn the phone (portrait on a touch phone). */
   rotate: boolean;
+  /** M12.1: the FPS counter is on. */
+  fps: boolean;
 }
 
 const CSS = `
@@ -167,7 +174,14 @@ const CSS = `
   .rs-struggle { position: fixed; left: 50%; bottom: 14vh; transform: translateX(-50%); padding: 8px 14px; border-radius: 14px; background: rgba(176,65,62,0.88); color: #fff; font: 700 14px ui-sans-serif, system-ui, sans-serif; text-align: center; pointer-events: none; display: none; z-index: 4; }
   .rs-struggle .bar { margin-top: 6px; height: 8px; width: 220px; border-radius: 4px; background: rgba(255,255,255,0.3); overflow: hidden; }
   .rs-struggle .bar > i { display: block; height: 100%; background: #fff; }
-  .rs-hint { position: fixed; left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; z-index: 5; }
+  .rs-corner { position: fixed; left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); display: flex; gap: 6px; align-items: center; z-index: 5; }
+  .rs-hint { padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; }
+  .rs-gear { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 26px; padding: 0 8px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 15px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; cursor: pointer; }
+  .rs-settings { left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); width: min(330px, calc(100vw - 20px)); max-height: calc(100dvh - 70px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 12px 14px; display: none; }
+  .rs-settings h4 { margin: 10px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
+  .rs-settings h4:first-of-type { margin-top: 0; }
+  .rs-settings .x { position: absolute; right: 10px; top: 8px; }
+  .rs-fps { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 4px); transform: translateX(-50%); padding: 1px 8px; border-radius: 8px; background: rgba(43,43,58,0.55); color: #fff; font: 11px ui-monospace, Menlo, monospace; pointer-events: none; z-index: 5; display: none; }
   .rs-hint kbd, .rs-help kbd { display: inline-block; padding: 0 5px; border-radius: 4px; background: #eef1f6; border: 1px solid #d6dbe6; font: 11px ui-monospace, Menlo, monospace; color: #2b2b3a; }
   .rs-card { position: fixed; z-index: 6; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.22); font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
   .rs-panel { left: calc(env(safe-area-inset-left, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); width: min(320px, calc(100vw - 20px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 70px); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: 12px 14px; display: none; }
@@ -244,9 +258,14 @@ const CSS = `
     .rs-chip { height: 36px; }
     .rs-person, .rs-blobbi { min-height: 40px; }
   }
-  body.rs-touch { touch-action: none; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+  /* Touch play: no pull-to-refresh or rubber-banding of the page; the gesture limits sit on the game's surfaces (the canvas, the controls), not here, so cards scroll and zoom as any page. */
+  body.rs-touch { overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
   body.rs-touch .rs-card, body.rs-touch .rs-card * { -webkit-user-select: text; user-select: text; }
-  body.rs-touch .rs-hint { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 52px); }
+  body.rs-touch .rs-corner { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 52px); }
+  body.rs-touch .rs-gear { min-width: 36px; height: 32px; font-size: 18px; }
+  body.rs-touch .rs-hint { padding: 7px 12px; }
+  body.rs-touch .rs-settings { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 92px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 102px); }
+  body.rs-touch .rs-fps { left: calc(env(safe-area-inset-left, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); bottom: auto; transform: none; }
   body.rs-touch .rs-struggle { display: none !important; }
   body.rs-touch .rs-toasts { top: calc(env(safe-area-inset-top, 0px) + 54px); bottom: auto; }
   body.rs-touch .rs-consent { right: auto; bottom: auto; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 54px); transform: translateX(-50%); }
@@ -266,7 +285,9 @@ const CSS = `
     .rs-panel { top: calc(env(safe-area-inset-top, 0px) + 46px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 56px); }
     .rs-help, .rs-start { line-height: 1.5; padding: 12px 16px; }
     #hud { top: 46px !important; }
-    body.rs-touch .rs-hint { top: calc(env(safe-area-inset-top, 0px) + 46px); }
+    body.rs-touch .rs-corner { top: calc(env(safe-area-inset-top, 0px) + 46px); }
+    body.rs-touch .rs-settings { top: calc(env(safe-area-inset-top, 0px) + 84px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 92px); }
+    body.rs-touch .rs-fps { top: calc(env(safe-area-inset-top, 0px) + 44px); }
     body.rs-touch .rs-toasts, body.rs-touch .rs-consent { top: calc(env(safe-area-inset-top, 0px) + 46px); }
     .rs-cue { bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important; font-size: 12px !important; max-width: 46vw; }
     .rs-cue > div { padding: 5px 10px !important; }
@@ -318,7 +339,15 @@ export function createShell(a: ShellActions) {
   const msg = el('div', 'rs-msg');
   const struggle = el('div', 'rs-struggle');
   // Corners and cards.
+  const corner = el('div', 'rs-corner');
   const hint = el('div', 'rs-hint');
+  // M12.1: settings, always one tap away (graphics, FPS, camera, full screen).
+  const gear = el('div', 'rs-gear', '⚙');
+  gear.title = 'Settings';
+  gear.setAttribute('role', 'button');
+  gear.setAttribute('aria-label', 'Settings');
+  const settings = el('div', 'rs-card rs-settings');
+  const fpsBox = el('div', 'rs-fps');
   hint.append(el('kbd', undefined, 'H'), document.createTextNode(' Help'));
   const panel = el('div', 'rs-card rs-panel');
   const help = el('div', 'rs-card rs-help');
@@ -334,7 +363,8 @@ export function createShell(a: ShellActions) {
   const rotateBox = el('div');
   rotateBox.append(el('div', 'ph'), el('h2', undefined, 'Rotate your phone'), el('p', undefined, 'Blobbi Rumble is made for landscape: the whole arena, and room for both thumbs. Your match keeps going meanwhile.'), button('Play in portrait anyway', () => a.dismissRotate()));
   rotate.appendChild(rotateBox);
-  document.body.append(top, msg, struggle, hint, panel, help, start, consent, toasts, banner, rotate);
+  corner.append(gear, hint);
+  document.body.append(top, msg, struggle, corner, panel, help, start, consent, toasts, banner, rotate, settings, fpsBox);
 
   // The help card: built for keys, rebuilt for touch (M12).
   let touch = false;
@@ -358,16 +388,36 @@ export function createShell(a: ShellActions) {
 
   let helpOpen = false;
   let panelOpen = false;
+  let settingsOpen = false;
+  let lastSettings = '';
   const toggleHelp = (open = !helpOpen) => {
     helpOpen = open;
     help.style.display = open ? 'block' : 'none';
+    if (open) toggleSettings(false);
   };
   const togglePanel = (open = !panelOpen) => {
     panelOpen = open;
     panel.style.display = open ? 'block' : 'none';
     lastPanel = '';
+    if (open) toggleSettings(false);
+  };
+  const toggleSettings = (open = !settingsOpen) => {
+    settingsOpen = open;
+    settings.style.display = open ? 'block' : 'none';
+    lastSettings = '';
+    if (open) {
+      // One card at a time: settings over the arena, nothing else.
+      helpOpen = false;
+      help.style.display = 'none';
+      panelOpen = false;
+      panel.style.display = 'none';
+    }
   };
   hint.addEventListener('click', () => toggleHelp());
+  gear.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSettings();
+  });
   sessionChip.addEventListener('click', () => togglePanel());
   idChip.addEventListener('click', () => togglePanel(true));
   window.addEventListener('keydown', (e) => {
@@ -376,6 +426,7 @@ export function createShell(a: ShellActions) {
     if (e.code === 'Escape') {
       toggleHelp(false);
       togglePanel(false);
+      toggleSettings(false);
     }
   });
 
@@ -844,43 +895,83 @@ export function createShell(a: ShellActions) {
     return out;
   };
 
-  /** M12: graphics quality (Auto / Low / Medium / High), what it does now (refreshed live, once a second), and full screen. */
-  let graphicsLine: HTMLElement | null = null;
+  /** M12: graphics quality (Auto / Low / Medium / High) and what it does now (refreshed live, once a second); M12.1: shared by the session panel and the settings card. */
+  const graphicsLines: HTMLElement[] = [];
   let graphicsInfo: ShellView['graphics']['info'] | null = null;
   let graphicsAt = 0;
-  const graphicsSection = (v: ShellView): Node[] => {
-    const out: Node[] = [el('h4', undefined, 'Graphics')];
+  const names: Record<QualityChoice, string> = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High' };
+  const qualityRow = (v: ShellView): HTMLElement => {
     const row = el('div', 'rs-row');
     const seg = el('div', 'rs-quality');
-    const names: Record<QualityChoice, string> = { auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High' };
-    for (const c of QUALITY_CHOICES) seg.appendChild(button(names[c], () => a.setQuality(c), c === v.graphics.choice ? 'rs-btn go' : 'rs-btn'));
-    row.appendChild(seg);
-    const fs = document.documentElement;
-    if (document.fullscreenEnabled && fs.requestFullscreen) {
-      row.appendChild(
-        button(document.fullscreenElement ? 'Exit full screen' : 'Full screen', () => {
-          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-          else void fs.requestFullscreen({ navigationUI: 'hide' }).catch(() => toast('This browser did not allow full screen'));
-          lastPanel = '';
-        }),
-      );
+    for (const c of QUALITY_CHOICES) {
+      const b = button(names[c], () => a.setQuality(c), c === v.graphics.choice ? 'rs-btn go' : 'rs-btn');
+      b.setAttribute('aria-pressed', String(c === v.graphics.choice));
+      seg.appendChild(b);
     }
-    out.push(row);
-    graphicsLine = el('div', 'rs-sub');
+    row.appendChild(seg);
+    return row;
+  };
+  const liveLine = (v: ShellView): HTMLElement => {
+    const line = el('div', 'rs-sub');
+    graphicsLines.push(line);
     graphicsInfo = v.graphics.info;
     graphicsAt = 0;
-    out.push(graphicsLine, el('div', 'rs-sub', 'Lower settings draw fewer pixels and a coarser shadow; the game and its rules are the same at every level.'));
+    return line;
+  };
+  /** Full screen: a button where the browser has it, else a plain word on the home-screen app. */
+  const displayNodes = (): Node[] => {
+    const st = fullscreenState(document as never, isStandalone(window as never));
+    const out: Node[] = [];
+    if (st.supported && !st.standalone) {
+      const row = el('div', 'rs-row');
+      row.appendChild(
+        button(st.active ? 'Exit full screen' : 'Full screen', async () => {
+          if (!(await toggleFullscreen(document as never, document.documentElement as never))) toast('This browser did not allow full screen');
+          lastPanel = lastSettings = '';
+        }),
+      );
+      out.push(row);
+    }
+    const note = fullscreenNote(st);
+    if (note) out.push(el('div', 'rs-sub', note));
     return out;
   };
+  const graphicsSection = (v: ShellView): Node[] => {
+    graphicsLines.length = 0;
+    return [el('h4', undefined, 'Graphics'), qualityRow(v), liveLine(v), el('div', 'rs-sub', 'Lower settings draw fewer pixels and a coarser shadow; the game and its rules are the same at every level.'), ...displayNodes()];
+  };
+  const renderSettings = (v: ShellView) => {
+    graphicsLines.length = 0;
+    const parts: Node[] = [button('✕', () => toggleSettings(false), 'rs-btn x'), el('h4', undefined, 'Graphics'), qualityRow(v), liveLine(v)];
+    parts.push(el('div', 'rs-sub', v.graphics.choice === 'auto' ? 'Auto follows how the device keeps up; pick a level to fix it (remembered on this device).' : 'Fixed by you (remembered on this device). Auto adapts to the device.'));
+    parts.push(el('h4', undefined, 'Performance'));
+    const fpsRow = el('div', 'rs-row');
+    fpsRow.append(button(v.fps ? '✓ FPS counter' : 'FPS counter', () => a.setFps(!v.fps), v.fps ? 'rs-btn go' : 'rs-btn'));
+    parts.push(fpsRow);
+    if (touch) {
+      parts.push(el('h4', undefined, 'Camera'));
+      const camRow = el('div', 'rs-row');
+      camRow.append(button('Recenter camera', () => a.recenterCamera()));
+      parts.push(camRow, el('div', 'rs-sub', 'Drag a finger across the arena (away from the stick and the buttons) to turn the camera.'));
+    }
+    parts.push(el('h4', undefined, 'Display'), ...displayNodes());
+    settings.replaceChildren(...parts);
+  };
   const refreshGraphics = () => {
-    if (!graphicsLine || !graphicsInfo || !panelOpen) return;
+    if (!graphicsLines.length || !graphicsInfo || (!panelOpen && !settingsOpen)) return;
     const now = performance.now();
     if (now - graphicsAt < 1000) return;
     graphicsAt = now;
     const g = graphicsInfo();
-    graphicsLine.textContent = `Now: ${g.level} · ${g.width}×${g.height} px (×${g.ratio.toFixed(2)}) · shadow ${g.shadowMap} · ${g.fps.toFixed(0)} fps`;
+    const text = g ? `Now: ${g.level} · ${g.width}×${g.height} px (×${g.ratio.toFixed(2)}) · shadow ${g.shadowMap} · ${g.fps.toFixed(0)} fps` : 'Now: starting…';
+    for (const line of graphicsLines) if (line.isConnected) line.textContent = text;
   };
-  document.addEventListener('fullscreenchange', () => (lastPanel = ''));
+  const onFullscreen = () => {
+    lastPanel = lastSettings = '';
+  };
+  document.addEventListener('fullscreenchange', onFullscreen);
+  document.addEventListener('webkitfullscreenchange', onFullscreen);
+  let fpsAt = 0;
 
   const renderPanel = (v: ShellView) => {
     const parts: Node[] = [];
@@ -1055,9 +1146,12 @@ export function createShell(a: ShellActions) {
     get panelOpen() {
       return panelOpen;
     },
+    get settingsOpen() {
+      return settingsOpen;
+    },
     /** M12: something over the arena wants the player's fingers (a panel, a card, the banner, the rotate ask): the touch controls step aside. */
     get modalOpen() {
-      return panelOpen || helpOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
+      return panelOpen || helpOpen || settingsOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
     },
     /** M12: the player plays by touch: touch help, the help chip as a button, no browser gestures on the game. */
     setTouch(on: boolean) {
@@ -1072,7 +1166,22 @@ export function createShell(a: ShellActions) {
       const c = v.conn;
       const rotateOn = v.rotate ? 'flex' : 'none';
       if (rotate.style.display !== rotateOn) rotate.style.display = rotateOn;
+      // M12.1: the settings card (rebuilt when its choices change) and the FPS counter (twice a second).
+      if (settingsOpen) {
+        const sk = JSON.stringify([v.graphics.choice, v.fps, touch]);
+        if (sk !== lastSettings) {
+          lastSettings = sk;
+          renderSettings(v);
+        }
+      }
       refreshGraphics();
+      const fpsDisplay = v.fps ? 'block' : 'none';
+      if (fpsBox.style.display !== fpsDisplay) fpsBox.style.display = fpsDisplay;
+      if (v.fps && performance.now() - fpsAt > 500) {
+        fpsAt = performance.now();
+        const g = v.graphics.info();
+        fpsBox.textContent = g ? `${g.fps.toFixed(0)} fps` : '… fps';
+      }
       const healthy = c.phase === 'playing' || c.phase === 'watching';
       // Session chip: room · server, and a dot for the connection (quiet when healthy).
       const roomText = v.room ? (v.room.kind === 'private' ? v.room.id : 'Open room') : c.room ?? '…';

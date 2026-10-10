@@ -1,0 +1,17 @@
+{
+  "name": "Blobbi Rumble",
+  "short_name": "Rumble",
+  "description": "A party brawler for Blobbis: knock the others off the island.",
+  "start_url": "/rumble.html?network=1",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#dbe6f5",
+  "theme_color": "#dbe6f5",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
