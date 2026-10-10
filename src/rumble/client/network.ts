@@ -62,6 +62,7 @@ import { COMBAT } from '../tuning';
 import { NET_VIEW, SnapshotBuffer, type Sample } from './interp';
 import { LocalPredictor, predictable, supported, type Body } from './predict';
 import { attachCarried } from './carryView';
+import { carrierIntent } from '../control/mover';
 import { RumblePresenter } from './presenter';
 import { SimplePool } from 'nostr-tools/pool';
 import { ProfileDirectory } from '../../social/directory';
@@ -852,7 +853,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       actions.punch ||= intent.punch;
       actions.grab ||= intent.grab;
     }
-    const move = out ? { x: 0, z: 0, run: false } : { x: intent.x, z: intent.z, run: intent.run };
+    // Hotfix: while carrying (the server's newest word), Shift or the stick's rim asks for no run: the sent intent, the prediction
+    // and so the local animation all walk, as the server and everyone else see it; the run is back the moment the hold ends.
+    const carrying = !!me?.holding;
+    const move = out ? { x: 0, z: 0, run: false } : carrierIntent({ x: intent.x, z: intent.z, run: intent.run }, carrying);
     // The cosmetic punch starts only when the server's last word says a punch could start.
     if (intent.punch && meIndex >= 0) {
       const c: CombatState = combatOf(latestSnap!.fighters[meIndex]);

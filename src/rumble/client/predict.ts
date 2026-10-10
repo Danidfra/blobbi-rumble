@@ -32,7 +32,7 @@
  */
 import { onFloor } from '../arena/layout';
 import { facingYaw } from '../control/facing';
-import { steer } from '../control/mover';
+import { carrierGait, carrierIntent, steer } from '../control/mover';
 import { speedMultiplier } from '../pickups/power';
 import { RUMBLE_BODY } from '../profile';
 import type { PlayerIntent } from '../sim/intent';
@@ -87,10 +87,10 @@ export function supported(b: Pick<Body, 'x' | 'y' | 'z'>, t: PredictTuning = PRE
 export function stepBody(b: Body, intent: PlayerIntent, dt: number, allow: Allowance): { body: Body; jumped: boolean } {
   const p0 = RUMBLE_BODY;
   const k = speedMultiplier(allow.powerLevel);
-  const carry = allow.carrying ? COMBAT.carrySpeed : 1;
-  const p = { ...p0, walkSpeed: p0.walkSpeed * k * carry, runSpeed: p0.runSpeed * k * carry };
+  // The server's carrier rule (hotfix): a carrier walks at the carry share of its walk speed, and never runs.
+  const p = carrierGait({ ...p0, walkSpeed: p0.walkSpeed * k, runSpeed: p0.runSpeed * k }, allow.carrying, COMBAT.carrySpeed);
   const grounded = supported(b);
-  const s = steer(b.vx, b.vz, { ...intent, jump: intent.jump && !allow.carrying }, grounded, dt, p);
+  const s = steer(b.vx, b.vz, { ...carrierIntent(intent, allow.carrying), jump: intent.jump && !allow.carrying }, grounded, dt, p);
   let vx = b.vx + s.dvx;
   let vz = b.vz + s.dvz;
   let vy = s.jumpTo ?? b.vy;

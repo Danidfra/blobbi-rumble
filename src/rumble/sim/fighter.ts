@@ -14,7 +14,7 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import { facingYaw } from '../control/facing';
-import { steer, type Contest } from '../control/mover';
+import { carrierGait, carrierIntent, steer, type Contest } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
@@ -199,11 +199,8 @@ export class FighterSim {
     // M11E: on ice the keys bite less and nothing brakes much: the same steering, with less grip (never a different body).
     if (this.grip < 1 && grounded) p = { ...p, acceleration: p.acceleration * this.grip, braking: p.braking * this.grip * 0.1 };
     // M11.1: a carrier walks, never runs, slower still as its load struggles.
-    if (carrying) {
-      const share = COMBAT.carrySpeed * (1 - COMBAT.struggleDrag * this.carryDrag);
-      p = { ...p, walkSpeed: p.walkSpeed * share, runSpeed: p.walkSpeed * share };
-    }
-    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...intent, run: intent.run && !carrying, jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
+    p = carrierGait(p, carrying, COMBAT.carrySpeed * (1 - COMBAT.struggleDrag * this.carryDrag));
+    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...carrierIntent(intent, carrying), jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
     const b = this.body.body;
     if (s.dvx !== 0 || s.dvz !== 0) b.applyImpulse(new Vector3(s.dvx * this.profile.mass, 0, s.dvz * this.profile.mass), this.body.position());
     let jumped = false;

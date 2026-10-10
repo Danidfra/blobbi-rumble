@@ -93,6 +93,8 @@ export class TouchControls {
   private readonly base: HTMLElement;
   private readonly buttons = {} as Record<ButtonSlot, { el: HTMLElement; label: HTMLElement; sub: HTMLElement }>;
   private faces = touchButtons('waiting');
+  /** Hotfix: carrying, the stick's rim is no run (the ring does not light up as one). */
+  private carrying = false;
   private visible = false;
   private facesKey = '';
   private stickKey = '';
@@ -258,7 +260,7 @@ export class TouchControls {
 
   private draw() {
     const v = this.pad.stickView;
-    const run = v ? this.pad.movement().run : false;
+    const run = v && !this.carrying ? this.pad.movement().run : false;
     const key = v ? `${Math.round(v.base.x)},${Math.round(v.base.y)},${Math.round(v.thumb.x)},${Math.round(v.thumb.y)},${run}` : 'rest';
     if (key !== this.stickKey) {
       this.stickKey = key;
@@ -297,6 +299,7 @@ export class TouchControls {
     }
     if (view.visible) this.recenter.classList.toggle('on', !!view.rotated);
     if (!view.visible) return;
+    this.carrying = view.context === 'holding';
     const faces = touchButtons(view.context, view.peel);
     const peelText = view.context === 'out' && view.peel ? (!view.peel.allowed ? 'not now' : view.peel.left <= 0 ? 'none left' : view.peel.cooldown > 0 ? `${view.peel.cooldown.toFixed(1)} s` : `🍌 ×${view.peel.left}`) : '';
     const key = JSON.stringify([faces, peelText]);

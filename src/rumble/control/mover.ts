@@ -54,6 +54,22 @@ export interface Contest {
   headOnCos?: number;
 }
 
+/**
+ * Hotfix (M12.1): what a carrier may ask of its legs. A carrier walks,
+ * never runs (M11.1), so its run request is dropped and its run speed is
+ * its (carry-slowed) walk speed. One rule, used by the server's fighter
+ * and by the client's prediction alike: the client once kept the run (at
+ * the carry share of the run speed), so a player holding Shift or the
+ * stick's rim while carrying saw their own Blobbi run ahead of the server
+ * and play the run animation, which nobody else saw.
+ */
+export function carrierGait<P extends { walkSpeed: number; runSpeed: number }>(p: P, carrying: boolean, share: number): P {
+  return carrying ? { ...p, walkSpeed: p.walkSpeed * share, runSpeed: p.walkSpeed * share } : p;
+}
+
+/** The intent a carrier's legs act on: no run while carrying; everything else as asked. */
+export const carrierIntent = <I extends { run: boolean }>(intent: I, carrying: boolean): I => (carrying && intent.run ? { ...intent, run: false } : intent);
+
 export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boolean, dt: number, p: RumbleBody, contest?: Contest): Steering {
   const wanted = intent.run ? p.runSpeed : p.walkSpeed;
   const moving = intent.x !== 0 || intent.z !== 0;
