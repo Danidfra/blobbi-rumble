@@ -33,7 +33,7 @@
  *                                                     M9C: and the form their fighter wears, if any
  *     { t: 'look', ok, reason? }                      M9C: the answer to a look
  *     { t: 'rooms', rooms }                           M10B: the public rooms, counts only (never who is in them)
- *     { t: 'lobby', phase, since, deadline, transition, you, owner, youOwn, seated, ready, lineup, settings, canStart, need, results }
+ *     { t: 'lobby', phase, since, deadline, transition, you, owner, youOwn, seated, ready, watchers, forced, lineup, settings, canStart, need, results }
  *                                                     L1: a lobby room's lifecycle (`lifecycle.ts`), on every change,
  *                                                     to each connection (`you`: its seat now, which can change
  *                                                     between matches)
@@ -62,7 +62,8 @@
  * pubkey may come back on another slot, and a slot's next holder starts
  * as a guest.
  *
- * `control` says who drives each fighter ('human' or 'bot'); `acks` is,
+ * `control` says who drives each fighter ('human', 'bot', or L3 'none': a
+ * lobby room without bots whose person left); `acks` is,
  * per human-driven player, the highest input `seq` the server has applied
  * to the match by `tick`, and `ackTicks` the step it was first applied on,
  * which is what client reconciliation replays from. Pure: parsing and
@@ -86,7 +87,8 @@ export const PROTOCOL = Object.freeze({
   maxSeq: Number.MAX_SAFE_INTEGER,
 });
 
-export type Control = 'human' | 'bot';
+/** Who drives a fighter: a person, a bot, or (L3: a lobby room without bots, its person gone) nobody. */
+export type Control = 'human' | 'bot' | 'none';
 
 export interface InputMessage {
   t: 'input';
@@ -217,6 +219,10 @@ export interface LobbyMessage {
   /** L2: the seats people hold, and those whose people said they are ready (bots always are, and are not listed). */
   seated: string[];
   ready: string[];
+  /** L3: who is waiting for the next match (watchers, in arrival order: a guest or a proven pubkey, never a form). */
+  watchers: SlotIdentity[];
+  /** L3: the running countdown is the owner's (someone becoming unready does not cancel it). */
+  forced: boolean;
   /** The fighters of the match (the next one, in the lobby). */
   lineup: string[];
   settings: RoomSettings;

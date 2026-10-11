@@ -44,6 +44,12 @@ import type { ReceivedInvite } from './invites';
 import { isLocalHost } from '../net/serverTrust';
 import { QUALITY_CHOICES, type QualityChoice } from '../view/quality';
 import { fullscreenNote, fullscreenState, isStandalone, toggleFullscreen } from './fullscreen';
+import type { LobbyMessage } from '../net/protocol';
+import { lobbyView } from './lobbyView';
+import { LOBBY_CSS, createLobbyUi } from './lobbyUi';
+import { lookPreview } from './blobbiPreview';
+import { seedFromLabel } from '../../playground/seeds';
+import { ROSTER } from '../roster';
 
 export interface ShellActions {
   retry(): void;
@@ -100,6 +106,10 @@ export interface ShellActions {
   setFps(on: boolean): void;
   /** M12.1: the touch camera back to the arena's own view. */
   recenterCamera(): void;
+  /** L3: lobby requests (the server decides): this person ready or not; the owner's start and settings. */
+  lobbyReady(on: boolean): void;
+  lobbyStart(): void;
+  lobbySettings(change: { bots?: boolean; arena?: string; rotate?: boolean }): void;
 }
 
 /** A received invite as the panel shows it. */
@@ -150,6 +160,10 @@ export interface ShellView {
   rotate: boolean;
   /** M12.1: the FPS counter is on. */
   fps: boolean;
+  /** L3: a lobby room's lifecycle as last heard (null: a continuous room), and the newest state's tick and the rate (for seconds left). */
+  lobby: LobbyMessage | null;
+  tick: number;
+  tickHz: number;
 }
 
 const CSS = `
@@ -326,7 +340,7 @@ const TOUCH_HELP: [string, string][] = [
 
 export function createShell(a: ShellActions) {
   const style = el('style');
-  style.textContent = CSS;
+  style.textContent = CSS + LOBBY_CSS;
   document.head.appendChild(style);
 
   // Top bar.
@@ -364,7 +378,26 @@ export function createShell(a: ShellActions) {
   rotateBox.append(el('div', 'ph'), el('h2', undefined, 'Rotate your phone'), el('p', undefined, 'Blobbi Rumble is made for landscape: the whole arena, and room for both thumbs. Your match keeps going meanwhile.'), button('Play in portrait anyway', () => a.dismissRotate()));
   rotate.appendChild(rotateBox);
   corner.append(gear, hint);
-  document.body.append(top, msg, struggle, corner, panel, help, start, consent, toasts, banner, rotate, settings, fpsBox);
+  // L3: the lobby's card, countdown, results and waiting chip (drawn from the server's lobby message).
+  let shareNow: string | null = null;
+  const lobbyUi = createLobbyUi(
+    {
+      ready: (on) => a.lobbyReady(on),
+      start: () => a.lobbyStart(),
+      settings: (change) => a.lobbySettings(change),
+      openSession: () => togglePanel(true),
+      copyLink: async () => {
+        if (!shareNow) return;
+        if ((await copyText(shareNow)) === 'copied') toast('Link copied');
+        else {
+          toast(`Copy the link from the room panel (${copyShortcut()})`);
+          togglePanel(true);
+        }
+      },
+    },
+    { preview: lookPreview, defaultLook: (seat) => ({ seed: seedFromLabel(ROSTER.find((e) => e.label === seat)?.identity ?? seat), algorithm: 1 }) },
+  );
+  document.body.append(top, msg, struggle, corner, panel, help, start, consent, toasts, banner, rotate, settings, fpsBox, ...lobbyUi.nodes);
 
   // The help card: built for keys, rebuilt for touch (M12).
   let touch = false;
@@ -1047,7 +1080,7 @@ export function createShell(a: ShellActions) {
       list.append(el('span', 'slot', slot), pic, el('span', 'nm', name), el('span', 'rs-sub', tag));
     }
     parts.push(list);
-    if (v.spectators) parts.push(el('div', 'rs-sub', `${v.spectators} watching`));
+    if (v.spectators) parts.push(el('div', 'rs-sub', v.lobby ? `${v.spectators} waiting for next match` : `${v.spectators} watching`));
     // Identity.
     parts.push(el('h4', undefined, 'You'));
     const s = v.identity;
@@ -1151,7 +1184,7 @@ export function createShell(a: ShellActions) {
     },
     /** M12: something over the arena wants the player's fingers (a panel, a card, the banner, the rotate ask): the touch controls step aside. */
     get modalOpen() {
-      return panelOpen || helpOpen || settingsOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
+      return panelOpen || helpOpen || settingsOpen || lobbyUi.resultsOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
     },
     /** M12: the player plays by touch: touch help, the help chip as a button, no browser gestures on the game. */
     setTouch(on: boolean) {
@@ -1185,11 +1218,11 @@ export function createShell(a: ShellActions) {
       const healthy = c.phase === 'playing' || c.phase === 'watching';
       // Session chip: room · server, and a dot for the connection (quiet when healthy).
       const roomText = v.room ? (v.room.kind === 'private' ? v.room.id : 'Open room') : c.room ?? '…';
-      const sKey = JSON.stringify([c.phase, roomText, v.trust?.label]);
+      const sKey = JSON.stringify([c.phase, roomText, v.trust?.label, !!v.lobby]);
       if (sKey !== lastSession) {
         lastSession = sKey;
         const dot = el('span', `dot${healthy ? '' : c.phase === 'connecting' ? ' wait' : ' off'}`);
-        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : 'offline'}${c.phase === 'watching' ? ' · watching' : ''}`));
+        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : 'offline'}${c.phase === 'watching' ? (v.lobby ? ' · waiting for next match' : ' · watching') : ''}`));
         sessionChip.title = 'Room, players, identity and server';
       }
       // Identity chip.
@@ -1225,7 +1258,9 @@ export function createShell(a: ShellActions) {
           board.replaceChildren(...items);
         }
       }
-      board.style.display = snap && healthy ? '' : 'none';
+      // L3: in a lobby room between matches the lobby and results cards speak; the scoreboard is for play.
+      const between = !!v.lobby && v.lobby.phase !== 'playing';
+      board.style.display = snap && healthy && !between ? '' : 'none';
       // The contextual message, with names for slot ids.
       const m = v.message ? v.message.replace(/\bP[1-4]\b/g, (id) => clip(label(v, id), 16)) : '';
       if (m !== lastMsg) {
@@ -1252,7 +1287,7 @@ export function createShell(a: ShellActions) {
       if (panelOpen) {
         const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
         const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([v.graphics.choice, inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
+        const pKey = JSON.stringify([v.graphics.choice, inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, !!v.lobby, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
         // Never rebuild under someone typing a code.
         if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
           lastPanel = pKey;
@@ -1282,6 +1317,20 @@ export function createShell(a: ShellActions) {
         consent.style.display = showConsent ? 'block' : 'none';
         if (showConsent) consent.replaceChildren(...consentNodes());
       }
+      // L3: the lobby (its card steps aside for the session panel, help, settings, the start card and the banner).
+      shareNow = v.share;
+      const otherCard = panelOpen || helpOpen || settingsOpen || showStart || !!describe(c, v.now);
+      lobbyUi.show(
+        v.lobby && healthy && !otherCard
+          ? {
+              view: lobbyView({ lobby: v.lobby, roster: v.roster, tick: v.tick, tickHz: v.tickHz, personName: (pk) => clip(displayName(v.profile(pk), pk), 22), blobbiNameOf: (slot) => (v.blobbiNameOf(slot) ? clip(v.blobbiNameOf(slot)!, 18) : null), keys: !touch }),
+              room: v.room?.kind === 'private' ? v.room.id : null,
+              share: !!v.share,
+              verified: s.phase === 'verified',
+              touch,
+            }
+          : null,
+      );
       // The banner: loud, only when play is impossible.
       const d = describe(c, v.now);
       const bnKey = d ? JSON.stringify(d) : '';

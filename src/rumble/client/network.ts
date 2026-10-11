@@ -42,7 +42,7 @@ import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServer
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
 import { CONNECTION, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
-import { lifecyclePlays, lobbyLine, refusalWords } from './lobby';
+import { lifecyclePlays, refusalWords, visibleLineup } from './lobby';
 import { isTyping } from './dom';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
@@ -576,6 +576,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       }
     },
     recenterCamera: () => presenter?.recenterView(),
+    lobbyReady: (ready) => send({ t: 'ready', ready }),
+    lobbyStart: () => send({ t: 'start' }),
+    lobbySettings: (change) => send({ t: 'settings', ...change }),
     startSeen: seeStart,
     // M8C-A: a private Nostr invite to a pasted npub / nprofile.
     sendInvite: (input) => doSendInvite(input),
@@ -722,7 +725,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         // A new connection: a new view of the match (the server may even have restarted, ticks from zero).
         buffer = newBuffer();
         stats.lastArrival = now;
-        conn = onWelcome(conn, m.you, now);
+        conn = onWelcome(conn, m.you, now, m.room?.lifecycle === 'lobby');
         status = `connected · ${m.tickHz} Hz match, ${m.snapshotHz} Hz state`;
         roster = null;
         lobby = null;
@@ -738,7 +741,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         history.replaceState(null, '', pageAddress(room.kind === 'private' ? room.id : null, location.search));
         if (created) {
           shell.toast(`Room ${room.id} is ready: share the link or the code`, 6000);
-          shell.openSession();
+          // L3: a lobby room's card has the code, the link and the invitations at hand; an older room opens the session panel.
+          if (room.lifecycle !== 'lobby') shell.openSession();
         } else if (room.kind === 'private' && !conn.note) shell.toast(`Joined room ${room.id}`);
         serverFeatures = m.features ?? [];
         declared = null;
@@ -953,7 +957,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       spectators,
       you,
       snapshot: buffer.newest ?? null,
-      message: lobbyLine(lobby, state?.tick ?? 0, tickHz, (id) => nameFor(id) ?? id) ?? presenter?.currentMessage ?? '',
+      // L3: between a lobby room's matches its cards speak; the match's own messages are for play.
+      message: lobby && lobby.phase !== 'playing' ? '' : (presenter?.currentMessage ?? ''),
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
@@ -964,6 +969,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       rotate: needsRotate({ width: window.innerWidth, height: window.innerHeight, touch: touchOn, dismissed: rotateDismissed }),
       fps: showFps,
       inbox: inboxView(),
+      lobby,
+      tick: state?.tick ?? 0,
+      tickHz,
     });
     // M12: the touch controls: shown while this page plays a fighter and nothing is over the arena; the buttons' words follow the moment.
     if (touchControls) {
@@ -972,7 +980,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       presenter?.turnView(touchControls.look.take());
       touchControls.update({
         rotated: !!presenter?.viewTurned,
-        visible: conn.phase === 'playing' && !!you && !shell.modalOpen,
+        // L3: in a lobby room, only while its match is on (nothing moves in the lobby; its card needs the room).
+        visible: conn.phase === 'playing' && !!you && !shell.modalOpen && lifecyclePlays(lobby),
         context: touchContext(me, latestSnap?.phase ?? 'roundOver'),
         peel: me ? { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: alive >= BANANAS.minAlive } : undefined,
       });
@@ -1013,6 +1022,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       // M12.1: what you carry is drawn in your hands (your fighter is drawn now, the rest a moment ago).
       if (predictor.predicting) s = { ...s, fighters: attachCarried(s.fighters, interpFighters, meIndex, latestSnap.fighters[meIndex].holding) };
     }
+    // L3: a lobby room before its match draws only the next match's lineup (never a fighter left from the last one).
+    s = visibleLineup(s, lobby);
+    const shownMe = you ? s.players.indexOf(you) : -1;
     s.fighters.forEach((f, i) => {
       (drawn[i] ??= []).push({ x: f.position.x, z: f.position.z, t: now });
       if (drawn[i].length > 240) drawn[i].shift();
@@ -1050,10 +1062,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       s,
       dt,
       {
-        status: [`NETWORK · ${statusLine(conn, rtt)}`, ''],
+        status: [`NETWORK · ${statusLine(conn, rtt, !!lobby)}`, ''],
         driver: (i) => {
           const n = nameFor(s.players[i]);
-          const who = n === null ? (control[s.players[i]] === 'human' ? 'human' : 'bot') : clip(n, 16);
+          const c = control[s.players[i]];
+          const who = n === null ? (c === 'human' ? 'human' : c === 'none' ? 'empty' : 'bot') : clip(n, 16);
           return s.players[i] === you ? `YOU · ${who}` : who;
         },
         matchOverHint: 'the next match starts soon',
@@ -1061,8 +1074,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         textHud: showNet,
         controls: CONTROLS,
         touch: !!touchControls,
-        strugglers: meIndex >= 0 ? [{ index: meIndex, keys: '← ↔ → (A ↔ D)' }] : [],
-        aimers: meIndex >= 0 && aim ? [{ index: meIndex, aim, keys: 'WASD · throw F / G' }] : [],
+        strugglers: shownMe >= 0 ? [{ index: shownMe, keys: '← ↔ → (A ↔ D)' }] : [],
+        aimers: shownMe >= 0 && aim ? [{ index: shownMe, aim, keys: 'WASD · throw F / G' }] : [],
         footer: showNet
           ? [
               `NET  ${status} · ${url} · ${conn.attempts ? `attempt ${conn.attempts}` : 'up'} · reconnects ${reconnects} · rtt ${Number.isNaN(rtt) ? '…' : `${rtt.toFixed(0)} ms`} · ${stats.statesPerSec.toFixed(1)} states/s · ${(stats.bytesPerSec / 1024).toFixed(1)} KB/s`,

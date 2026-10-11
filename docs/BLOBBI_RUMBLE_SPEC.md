@@ -346,7 +346,7 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 
 ### 10a. Lobby rooms and the match lifecycle (L1)
 
-**Status: L1 (lifecycle core) and L2 (room controls) implemented, awaiting manual validation; the lobby UI is L3.** Approved 2026-10-11 after
+**Status: L1 (lifecycle core), L2 (room controls) and L3 (lobby and results interface) implemented, awaiting manual validation.** Approved 2026-10-11 after
 the lobby architecture audit. The **OPEN room keeps continuous drop-in
 play**; private rooms made by current clients get a lobby.
 
@@ -431,9 +431,33 @@ read.
 | **Score ownership** | A fighter's score is its own. Nobody joins a lobby room's running match, so nobody inherits a score; results say who drove each fighter at the end. In the OPEN room, a drop-in player taking over a bot's fighter starts it at 0 (the only change to OPEN's behavior). |
 | **Rate limits** | Per connection, one `ready` per 250 ms, one `start` per 1 s, one `settings` per 500 ms; more are refused as `busy` (and still count against the message bucket). |
 
-Until the lobby interface (L3), a page shows the stage in its contextual
-message and **R** toggles readiness; the owner's start and settings are
-reachable only from `window.rumble` (`lobbyStart`, `lobbySettings`).
+#### The lobby and results interface (L3)
+
+**Status: L3 implemented, awaiting manual validation.** Part of the game's
+shell (`client/lobbyView.ts`: a pure model from the server's `lobby`
+message and roster; `client/lobbyUi.ts`: the DOM), not a separate app.
+
+| | |
+| --- | --- |
+| **Lobby card** | Right side, under the top bar. Room code, Copy link, Invite… and Choose Blobbi… (both open the session panel, where invitations, the Blobbi picker and identity already live: nothing duplicated). Every seat with its 2D Blobbi preview (the fighter's Rumble look: a worn form or the seat's default), name, tags (you, owner ★, the Blobbi it wears) and a pill: Ready, Not ready, Bot, Open. Who waits for the next match. The settings: bots and rotation switches and the arena grid for the owner; read-only text for everyone else. The status, Ready / Not ready and the owner's Start pinned at the card's foot. It folds to its header. It steps aside for the session panel, help, settings, the start card and the banner. |
+| **Countdown** | A big centred number (pointer-events off). Settings and Start disappear; Not ready stays for everyone's countdown (it cancels it) and is hidden in the owner's (it would not). A cancel redraws the lobby from the server's message. |
+| **Results** | A centred card for the server's results time: the winner (or "Match abandoned"), every fighter by name with Human / Bot / Left and its score, the reason, the seconds back. Then the lobby, with "Last match: … won". No match starts by itself: everyone is unready after the results. |
+| **Watching** | A chip "Waiting for next match"; the session chip, status line and reconnect note say "waiting for next match" in a lobby room (OPEN keeps "watching (all four slots taken)"). Watchers are listed in the lobby card and seated by the L2 rules. |
+| **Empty seats** | `control: 'none'` in the state, `{ who: 'empty' }` in the roster and the results, "Open seat" / "Open" in the lobby, "Left the match" / "Left" in the results: never a bot. |
+| **Lineup on screen** | In the lobby the server rebuilds the standing-still match to the next lineup whenever it can be a match (two or more fighters), so no fighter of the last match stays; the page also draws only the lineup's fighters before a match (`visibleLineup`), which covers one person alone without bots. |
+| **Phones** | Safe-area insets; under 520 px of height a 300 px / 44 vw card, a smaller countdown, a compact share row; 40 px touch targets; the actions pinned in reach without scrolling. The touch controls hide outside play in a lobby room (nothing moves there). |
+| **Keys** | R toggles Ready (shown in the button on a desktop); H, Esc, F3, F4 as before. Buttons never take focus. |
+
+A lobby room's creation no longer opens the session panel (the card has
+the code, link and invitations); an older continuous room's still does.
+
+**Reconnection is not seat recovery.** A dropped connection is a new
+connection: it gets a seat only by the L2 rules (a free seat in the
+lobby), never "its" seat back. A pubkey alone is not proof that a new
+connection is the old one: a later mechanism may use an authenticated
+Nostr proof on the new connection or a short-lived server-issued token.
+Nothing of the kind exists yet, and no new authentication protocol was
+added.
 
 ---
 

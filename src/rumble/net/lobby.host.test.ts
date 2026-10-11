@@ -5,6 +5,8 @@
  * and settings, bots on or off, seats only between matches, watchers
  * seated in the lobby, forfeits, and score ownership. A continuous host is
  * untouched but for one fix: a drop-in player never inherits a score.
+ * L3: the lobby shows the next lineup; the lobby message names the
+ * watchers and whether the countdown is the owner's; nobody is 'none'.
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CLASSIC, FACTORY, SKYFALL, nextArena } from '../arena/arenas';
@@ -310,7 +312,7 @@ describe('a lobby room: settings and bots (L2)', () => {
     expect(h.lobby!.phase).toBe('playing');
     const out = h.state().snapshot.fighters.find((f) => f.id === 'P3')!;
     expect(out.eliminated).toBe(true);
-    expect(h.state().control.P3).toBe('bot');
+    expect(h.state().control.P3).toBe('none');
     expect(h.roster().slots.P3).toEqual({ who: 'empty' });
     h.disconnect(2);
     h.tick();
@@ -341,6 +343,44 @@ describe('a lobby room: settings and bots (L2)', () => {
     toPlay(h);
     expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3']);
     expect(h.state().control.P3).toBe('bot');
+    h.dispose();
+  });
+});
+
+describe('a lobby room: what the lobby shows (L3)', () => {
+  it('without bots, the lobby’s match is the next lineup: a fighter of the last match whose person left is not left standing', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby' });
+    for (const c of [1, 2, 3]) h.connect(c);
+    h.command(1, { t: 'settings', bots: false });
+    h.tick();
+    expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3']);
+    h.disconnect(3);
+    const tick = h.state().tick;
+    h.tick();
+    expect(h.state().snapshot.players).toEqual(['P1', 'P2']);
+    expect(h.state().tick).toBe(tick + 1);
+    expect(h.state().control).toEqual({ P1: 'human', P2: 'human' });
+    // One alone cannot be a match: the last lineup stays (the page draws only the lineup's fighters).
+    h.disconnect(2);
+    h.tick();
+    expect(h.lobbyFor(1)!.lineup).toEqual(['P1']);
+    expect(h.state().snapshot.players).toEqual(['P1', 'P2']);
+    // Bots back on: every seat again.
+    h.command(1, { t: 'settings', bots: true });
+    h.tick();
+    expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3', 'P4']);
+    expect(h.state().control).toEqual({ P1: 'human', P2: 'bot', P3: 'bot', P4: 'bot' });
+    h.dispose();
+  });
+
+  it('names the watchers (guests, or proven pubkeys, never a form) and says whether the countdown is the owner’s', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby' });
+    for (let c = 1; c <= 6; c++) h.connect(c);
+    h.setIdentity(6, 'a'.repeat(64));
+    expect(h.lobbyFor(1)!.watchers).toEqual([{ who: 'guest' }, { who: 'nostr', pubkey: 'a'.repeat(64) }]);
+    expect(h.lobbyFor(1)!.forced).toBe(false);
+    h.command(1, { t: 'start' });
+    expect(h.lobbyFor(2)!.forced).toBe(true);
     h.dispose();
   });
 });

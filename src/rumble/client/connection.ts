@@ -48,9 +48,12 @@ export const CONNECTION = Object.freeze({
 
 export const initialConnection = (url: string, room: string | null = null): ConnectionState => ({ phase: 'connecting', url, you: null, everConnected: false, previous: null, attempts: 0, retryAt: 0, note: '', noteUntil: 0, room, why: '' });
 
-export function onWelcome(s: ConnectionState, you: string | null, now: number): ConnectionState {
+/** What watching means: in a lobby room (L3) waiting for the next match; in a continuous room, all four slots are taken. */
+export const watchingWords = (lobbyRoom: boolean) => (lobbyRoom ? 'waiting for next match' : 'watching (all four slots taken)');
+
+export function onWelcome(s: ConnectionState, you: string | null, now: number, lobbyRoom = false): ConnectionState {
   const reconnected = s.everConnected;
-  const note = reconnected ? (you ? `Reconnected as ${you}${s.previous && s.previous !== you ? ` (a new slot: your ${s.previous} went to a bot)` : ''}` : 'Reconnected: watching (all four slots are taken)') : '';
+  const note = reconnected ? (you ? `Reconnected as ${you}${s.previous && s.previous !== you ? ` (a new slot: your ${s.previous} ${lobbyRoom ? 'was let go' : 'went to a bot'})` : ''}` : `Reconnected: ${watchingWords(lobbyRoom)}`) : '';
   return { ...s, phase: you ? 'playing' : 'watching', you, everConnected: true, attempts: 0, note, noteUntil: note ? now + CONNECTION.noteFor : 0 };
 }
 
@@ -121,14 +124,14 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
   }
 }
 
-/** The small always-visible status line. */
-export function statusLine(s: ConnectionState, rttMs: number): string {
+/** The small always-visible status line (`lobbyRoom`: watching means waiting for the next match). */
+export function statusLine(s: ConnectionState, rttMs: number, lobbyRoom = false): string {
   const rtt = Number.isFinite(rttMs) ? ` · ${Math.round(rttMs)} ms` : '';
   switch (s.phase) {
     case 'playing':
       return `● online · you are ${s.you}${rtt}`;
     case 'watching':
-      return `● online · watching (all four slots taken)${rtt}`;
+      return `● online · ${watchingWords(lobbyRoom)}${rtt}`;
     case 'connecting':
       return '○ connecting…';
     case 'full':

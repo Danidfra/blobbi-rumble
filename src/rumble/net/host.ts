@@ -371,7 +371,10 @@ export class RumbleHost {
       else if (people.length === 0) life.finish(now, this.results(null, 'abandoned'));
       else if (!this.settings.bots && people.length === 1) life.finish(now, this.results(people[0], 'forfeit'));
     }
-    if (life.phase === 'lobby') this.promote();
+    if (life.phase === 'lobby') {
+      this.promote();
+      this.showLineup();
+    }
     for (const fx of life.advance(now, this.view())) {
       if (fx === 'swapIn') this.buildLineup();
       else if (fx === 'swapOut') {
@@ -388,11 +391,33 @@ export class RumbleHost {
     return this.settings.bots ? [...this.ids] : this.ids.filter((id) => this.holder.get(id) !== null);
   }
 
+  /** Whether the match's fighters are exactly `ids`. */
+  private lineupIs(ids: readonly string[]) {
+    return ids.length === this.match.ids.length && ids.every((id, i) => id === this.match.ids[i]);
+  }
+
+  /**
+   * L3: in the lobby, the match shows the next match's lineup (who is
+   * seated, and bots if they are on), so no fighter of the last match stays
+   * standing there. The match stands still in the lobby, so this moves no
+   * gameplay: a new match of two or more fighters, built only when the
+   * lineup changed. (One person alone without bots cannot be a match: the
+   * page then draws only the lineup's fighters it has.)
+   */
+  private showLineup() {
+    const ids = this.nextLineup();
+    if (ids.length >= 2 && !this.lineupIs(ids)) this.rebuild(ids);
+  }
+
   /** L2: the countdown's swap: the match restarted on the room's arena with its lineup (a new match when the lineup changed). */
   private buildLineup() {
     const ids = this.nextLineup();
-    const same = ids.length === this.match.ids.length && ids.every((id, i) => id === this.match.ids[i]);
-    if (same || ids.length < 2) return this.restartOn(this.settings.arena);
+    if (this.lineupIs(ids) || ids.length < 2) return this.restartOn(this.settings.arena);
+    this.rebuild(ids);
+  }
+
+  /** A new match of these fighters on the room's arena, its tick and clock carried on; the old one disposed. */
+  private rebuild(ids: string[]) {
     const old = this.current;
     this.current = createRumbleMatch({ havok: this.havok, players: ids.map((id) => ({ id })), arena: arenaById(this.settings.arena) ?? old.arena, startTick: old.tick, startTime: old.time });
     old.dispose();
@@ -466,6 +491,11 @@ export class RumbleHost {
       owner: life.owner === null ? null : (this.slotOf.get(life.owner) ?? null),
       youOwn: life.owner === conn,
       seated: this.ids.filter((id) => this.holder.get(id) !== null),
+      watchers: this.arrivals.filter((c) => !this.slotOf.get(c)).map((c): SlotIdentity => {
+        const pubkey = this.identity.get(c);
+        return pubkey ? { who: 'nostr', pubkey } : { who: 'guest' };
+      }),
+      forced: life.forced,
       ready: this.ids.filter((id) => {
         const holder = this.holder.get(id);
         return holder !== null && holder !== undefined && life.ready.has(holder);
@@ -489,7 +519,7 @@ export class RumbleHost {
     const acks: Record<string, number> = {};
     const ackTicks: Record<string, number> = {};
     for (const id of this.match.ids) {
-      control[id] = this.holder.get(id) === null ? 'bot' : 'human';
+      control[id] = this.holder.get(id) !== null ? 'human' : this.lobby && !this.settings.bots ? 'none' : 'bot';
       if (this.holder.get(id) !== null) {
         acks[id] = this.acked.get(id) ?? -1;
         ackTicks[id] = this.ackTick.get(id) ?? this.snapshot.tick;

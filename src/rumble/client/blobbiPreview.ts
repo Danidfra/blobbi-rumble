@@ -34,3 +34,23 @@ export async function blobbiPreview(b: OwnedBlobbi): Promise<string | null> {
     return null;
   }
 }
+
+/** L3: pictures of Rumble looks already made, by look (a few seats' worth: bounded). */
+const lookPictures = new Map<string, Promise<string | null>>();
+
+/**
+ * L3: a small picture of a fighter's Rumble look (an adult procedural Blobbi
+ * from its seed, wearing a legacy Blobbi's own colours when it has them):
+ * the lobby's seat previews, for a worn form and a default fighter alike.
+ * The same look is drawn once. Never throws; null when the kit cannot draw it.
+ */
+export function lookPreview(look: { seed: string; algorithm: 1; colors?: { base: string; secondary: string; eye: string } }): Promise<string | null> {
+  const key = `${look.seed}|${look.colors ? `${look.colors.base}${look.colors.secondary}${look.colors.eye}` : ''}`;
+  const known = lookPictures.get(key);
+  if (known) return known;
+  if (lookPictures.size > 64) lookPictures.clear();
+  const visual = { stage: 'adult', visualGeneration: 'v3', v3: look, baseColor: look.colors?.base ?? '#cccccc', secondaryColor: look.colors?.secondary ?? '#aaaaaa', eyeColor: look.colors?.eye ?? '#222222', pattern: 'solid', specialMark: 'none', size: 'medium' } as unknown as OwnedBlobbi['visual'];
+  const picture = blobbiPreview({ d: `look-${look.seed.slice(0, 12)}`, visual } as OwnedBlobbi);
+  lookPictures.set(key, picture);
+  return picture;
+}
