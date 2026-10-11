@@ -76,6 +76,8 @@ import { TouchControls, needsRotate, prefersTouch, watchFirstTouch } from './tou
 import { touchContext } from '../control/touch';
 import { parseQuality, type DeviceHints, type QualityChoice } from '../view/quality';
 import { BANANAS } from '../tuning';
+import { graphicsFailure, graphicsOptions, perfOverlayAsked, probeWebGL, type GraphicsFailure } from './graphics';
+import { showGraphicsError } from './graphicsScreen';
 
 /** Storage that may be missing or throw (private windows, blocked site data). */
 const safeStorage = (): Storage | null => {
@@ -120,6 +122,15 @@ class Window {
 }
 
 export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) {
+  // Graphics first: a page that cannot draw never connects, so it never takes a fighter from the match.
+  const gfx = graphicsOptions(location.search, { dev: import.meta.env.DEV, hostname: location.hostname });
+  // Read now: the page tidies its own address later (the room goes into it), dropping other parameters.
+  const perfAsked = perfOverlayAsked(location.search);
+  const probe = probeWebGL(() => document.createElement('canvas'), { forceWebGL1: gfx.forceWebGL1, simulateNone: gfx.simulateNone });
+  if (probe.version === null) {
+    showGraphicsError(graphicsFailure(probe), { online: true });
+    return;
+  }
   const q = new URLSearchParams(location.search);
   /** The server's WebSocket address (the room goes in its query); identity proofs name it. */
   // M10A: which game server. Built-in official servers (none unless configured), this page's own (or the dev server),
@@ -645,7 +656,28 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     sentAt = performance.now();
   };
 
+  /**
+   * The graphics failed after the page joined (the engine would not start, or the context was lost for good): give the
+   * fighter back at once (close the socket: the server hands the slot to its bot), never reconnect, stop drawing, and
+   * explain. Once per page.
+   */
+  let graphicsDown = false;
+  const failGraphics = (f: GraphicsFailure) => {
+    if (graphicsDown) return;
+    graphicsDown = true;
+    const socket = ws;
+    ws = null;
+    socket?.close(1000, 'graphics failed');
+    try {
+      presenter?.dispose();
+    } catch {
+      // Already gone with the context.
+    }
+    presenter = null;
+    showGraphicsError(f, { online: true });
+  };
   const connect = () => {
+    if (graphicsDown) return;
     if (target.kind === 'invalid') {
       // A share link with a malformed code: nothing to connect to; the banner offers the open room or a new game.
       conn = { ...initialConnection(url, target.raw || '?'), phase: 'missing' };
@@ -960,7 +992,14 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (drawn[i].length > 240) drawn[i].shift();
     });
     if (!presenter) {
-      presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena);
+      try {
+        presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena, { forceWebGL1: gfx.forceWebGL1, simulateFailure: gfx.simulateEngineFailure });
+      } catch (e) {
+        failGraphics(graphicsFailure(probe, e));
+        return;
+      }
+      presenter.onGraphicsLost(() => failGraphics(graphicsFailure(probe, 'WebGL context lost and not restored', true)));
+      if (perfAsked) presenter.showPerfOverlay(() => rtt);
       presenter.setQuality(quality, deviceHints());
       if (touchControls) presenter.setTouchLayout(true);
     }
@@ -1008,6 +1047,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
 
   let last = performance.now();
   const loop = () => {
+    if (graphicsDown) return;
     const now = performance.now();
     frame(Math.min(0.05, (now - last) / 1000));
     last = now;

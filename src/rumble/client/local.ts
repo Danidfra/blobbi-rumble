@@ -16,17 +16,34 @@ import { TouchControls, prefersTouch, watchFirstTouch } from './touchControls';
 import { touchContext } from '../control/touch';
 import { parseQuality } from '../view/quality';
 import { BANANAS } from '../tuning';
+import { graphicsFailure, graphicsOptions, perfOverlayAsked, probeWebGL } from './graphics';
+import { showGraphicsError } from './graphicsScreen';
 
 const CONTROLS = ['P1  WASD move · LShift run · Space jump · F punch · G grab/throw', 'P2  Arrows move · RShift run · Enter jump · K punch · L grab/throw', 'grabbed? alternate left/right to break free', 'walk into an orb: harder punches and throws this round', 'F3 colliders & reach · R restart a finished match · ?network=1 to play on a server'];
 
 export async function startLocal(canvas: HTMLCanvasElement, hud: HTMLElement) {
+  // Graphics first: no physics loaded, nothing built, for a page that cannot draw.
+  const gfx = graphicsOptions(location.search, { dev: import.meta.env.DEV, hostname: location.hostname });
+  const probe = probeWebGL(() => document.createElement('canvas'), { forceWebGL1: gfx.forceWebGL1, simulateNone: gfx.simulateNone });
+  if (probe.version === null) return showGraphicsError(graphicsFailure(probe), { online: false });
   const havok = await loadHavok();
   const roster = rosterFor(rosterOptions(location.search));
   const arena = arenaById(new URLSearchParams(location.search).get('arena')) ?? undefined;
   const match = createRumbleMatch({ havok, players: roster.map((e) => ({ id: e.label })), arena });
   const ids = match.ids;
   let snapshot: MatchSnapshot = match.snapshot();
-  const presenter = new RumblePresenter(canvas, hud, roster.map((e) => ({ id: e.label, identity: e.identity })), snapshot.orbs, snapshot.arena);
+  let presenter: RumblePresenter;
+  try {
+    presenter = new RumblePresenter(canvas, hud, roster.map((e) => ({ id: e.label, identity: e.identity })), snapshot.orbs, snapshot.arena, { forceWebGL1: gfx.forceWebGL1, simulateFailure: gfx.simulateEngineFailure });
+  } catch (e) {
+    match.dispose();
+    return showGraphicsError(graphicsFailure(probe, e), { online: false });
+  }
+  presenter.onGraphicsLost(() => {
+    presenter.dispose();
+    showGraphicsError(graphicsFailure(probe, 'WebGL context lost and not restored', true), { online: false });
+  });
+  if (perfOverlayAsked(location.search)) presenter.showPerfOverlay();
 
   // Intent producers: the keyboard for people, test bots for the rest, each behind a scripting hook for checks.
   const keyboard = new Keyboard([P1_BINDINGS, P2_BINDINGS]);

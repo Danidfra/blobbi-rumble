@@ -40,6 +40,13 @@ import { extentOf, platformUnder } from '../arena/geometry';
 import { BANANAS } from '../tuning';
 import { SweeperView } from '../view/sweeperView';
 
+/** How the presenter asks for graphics (developer-only switches from `graphics.ts`). */
+export interface PresenterGraphics {
+  forceWebGL1?: boolean;
+  /** Throw as Babylon does when there is no WebGL (to test the late failure path). */
+  simulateFailure?: boolean;
+}
+
 export interface PresentedFighter {
   id: string;
   /** The Blobbi's identity label (`seedFromLabel`). */
@@ -107,8 +114,11 @@ export class RumblePresenter {
     fighters: readonly PresentedFighter[],
     orbs: MatchSnapshot['orbs'],
     arenaId: string = CLASSIC.id,
+    graphics: PresenterGraphics = {},
   ) {
-    this.engine = new Engine(canvas, true, { adaptToDeviceRatio: true, stencil: true });
+    // Babylon asks for WebGL2 and falls back to WebGL1 by itself; `forceWebGL1` (developer-only) skips WebGL2 to test that.
+    if (graphics.simulateFailure) throw new Error('WebGL not supported (simulated: ?webgl=fail)');
+    this.engine = new Engine(canvas, true, { adaptToDeviceRatio: true, stencil: true, disableWebGL2Support: !!graphics.forceWebGL1 });
     this.scene = new Scene(this.engine);
     this.env = createWorld(this.scene, canvas);
     const cam = this.env.camera;
@@ -145,6 +155,38 @@ export class RumblePresenter {
       this.fitView();
     });
     this.fitView();
+  }
+
+  /**
+   * The graphics went away (the GPU or its driver reset): Babylon waits for the browser to give the context back and
+   * rebuilds. If it is not back within `ms`, `onGone` runs (the page explains, and gives its fighter back).
+   */
+  onGraphicsLost(onGone: () => void, ms = 6000) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    this.engine.onContextLostObservable.add(() => {
+      timer ??= setTimeout(onGone, ms);
+    });
+    this.engine.onContextRestoredObservable.add(() => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    });
+  }
+
+  /** `?debug=perf`: the performance overlay (loaded on demand; nothing of it exists otherwise). `rtt`: the latency, online. */
+  showPerfOverlay(rtt?: () => number) {
+    void import('./perfOverlay').then(({ attachPerfOverlay }) => attachPerfOverlay(this.engine, this.scene, rtt));
+  }
+
+  /** The WebGL in use (1 or 2). */
+  get webGLVersion(): number {
+    return this.engine.webGLVersion;
+  }
+
+  /** Stop drawing and free the GPU resources (a page whose graphics failed). */
+  dispose() {
+    this.engine.stopRenderLoop();
+    this.scene.dispose();
+    this.engine.dispose();
   }
 
   /** M12: keep the arena's width in view on a narrow (upright) screen; landscape is unchanged. */

@@ -399,6 +399,32 @@ operating system their share.
   declared Blobbi exists (the form binds to the owner's address; the rest
   is cosmetic), access control for rooms (a code is an address).
 
+## Graphics problems and diagnostics
+
+Before a network page connects it checks that the browser gives WebGL
+(WebGL 2, else WebGL 1, as Babylon does), so a page that cannot draw never
+takes a fighter. If it gets none, or the 3D engine fails to start, or the
+graphics are lost mid-game and not restored within 6 s, the page shows a
+full-screen explanation (no WebGL / blocked for this site / engine failed /
+graphics lost), what to try (hardware acceleration, brave://gpu, Shields
+and extensions, drivers, another browser) and details to copy; a page that
+had joined closes its socket at once (the server gives the fighter to its
+bot) and does not reconnect. A context loss the browser restores is ridden
+out as before.
+
+- `?debug=perf`: a small overlay with FPS, frame time, draw calls,
+  triangles, the internal resolution, the WebGL version and, online, the
+  latency. Loaded only when asked for; nothing of it runs otherwise.
+- Development builds and this machine's own address only (ignored on a
+  public host): `?webgl=1` forces WebGL 1, `?webgl=none` pretends there is
+  no WebGL, `?webgl=fail` makes the engine fail after joining.
+
+WebGL 1 works (checked in Chrome, online and offline, no shader errors,
+the same draw calls and look). Its known differences: the soft shadows use
+Poisson sampling instead of PCF (Babylon's own fallback: slightly grainier
+shadow edges), and multisampled render targets are unavailable (the canvas
+itself is still antialiased).
+
 ## Known bugs
 
 - Automatic Nostr session restoration after a reload is intermittent
