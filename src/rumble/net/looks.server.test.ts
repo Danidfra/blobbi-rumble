@@ -88,7 +88,7 @@ describe('looks over the socket', () => {
   const dB = getCanonicalBlobbiD(B, '0123456789');
 
   it('two proven players, a guest and spectators: every page sees every form; a late joiner gets them at once; the server offers looks', async () => {
-    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0 });
+    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0, lookEveryMs: 0 });
     const url = `ws://127.0.0.1:${server.port}`;
     const a = await client(url);
     const b = await client(url);
@@ -119,7 +119,7 @@ describe('looks over the socket', () => {
   });
 
   it('a change, the default, a logout and a disconnect update everyone; the same look again sends no roster; stale and same-time updates are per connection', async () => {
-    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0 });
+    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0, lookEveryMs: 0 });
     const url = `ws://127.0.0.1:${server.port}`;
     const a = await client(url);
     const watcher = await client(url);
@@ -162,7 +162,7 @@ describe('looks over the socket', () => {
   });
 
   it('nobody wears another player’s Blobbi, sets another slot, or declares as a guest or a spectator; malformed and oversized looks are dropped', async () => {
-    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0 });
+    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0, lookEveryMs: 0 });
     const url = `ws://127.0.0.1:${server.port}`;
     const a = await client(url);
     const b = await client(url);
@@ -196,7 +196,7 @@ describe('looks over the socket', () => {
   });
 
   it('a room switch is a new connection: the old room forgets the form, the new one learns it when declared again; states never carry a form', async () => {
-    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0 });
+    server = await startRumbleServer({ havok, port: 0, manual: true, challengeEveryMs: 0, lookEveryMs: 0 });
     const url = `ws://127.0.0.1:${server.port}`;
     const a = await client(url);
     const watcher = await client(url);

@@ -100,6 +100,9 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
     case 'missing':
       return { title: `${room} isn’t here`, detail: 'It may have ended (empty rooms close after a couple of minutes), or the code is mistyped.', retry: false, actions: ['open', 'host'] };
     case 'refused':
+      // Security audit M3, M2: room codes tried in vain from this network, or games it already has open.
+      if (/code/.test(s.why)) return { title: 'Too many room codes tried', detail: 'Wait a minute, then check the code (or the link) and try again.', retry: false, actions: ['open', 'retry'] };
+      if (/open games/.test(s.why)) return { title: 'Your network already has games open', detail: 'Join one of them by its code or link, or wait a couple of minutes for an empty one to close.', retry: false, actions: ['open', 'retry'] };
       return { title: 'Couldn’t start a new game', detail: /minute/.test(s.why) ? 'Too many new games from here: wait a minute and try again.' : 'This server is hosting as many games as it can right now.', retry: false, actions: ['open', 'retry'] };
     case 'incompatible':
       return { title: 'This server speaks a newer Rumble', detail: 'Update the game (reload a newer page) or pick another server in the session panel.', retry: false, actions: ['retry'] };

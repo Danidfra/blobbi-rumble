@@ -55,6 +55,7 @@ import { AUTH, ChallengeBook, authAddress, verifyAuth } from '../../social/auth'
 import { arenaById } from '../arena/arenas';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
+import type { LookDeclaration } from './looks';
 import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage } from './protocol';
 import { RoomManager, type Room } from './rooms';
 import { addressGroup, isLoopback } from './address';
@@ -88,6 +89,12 @@ export const SERVER_LIMITS = Object.freeze({
   maxPerAddressPerRoom: 4,
   /** A connection that sent nothing at all for this long, ms, is closed (a real page pings every second, standing still or not). */
   idleMs: 120_000,
+  /** M1: a connection's look is applied at most this often, ms; a newer one meanwhile waits (the latest wins, none is lost). */
+  lookEveryMs: 1000,
+  /** M2: private rooms one address may have open at once (made by it, not yet closed). */
+  roomsPerAddress: 3,
+  /** M3: room codes one address may try in vain per minute; past that, joining by code waits for the minute to pass. */
+  roomGuessesPerMinute: 10,
 });
 
 export interface ServerConfig {
@@ -153,6 +160,10 @@ export interface ServerConfig {
   idleMs?: number;
   /** The heartbeat (and idle check) interval, ms (SERVER_LIMITS.heartbeatMs). */
   heartbeatMs?: number;
+  /** M1, M2, M3 (SERVER_LIMITS defaults): look interval, open rooms per address, failed room codes per address per minute. */
+  lookEveryMs?: number;
+  roomsPerAddress?: number;
+  roomGuessesPerMinute?: number;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -266,7 +277,12 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   let nextConn = 1;
   const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
   const configuredAddresses = [...(config.authUrls ?? []), ...(identity.public ? [identity.public.websocket] : [])].map(authAddress).filter((a): a is string => !!a);
-  const creations = creationLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  const creations = windowLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  /** M3: room codes tried in vain, per address group. */
+  const guesses = windowLimiter(config.roomGuessesPerMinute ?? SERVER_LIMITS.roomGuessesPerMinute);
+  /** M2: who made each private room still open (its address group; none for loopback). */
+  const owners = new Map<Room, string>();
+  const roomsPerAddress = config.roomsPerAddress ?? SERVER_LIMITS.roomsPerAddress;
   const ipHeader = config.clientIpHeader?.trim().toLowerCase() || null;
   /** The player's address: from the trusted proxy's header when configured (and sane), else the socket's. */
   const clientAddress = (req: IncomingMessage): string => {
@@ -286,22 +302,28 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     for (const c of members.get(room) ?? []) c.send(data);
   };
   /** The room a connection asked for (by the query of its URL): the open room, a known room, or a new one. */
-  const roomFor = (req: IncomingMessage, from: string): { room: Room } | { code: number; why: string } => {
+  const roomFor = (req: IncomingMessage, from: string, group: string | null): { room: Room } | { code: number; why: string } => {
     const q = new URL(req.url ?? '/', 'http://x').searchParams;
     if (q.has('create')) {
-      const key = clientAddress(req);
+      // Per address group: an IPv6 /64 is one (rotating through it makes no more rooms).
+      const key = group ?? addressGroup(clientAddress(req));
+      if (group !== null && [...owners.values()].filter((g) => g === group).length >= roomsPerAddress) return { code: 4003, why: 'too many open games from your network' };
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
       // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
       // M11A: `arena=<id>` picks the arena (unknown: the classic island); `rotate=1` moves to another after each match.
       const room = rooms.create({ listed: q.get('public') === '1', arena: arenaById(q.get('arena')) ?? undefined, rotate: q.get('rotate') === '1' });
       if (!room) return { code: 4003, why: 'room limit reached' };
+      if (group !== null) owners.set(room, group);
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
       log(`room ${room.id} created by ${from} (${room.listed ? 'listed' : 'unlisted'}) · ${rooms.size} rooms`);
       return { room };
     }
     if (!q.has('room')) return { room: rooms.open };
+    // M3: codes tried in vain are counted per address; past the limit, joining by code waits for the minute to pass.
+    if (group !== null && guesses.full(group)) return { code: 4003, why: 'too many room codes tried, wait a minute' };
     const room = rooms.get(q.get('room'));
+    if (!room && group !== null) guesses.add(group);
     return room ? { room } : { code: 4004, why: 'no such room' };
   };
 
@@ -352,7 +374,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       ws.close(1013, 'network full: too many connections from your network');
       return;
     }
-    const target = roomFor(req, from);
+    const target = roomFor(req, from, group);
     if ('code' in target) {
       stats.refused += 1;
       log(`refused ${from}: ${target.why}`);
@@ -383,6 +405,17 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     let warnedMalformed = false;
     let lastChallenge = -Infinity;
     let lastRooms = -Infinity;
+    /** M1: when this connection's look was last applied, and the newest one waiting (the latest wins). */
+    let lastLook = -Infinity;
+    let waitingLook: { form: LookDeclaration | null } | null = null;
+    let lookTimer: ReturnType<typeof setTimeout> | null = null;
+    const lookEveryMs = config.lookEveryMs ?? SERVER_LIMITS.lookEveryMs;
+    const applyLook = (form: LookDeclaration | null) => {
+      lastLook = performance.now();
+      const r = host.setLook(id, form);
+      client.send(JSON.stringify(r.ok ? { t: 'look', ok: true } : { t: 'look', ok: false, reason: r.reason }));
+      if (r.ok && r.changed) sendRoster(room);
+    };
     // The address a proof must name: the configured public one(s), or the one this connection came in on.
     const pathname = new URL(req.url ?? '/', 'http://x').pathname;
     const addresses = configuredAddresses.length ? configuredAddresses : [authAddress(`ws://${req.headers.host ?? ''}${pathname}`)].filter((a): a is string => !!a);
@@ -438,10 +471,20 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         return;
       }
       // M9C: the look of this connection's own fighter; the host binds it to the proven identity.
+      // M1: at most one look (and so one roster to the room) per `lookEveryMs`; a newer one meanwhile replaces the waiting one.
       if (msg.t === 'look') {
-        const r = host.setLook(id, msg.form);
-        client.send(JSON.stringify(r.ok ? { t: 'look', ok: true } : { t: 'look', ok: false, reason: r.reason }));
-        if (r.ok && r.changed) sendRoster(room);
+        const wait = lastLook + lookEveryMs - performance.now();
+        if (wait <= 0 && !lookTimer) return applyLook(msg.form);
+        waitingLook = { form: msg.form };
+        lookTimer ??= setTimeout(
+          () => {
+            lookTimer = null;
+            const next = waitingLook;
+            waitingLook = null;
+            if (next && clients.has(ws)) applyLook(next.form);
+          },
+          Math.max(0, wait),
+        );
         return;
       }
       if (msg.t !== 'auth') return;
@@ -494,6 +537,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     ws.on('close', () => {
       // At once, not after the simulated lag: the slot stops taking this connection's input now.
       if (!clients.delete(ws)) return;
+      if (lookTimer) clearTimeout(lookTimer);
       stats.clients = clients.size;
       const slot = host.slot(id);
       host.disconnect(id);
@@ -531,6 +575,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     for (const id of rooms.reap()) {
       const room = [...members.keys()].find((r) => r.id === id);
       if (room) members.delete(room);
+      for (const r of owners.keys()) if (r.id === id) owners.delete(r);
       stats.roomsClosed += 1;
       log(`room ${id} closed (empty for ${Math.round(rooms.graceMs / 1000)} s) · ${rooms.size} rooms`);
     }
@@ -624,20 +669,26 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   });
 }
 
-/** Room creations per source address: at most `perMinute` in any minute, bounded memory. */
-function creationLimiter(perMinute: number) {
+/** Events per key (an address group) in any minute: room creations, room codes tried in vain. Bounded memory. */
+function windowLimiter(perMinute: number) {
   const seen = new Map<string, number[]>();
+  const recent = (key: string, t: number) => (seen.get(key) ?? []).filter((x) => t - x < 60_000);
   return {
-    allow(key: string) {
+    /** Whether `key` has had `perMinute` events in the last minute. */
+    full(key: string) {
+      return recent(key, Date.now()).length >= perMinute;
+    },
+    /** Count one event for `key`. */
+    add(key: string) {
       const t = Date.now();
-      const recent = (seen.get(key) ?? []).filter((x) => t - x < 60_000);
       if (seen.size > 1024) for (const [k, v] of seen) if (!v.some((x) => t - x < 60_000)) seen.delete(k);
-      if (recent.length >= perMinute) {
-        seen.set(key, recent);
-        return false;
-      }
-      recent.push(t);
-      seen.set(key, recent);
+      // Never more than a minute's worth kept per key.
+      seen.set(key, [...recent(key, t), t].slice(-perMinute));
+    },
+    /** An event for `key` if it is under the limit (counted), else false. */
+    allow(key: string) {
+      if (this.full(key)) return false;
+      this.add(key);
       return true;
     },
   };

@@ -86,3 +86,16 @@ describe('servers a page cannot play with (M10)', () => {
     expect(statusLine(r, NaN)).toMatch(/refused/);
   });
 });
+
+describe('the room limits as a player hears them (security audit M2, M3)', () => {
+  it('too many codes tried, and too many games open from one network, are told apart from a busy server', () => {
+    const codes = onClose(initialConnection('x', 'A7F2'), 4003, 'too many room codes tried, wait a minute', 0);
+    expect(codes.phase).toBe('refused');
+    expect(codes.retryAt).toBe(Infinity);
+    expect(words(codes, 0)?.title).toBe('Too many room codes tried');
+    const open = onClose(initialConnection('x'), 4003, 'too many open games from your network', 0);
+    expect(words(open, 0)?.title).toBe('Your network already has games open');
+    expect(words(onClose(initialConnection('x'), 4003, 'too many new rooms, wait a minute', 0), 0)?.detail).toMatch(/Too many new games/);
+    expect(words(onClose(initialConnection('x'), 4003, 'room limit reached', 0), 0)?.detail).toMatch(/as many games as it can/);
+  });
+});
