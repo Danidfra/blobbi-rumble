@@ -7,9 +7,19 @@
  */
 import type { LobbyCommand, LobbyMessage, LobbyRefusalReason } from '../net/protocol';
 import type { MatchSnapshot } from '../sim/snapshot';
+import { isSocialSpace } from '../arena/lobbySpace';
 
 /** Whether the match is live for this page's prediction and input: always in a continuous room, only in play in a lobby room. */
 export const lifecyclePlays = (lobby: LobbyMessage | null) => !lobby || lobby.phase === 'playing';
+
+/** L4: whether this page's fighter moves now: in play, and on the social lobby's plaza (the space the newest state names). */
+export const movementLive = (lobby: LobbyMessage | null, space: unknown) => lifecyclePlays(lobby) || isSocialSpace(space);
+
+/** L4: the marks over a seat's Blobbi in the lobby: the owner's star before the name, a tick after it once ready. */
+export function tagMarks(lobby: LobbyMessage | null, seat: string): { before: string; after: string } {
+  if (!lobby || (lobby.phase !== 'lobby' && lobby.phase !== 'countdown')) return { before: '', after: '' };
+  return { before: lobby.owner === seat ? '★ ' : '', after: lobby.ready.includes(seat) ? ' ✓' : '' };
+}
 
 /**
  * L3: the fighters to draw in a lobby room before its match: only the next

@@ -139,6 +139,20 @@ describe('the buffer', () => {
     expect(buf.newest?.tick).toBe(9);
   });
 
+  it('never blends across a change of space (the plaza and an arena, L4) or of lineup: the buffer starts over', () => {
+    const buf = new SnapshotBuffer();
+    for (let i = 1; i <= 6; i++) buf.push(snap(i * 3, [fighter('A', i * 0.1)], { arena: 'blobbi-plaza', orbs: [] }), (i * 3) / 60 + 0.03);
+    expect(buf.size).toBe(6);
+    buf.push(snap(21, [fighter('A', 5)]), 21 / 60 + 0.03);
+    expect(buf.size).toBe(1);
+    const s = buf.sample(21 / 60 + 0.2)!;
+    expect(s.snapshot.arena).toBe('floating-islands-classic');
+    expect(s.snapshot.orbs).toHaveLength(1);
+    expect(s.snapshot.fighters[0].position.x).toBeCloseTo(5, 5);
+    buf.push(snap(24, [fighter('A', 5), fighter('B', 1)]), 24 / 60 + 0.03);
+    expect(buf.size).toBe(1);
+  });
+
   it('draws the moment `delay` behind the server, between the two states around it, with states to spare', () => {
     const buf = new SnapshotBuffer();
     fill(buf, 20);

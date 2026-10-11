@@ -350,7 +350,11 @@ export class FighterView {
   dispose() {
     if (this.shadows) for (const m of this.blobbi.meshes) this.shadows.removeShadowCaster(m);
     this.blobbi.dispose();
-    for (const ring of this.rings) ring.dispose();
+    // The punch and grab rings' own materials go with them (L4: a view made and dropped every match must leave nothing).
+    for (const ring of this.rings) {
+      ring.material?.dispose();
+      ring.dispose();
+    }
     this.powerRing.dispose();
     this.powerRingMat.dispose();
     this.gripBar.dispose();

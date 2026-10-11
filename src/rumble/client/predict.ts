@@ -25,6 +25,11 @@
  *      between, take it but draw the difference as an offset that decays at
  *      `correctionRate`, so the correction is seen as a quick glide.
  *
+ * TERRAIN (L4): the floor the model stands on is the classic island's
+ * (as it always was), or, on the social lobby's plaza, the plaza: one flat
+ * floor inside a fence the model also knows, so walking into it stops
+ * there as the server's body does, instead of being pulled back.
+ *
  * While the server has the fighter in its hands (tumbling, recovering,
  * stunned, held, out of the round, between rounds) there is nothing to
  * predict: it is drawn where the interpolated authority puts it, and the
@@ -65,17 +70,28 @@ export interface Body {
   yaw: number;
 }
 
-/** What the server's state says about how the fighter may move now. */
+/** L4: where the model stands: what counts as floor, and where walls stop a body (if anywhere). */
+export interface Terrain {
+  onFloor(p: { x: number; z: number }, inset: number): boolean;
+  /** Keep a body's centre where the walls let it be (null: no walls). */
+  clamp: ((p: { x: number; z: number }) => { x: number; z: number }) | null;
+}
+
+/** The classic island: the floor the model has always known, and no walls. */
+export const CLASSIC_TERRAIN: Terrain = Object.freeze({ onFloor: (p: { x: number; z: number }, inset: number) => onFloor(p, inset), clamp: null });
+
+/** What the server's state says about how the fighter may move now, and (L4) where it stands. */
 export interface Allowance {
   powerLevel: number;
   carrying: boolean;
+  terrain?: Terrain;
 }
 
 const STAND_Y = RUMBLE_BODY.capsuleCenterY;
 
 /** Whether the floor is under this centre (within the footprint) and the body is down on it. */
-export function supported(b: Pick<Body, 'x' | 'y' | 'z'>, t: PredictTuning = PREDICT): boolean {
-  return b.y <= STAND_Y + 1e-3 && onFloor({ x: b.x, z: b.z }, -t.footprint);
+export function supported(b: Pick<Body, 'x' | 'y' | 'z'>, t: PredictTuning = PREDICT, terrain: Terrain = CLASSIC_TERRAIN): boolean {
+  return b.y <= STAND_Y + 1e-3 && terrain.onFloor({ x: b.x, z: b.z }, -t.footprint);
 }
 
 /**
@@ -89,7 +105,8 @@ export function stepBody(b: Body, intent: PlayerIntent, dt: number, allow: Allow
   const k = speedMultiplier(allow.powerLevel);
   // The server's carrier rule (hotfix): a carrier walks at the carry share of its walk speed, and never runs.
   const p = carrierGait({ ...p0, walkSpeed: p0.walkSpeed * k, runSpeed: p0.runSpeed * k }, allow.carrying, COMBAT.carrySpeed);
-  const grounded = supported(b);
+  const terrain = allow.terrain ?? CLASSIC_TERRAIN;
+  const grounded = supported(b, PREDICT, terrain);
   const s = steer(b.vx, b.vz, { ...carrierIntent(intent, allow.carrying), jump: intent.jump && !allow.carrying }, grounded, dt, p);
   let vx = b.vx + s.dvx;
   let vz = b.vz + s.dvz;
@@ -108,10 +125,18 @@ export function stepBody(b: Body, intent: PlayerIntent, dt: number, allow: Allow
   vz *= damp;
   vy *= damp;
   let y = b.y + vy * dt;
-  const x = b.x + vx * dt;
-  const z = b.z + vz * dt;
+  let x = b.x + vx * dt;
+  let z = b.z + vz * dt;
+  // L4: a wall stops the body where it stands against it, and the speed into it.
+  if (terrain.clamp) {
+    const c = terrain.clamp({ x, z });
+    if (c.x !== x) vx = 0;
+    if (c.z !== z) vz = 0;
+    x = c.x;
+    z = c.z;
+  }
   // The floor: a body over it does not sink through.
-  if (y < STAND_Y && onFloor({ x, z }, -PREDICT.footprint) && b.y >= STAND_Y - 0.05) {
+  if (y < STAND_Y && terrain.onFloor({ x, z }, -PREDICT.footprint) && b.y >= STAND_Y - 0.05) {
     y = STAND_Y;
     vy = 0;
   }
@@ -180,6 +205,13 @@ export class LocalPredictor {
   /** Set by the frame that predicted a jump, for the jump animation. */
   jumpedThisFrame = false;
   private allow: Allowance = { powerLevel: 0, carrying: false };
+  /** L4: the floor the model stands on (the page sets it from the space the snapshot names). */
+  private terrain: Terrain = CLASSIC_TERRAIN;
+  setTerrain(t: Terrain) {
+    if (t === this.terrain) return;
+    this.terrain = t;
+    this.allow = { ...this.allow, terrain: t };
+  }
 
   constructor(private readonly t: PredictTuning = PREDICT) {}
 
@@ -215,7 +247,7 @@ export class LocalPredictor {
   reconcile(auth: FighterSnapshot, tick: number, tickDt: number, ack: number, ackTick: number, allowed: boolean): Reconciliation {
     // What the server has applied is history no longer needed.
     while (this.history.length > 0 && this.history[0].seq < ack) this.history.shift();
-    this.allow = { powerLevel: auth.powerLevel, carrying: auth.holding !== null };
+    this.allow = { powerLevel: auth.powerLevel, carrying: auth.holding !== null, terrain: this.terrain };
     const pending = this.history.filter((f) => f.seq > ack).length;
     this.metrics.pending = pending;
     if (!allowed) {

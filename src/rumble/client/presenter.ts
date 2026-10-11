@@ -23,7 +23,9 @@ import type { MatchSnapshot } from '../sim/snapshot';
 import { CAMERA, COMBAT, ORBS, ROUND, SWEEPER } from '../tuning';
 import { createArena } from '../view/arenaView';
 import { createWorld } from '../view/world';
-import { applyCamera, followCamera, fovFor, framed, wantedCamera, type CameraPose } from '../view/camera';
+import { FOLLOW, applyCamera, followCamera, followPose, fovFor, framed, wantedCamera, type CameraPose } from '../view/camera';
+import { createSocialView, type SocialArena } from '../view/socialView';
+import { spaceById } from '../arena/lobbySpace';
 import { Camera } from '@babylonjs/core/Cameras/camera';
 import { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
 import { easeYaw } from '../control/look';
@@ -55,6 +57,8 @@ export interface PresentedFighter {
 
 /** What the driving mode adds to a frame's HUD. */
 export interface HudInfo {
+  /** L4: on the social lobby's plaza, the fighter the camera follows (this page's own; null or absent: the overview, as a watcher sees it). */
+  follow?: string | null;
   /** Lines above the match's (connection, who you are, network numbers). */
   status?: string[];
   /** Lines appended at the end (network diagnostics). */
@@ -93,6 +97,8 @@ export class RumblePresenter {
   /** M11A: the arena drawn, and its definition; rebuilt when the snapshot names another. */
   private arenaView: Arena;
   private def: ArenaDef;
+  /** L4: what the plaza's sign says. */
+  private sign = 'Blobbi Rumble';
   private cameraPose: CameraPose | null = null;
   /** M11.1: the cue under the action for the people at this screen (grabbed: how to break free; hanging; out: how to throw), shown whatever the text HUD does. */
   private readonly cue: HTMLElement;
@@ -106,6 +112,8 @@ export class RumblePresenter {
   /** M12.1: touch play turns the camera round the fight by dragging (its target), eased; desktop keeps Babylon's own mouse orbit. */
   private touchLayout = false;
   private yawTarget = 0;
+  /** L4: the fighter the plaza's camera follows (from the last frame's info). */
+  private followId: string | null = null;
   private yawNow = 0;
 
   constructor(
@@ -128,8 +136,8 @@ export class RumblePresenter {
     cam.upperRadiusLimit = CAMERA.maxRadius;
     cam.alpha = CAMERA.alpha;
     cam.beta = CAMERA.beta;
-    this.def = arenaById(arenaId) ?? CLASSIC;
-    this.arenaView = createArena(this.scene, this.env.shadows, this.def);
+    this.def = spaceById(arenaId) ?? CLASSIC;
+    this.arenaView = this.buildView(this.def);
     this.debug = new PhysicsDebug(this.scene, hud, this.def);
     this.defaults = new Map(fighters.map((f) => [f.id, seedFromLabel(f.identity)]));
     this.views = fighters.map((f) => new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows));
@@ -219,8 +227,17 @@ export class RumblePresenter {
     if (Math.abs(this.yawTarget - this.yawNow) > Math.PI) this.yawNow += Math.sign(this.yawTarget - this.yawNow) * twoPi;
   }
 
-  /** M12.1: back to the arena's own view. */
+  /** M12.1: back to the arena's own view; L4: on the plaza, behind this page's own Blobbi (the way it faces). */
   recenterView() {
+    const me = this.def.theme === 'social' && this.followId ? this.previous?.fighters.find((f) => f.id === this.followId) : undefined;
+    if (me) {
+      // The orbit angle that looks the way the Blobbi faces: the camera behind it.
+      const alpha = Math.atan2(-Math.cos(me.yaw), -Math.sin(me.yaw));
+      const twoPi = Math.PI * 2;
+      this.yawTarget = ((((alpha - CAMERA.alpha + Math.PI) % twoPi) + twoPi) % twoPi) - Math.PI;
+      if (Math.abs(this.yawTarget - this.yawNow) > Math.PI) this.yawNow += Math.sign(this.yawTarget - this.yawNow) * twoPi;
+      return;
+    }
     this.yawTarget = 0;
     if (Math.abs(this.yawNow) > Math.PI) this.yawNow -= Math.sign(this.yawNow) * Math.PI * 2;
   }
@@ -278,7 +295,17 @@ export class RumblePresenter {
       height: this.engine.getRenderHeight(),
       fps: this.engine.getFps(),
       shadowMap: this.env.shadows.mapSize,
+      /** L4: what the scene holds now (a check that swapping spaces leaks nothing). */
+      meshes: this.scene.meshes.length,
+      materials: this.scene.materials.length,
+      textures: this.scene.textures.length,
+      shadowCasters: this.env.shadows.getShadowMap()?.renderList?.length ?? 0,
     };
+  }
+
+  /** L4, for scripted checks: what the scene holds, by name (a leak shows as names that keep coming back). */
+  get resources(): { meshes: string[]; materials: string[]; textures: string[] } {
+    return { meshes: this.scene.meshes.map((m) => m.name), materials: this.scene.materials.map((m) => m.name), textures: this.scene.textures.map((t) => t.name) };
   }
 
   /** The camera's yaw, for camera-relative keys. */
@@ -434,17 +461,32 @@ export class RumblePresenter {
     this.cameraPose = null;
   }
 
-  /** M11A: the arena the snapshot names: rebuilt when it changes (a rotation, another room). */
+  /** The view of a space: an arena's, or (L4) the social lobby's plaza, drawn its own way. */
+  private buildView(def: ArenaDef): Arena {
+    const view = def.theme === 'social' ? createSocialView(this.scene) : createArena(this.scene, this.env.shadows, def);
+    if (def.theme === 'social') (view as SocialArena).setSign(this.sign);
+    // L4: the plaza's camera stays high enough to pass over its decoration; an arena's as before.
+    this.env.camera.upperBetaLimit = def.theme === 'social' ? FOLLOW.maxBeta : Math.PI / 2 - 0.1;
+    return view;
+  }
+
+  /** L4: the plaza's sign (the next match's arena); kept for when the plaza is drawn again. */
+  setSign(text: string) {
+    this.sign = text;
+    if (this.def.theme === 'social') (this.arenaView as SocialArena).setSign(text);
+  }
+
+  /** M11A: the arena the snapshot names: rebuilt when it changes (a rotation, another room, L4: the plaza and back). */
   private syncArena(s: MatchSnapshot) {
     if (s.arena === this.def.id) return;
-    const def = arenaById(s.arena);
+    const def = spaceById(s.arena);
     if (!def) return;
     this.arenaView.dispose();
     this.sweeperView?.dispose();
     this.sweeperView = null;
     this.orbView.dispose();
     this.def = def;
-    this.arenaView = createArena(this.scene, this.env.shadows, def);
+    this.arenaView = this.buildView(def);
     this.orbView = new OrbView(this.scene, s.orbs, this.env.shadows);
     if (def.sweeper) this.sweeperView = new SweeperView(this.scene, this.env.shadows, themeFor(def.theme), def.sweeper);
     this.debug.build(def);
@@ -452,6 +494,8 @@ export class RumblePresenter {
     this.sweeperView?.showDebug(this.debug.on);
     this.env.camera.upperRadiusLimit = def.camera.maxRadius;
     this.cameraPose = null;
+    // Nothing is compared across a change of space (L4: the plaza has no orbs, an arena has its own): the next frame is a fresh one.
+    this.previous = null;
   }
 
   /** The arena in play, by name. */
@@ -488,12 +532,16 @@ export class RumblePresenter {
     this.debug.sync(s);
     if (s.phase === 'matchOver' && s.matchWinner) this.message = `${s.matchWinner} WINS THE MATCH · ${info.matchOverHint}`;
 
+    this.followId = info.follow ?? null;
+    // L4: on the plaza the camera follows this page's own Blobbi (third person); a watcher, and every arena, keep the shared framing.
+    const followed = this.def.theme === 'social' && info.follow ? s.fighters.find((f) => f.id === info.follow) : undefined;
     // The camera frames whoever is still in the round and on the arena.
     const wanted = this.subjects(s);
     // M11C: an arena with lower platforms and ledges keeps a body in view further down (a hanger is a subject too).
     const camRules = { ...CAMERA, bounds: this.def.camera.bounds, maxRadius: this.def.camera.maxRadius, dropBelow: this.def.camera.dropBelow ?? CAMERA.dropBelow };
-    if (!this.cameraPose) this.cameraPose = wantedCamera(wanted, camRules);
-    else if (wanted.length > 0) this.cameraPose = followCamera(this.cameraPose, wantedCamera(wanted, camRules), dt);
+    const goal = followed ? followPose({ x: followed.position.x, y: followed.position.y - RUMBLE_BODY.capsuleCenterY, z: followed.position.z }, this.def.camera.bounds) : wanted.length > 0 ? wantedCamera(wanted, camRules) : null;
+    if (!this.cameraPose) this.cameraPose = goal ?? wantedCamera(wanted, camRules);
+    else if (goal) this.cameraPose = followCamera(this.cameraPose, goal, dt);
     applyCamera(this.env.camera, this.cameraPose);
     if (this.touchLayout) {
       this.yawNow = easeYaw(this.yawNow, this.yawTarget, dt);
@@ -567,7 +615,7 @@ export class RumblePresenter {
       }
     });
     s.orbs.forEach((o, i) => {
-      if (prev.orbs[i].active && !o.active) this.orbView.taken(i);
+      if (prev.orbs[i]?.active && !o.active) this.orbView.taken(i);
     });
     // M11F: a peel that went before its time was slipped on: a burst where it lay.
     for (const b of prev.bananas) {

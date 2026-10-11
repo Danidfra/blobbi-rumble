@@ -446,6 +446,9 @@ function bridgePieces(scene: Scene, r: Platform, t: ArenaTheme, plank: StandardM
 }
 
 export function createArena(scene: Scene, shadows?: ShadowGenerator, def: ArenaDef = CLASSIC): Arena {
+  // L4: everything this view makes (its decoration's and hazards' materials, every texture) is found by what the scene gained, and disposed with it.
+  const hadMaterials = new Set(scene.materials);
+  const hadTextures = new Set(scene.textures);
   const t = themeFor(def.theme);
   const disposables: { dispose(): void }[] = [];
   const slabs: Mesh[] = [];
@@ -610,6 +613,7 @@ export function createArena(scene: Scene, shadows?: ShadowGenerator, def: ArenaD
   if (def.id === CLASSIC.id) disposables.push(...decoration(scene, t));
   void onFloor;
 
+  const made = { materials: scene.materials.filter((m) => !hadMaterials.has(m)), textures: scene.textures.filter((x) => !hadTextures.has(x)) };
   let shakeSeed = 0;
   return {
     slabs,
@@ -634,6 +638,8 @@ export function createArena(scene: Scene, shadows?: ShadowGenerator, def: ArenaD
     dispose: () => {
       for (const p of pieces) p.node.dispose();
       for (const d of disposables) d.dispose();
+      for (const m of made.materials) if (!m.isFrozen) m.dispose(false, true);
+      for (const tex of made.textures) tex.dispose();
     },
   };
 }

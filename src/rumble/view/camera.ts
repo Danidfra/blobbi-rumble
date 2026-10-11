@@ -80,6 +80,30 @@ export function followCamera(current: CameraPose, wanted: CameraPose, dt: number
   };
 }
 
+/** L4: the social lobby's camera numbers: a third-person follow, kept above the plaza's low decoration. */
+export const FOLLOW = Object.freeze({
+  /** Distance from the followed Blobbi, metres. */
+  radius: 6.2,
+  /** The look point above its feet, metres. */
+  lift: 0.75,
+  /** The camera never comes lower than this angle from straight above (radians): high enough to clear the hedge, the lanterns and the arch. */
+  maxBeta: 1.12,
+  /** How far the look point may lead toward the plaza's middle, metres (the walls stay in view without hugging them). */
+  inset: 0.4,
+});
+
+/**
+ * L4: the social lobby's camera: it follows one Blobbi (the page's own) at
+ * a set distance, its look point over the plaza (just inside the fence),
+ * the angle round it the player's own (mouse or finger; the presenter
+ * keeps it). Pure.
+ */
+export function followPose(feet: Feet, bounds: { x: number; z: number }, f = FOLLOW): CameraPose {
+  const bx = Math.max(0, bounds.x - f.inset);
+  const bz = Math.max(0, bounds.z - f.inset);
+  return { x: Math.max(-bx, Math.min(bx, feet.x)), y: Math.max(0, feet.y) + f.lift, z: Math.max(-bz, Math.min(bz, feet.z)), radius: f.radius };
+}
+
 export function applyCamera(camera: ArcRotateCamera, pose: CameraPose) {
   camera.target.set(pose.x, pose.y, pose.z);
   camera.radius = pose.radius;

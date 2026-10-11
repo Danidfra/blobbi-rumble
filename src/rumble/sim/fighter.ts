@@ -18,6 +18,7 @@ import { carrierGait, carrierIntent, steer, type Contest } from '../control/move
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
+import type { FighterSnapshot } from './snapshot';
 import { FALL_RULES, initialFallState, updateFall, type FallRules, type FallState } from '../respawn';
 import { COMBAT, LEDGE } from '../tuning';
 import { catchLedge, climbPoint, climbTarget, createLedgeState, dropLedge, hangAnchor, onLedge, resetLedgeState, restLedge, tickLedge, type LedgeOutcome, type LedgeState } from './ledge';
@@ -413,4 +414,46 @@ export class FighterSim {
   dispose() {
     this.body.dispose();
   }
+}
+
+/** What the space around a fighter says about it (the match's rounds and holds; the plaza's nothing). */
+export interface FighterContext {
+  alive: boolean;
+  score: number;
+  holding: PlayerId | null;
+  heldBy: PlayerId | null;
+  touching: PlayerId | null;
+  bananas: { left: number; cooldown: number };
+}
+
+/** L4: one fighter as plain data, the same for the match and the social lobby (`social.ts`), so a client draws both alike. */
+export function fighterSnapshot(f: FighterSim, x: FighterContext): FighterSnapshot {
+  const p = f.body.position();
+  const q = f.body.rotation();
+  const v = f.body.velocity();
+  const c = f.combat;
+  return {
+    id: f.id,
+    position: { x: p.x, y: p.y, z: p.z },
+    rotation: { x: q.x, y: q.y, z: q.z, w: q.w },
+    upright: f.body.isUpright(),
+    yaw: f.yaw,
+    velocity: { x: v.x, y: v.y, z: v.z },
+    grounded: f.grounded,
+    alive: x.alive,
+    eliminated: f.eliminated,
+    score: x.score,
+    powerLevel: f.powerLevel,
+    combat: { punchTime: c.punchTime, punchCooldown: c.punchCooldown, stun: c.stun, tumble: c.tumble, recovering: c.recovering, holdTime: c.holding, holdAngle: c.holdAngle, struggle: c.struggle, grabImmune: c.grabImmune },
+    holding: x.holding,
+    heldBy: x.heldBy,
+    touching: x.touching,
+    tilt: f.tilt,
+    lastImpact: f.lastImpact,
+    ledge: f.ledge.hold ? { phase: f.ledge.hold.phase, x: f.ledge.hold.ledge.x, y: f.ledge.hold.ledge.y, z: f.ledge.hold.ledge.z, inX: f.ledge.hold.ledge.inX, inZ: f.ledge.hold.ledge.inZ, grip: +f.ledge.endurance.toFixed(3) } : null,
+    bananas: x.bananas,
+    hits: f.hits,
+    jumps: f.jumps,
+    escapes: f.escapes,
+  };
 }

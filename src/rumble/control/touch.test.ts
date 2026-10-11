@@ -404,3 +404,18 @@ describe('the buttons in each moment', () => {
     }
   });
 });
+
+describe('touch on the plaza (L4)', () => {
+  const me = { eliminated: false, heldBy: null, ledge: null, holding: null } as unknown as FighterSnapshot;
+  it('a fighter on the plaza has the walking context; a watcher waits', () => {
+    expect(touchContext(me, 'playing', true)).toBe('social');
+    expect(touchContext(null, 'playing', true)).toBe('waiting');
+    expect(touchContext(me, 'playing')).toBe('fight');
+  });
+  it('Jump only: the combat buttons are not shown at all', () => {
+    const b = touchButtons('social');
+    expect(b.jump).toMatchObject({ role: 'jump', visible: true, active: true });
+    expect(b.punch.visible).toBe(false);
+    expect(b.grab.visible).toBe(false);
+  });
+});

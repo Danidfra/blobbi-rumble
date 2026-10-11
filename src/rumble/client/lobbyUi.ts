@@ -55,6 +55,9 @@ export const LOBBY_CSS = `
   .rs-lobby .hd .code { font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; }
   .rs-lobby .hd .fold { margin-left: auto; }
   .rs-lobby.folded .body { display: none; }
+  .rs-lobby.folded { width: auto; max-width: calc(100vw - 20px); }
+  .rs-lobby .hd .mini { white-space: nowrap; }
+  .rs-lobby.folded .hd .rs-btn.go { padding: 6px 12px; }
   .rs-lobby h4 { margin: 10px 0 4px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
   .rs-seat { display: flex; align-items: center; gap: 8px; padding: 4px 6px; margin: 2px 0; border-radius: 10px; }
   .rs-seat.you { background: #f4f7f2; box-shadow: inset 0 0 0 1px #cfe6d7; }
@@ -136,7 +139,8 @@ export function createLobbyUi(a: LobbyUiActions, deps: LobbyUiDeps) {
   const results = el('div', 'rs-card rs-results');
   const wait = el('div', 'rs-wait', 'Waiting for next match');
   for (const e of [card, count, results, wait]) e.style.display = 'none';
-  let folded = false;
+  /** Folded to its header (null: not decided yet: the first show folds it on a touch screen, L4). */
+  let folded: boolean | null = null;
   let lastCard = '';
   let lastResults = '';
   let lastCount = '';
@@ -184,11 +188,29 @@ export function createLobbyUi(a: LobbyUiActions, deps: LobbyUiDeps) {
     return box;
   };
 
+  /** Ready and the owner's Start (shown in the card's foot, and in its header when folded). */
+  const actionButtons = (v: LobbyView) => {
+    const out: HTMLButtonElement[] = [];
+    if (v.ready.shown) out.push(button(v.ready.label, () => a.ready(v.ready.next), `rs-btn${v.ready.next ? ' go' : ''}`));
+    if (v.start.shown) {
+      const b = button(v.start.label, a.start, 'rs-btn go');
+      b.disabled = v.start.disabled;
+      if (v.start.reason) b.title = v.start.reason;
+      out.push(b);
+    }
+    return out;
+  };
+
   const renderCard = (i: LobbyUiInput) => {
     const v = i.view;
     const hd = el('div', 'hd');
     hd.append(el('span', 'ttl', v.mode === 'countdown' ? 'Starting' : 'Lobby'));
     if (i.room) hd.append(el('span', 'code', i.room));
+    // L4: folded, the header keeps what matters while walking: how many are ready, and Ready / Start.
+    if (folded) {
+      const people = v.seats.filter((x) => x.kind === 'person');
+      hd.append(el('span', 'rs-sub mini', `${people.filter((x) => x.ready === 'ready').length}/${people.length} ready`), ...actionButtons(v));
+    }
     hd.append(button(folded ? '▸' : '▾', () => {
       folded = !folded;
       lastCard = '';
@@ -227,15 +249,9 @@ export function createLobbyUi(a: LobbyUiActions, deps: LobbyUiDeps) {
     foot.append(el('div', 'status', v.status));
     if (v.watching) foot.append(el('div', 'rs-sub', 'You are watching: you get a seat in the next lobby with one free.'));
     const acts = el('div', 'acts');
-    let controls = 0;
-    if (v.ready.shown && ++controls) acts.append(button(v.ready.label, () => a.ready(v.ready.next), `rs-btn${v.ready.next ? ' go' : ''}`));
-    if (v.start.shown && ++controls) {
-      const b = button(v.start.label, a.start, 'rs-btn go');
-      b.disabled = v.start.disabled;
-      if (v.start.reason) b.title = v.start.reason;
-      acts.append(b);
-    }
-    if (controls) foot.append(acts);
+    const buttons = actionButtons(v);
+    acts.append(...buttons);
+    if (buttons.length) foot.append(acts);
     if (v.start.shown && v.start.reason) foot.append(el('div', 'rs-sub', v.start.reason));
     body.append(foot);
     card.className = `rs-card rs-lobby${folded ? ' folded' : ''}`;
@@ -270,6 +286,7 @@ export function createLobbyUi(a: LobbyUiActions, deps: LobbyUiDeps) {
     show(i: LobbyUiInput | null) {
       const v = i?.view;
       const cardOn = !!v && (v.mode === 'lobby' || v.mode === 'countdown');
+      if (cardOn && folded === null) folded = i!.touch;
       const ck = cardOn ? JSON.stringify([v, i!.room, i!.share, i!.verified, i!.touch, folded, v!.countdown === null]) : '';
       // Never rebuilt under a click in progress: only when something changed.
       if (ck !== lastCard) {

@@ -201,10 +201,29 @@ describe('the lobby card (L3)', () => {
     expect(ui.cardOpen).toBe(true);
   });
 
-  it('touch: no key hints in the labels', () => {
+  it('touch: no key hints in the labels; folded by default (L4), the header still offering Ready and Start and saying who is ready', () => {
     const ui = make();
-    ui.show(input({}, { touch: true }));
-    expect(parts(ui).card.button('Ready')).toBeDefined();
+    ui.show(input({ ready: ['P2'] }, { touch: true }));
+    const { card } = parts(ui);
+    expect(card.className).toContain('folded');
+    expect(ui.cardOpen).toBe(false);
+    const hd = card.byClass('hd')[0];
+    expect(hd.textContent).toContain('1/2 ready');
+    hd.button('Ready')!.click();
+    expect(actions.ready).toHaveBeenCalledWith(true);
+    hd.button('Start now')!.click();
+    expect(actions.start).toHaveBeenCalledTimes(1);
+    // Unfolded on demand.
+    hd.button('▸')!.click();
+    ui.show(input({ ready: ['P2'] }, { touch: true }));
+    expect(ui.cardOpen).toBe(true);
+  });
+
+  it('a desktop starts unfolded (L4)', () => {
+    const ui = make();
+    ui.show(input({}));
+    expect(ui.cardOpen).toBe(true);
+    expect(parts(ui).card.className).not.toContain('folded');
   });
 });
 

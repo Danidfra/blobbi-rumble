@@ -50,7 +50,8 @@ export function createArenaBody(scene: Scene, def: ArenaDef): ArenaBody {
     const mesh = MeshBuilder.CreateBox(`arena-${def.id}-${i}`, { width: r.halfWidth * 2, depth: r.halfDepth * 2, height: r.thickness }, scene);
     mesh.position.set(r.x, r.y - r.thickness / 2, r.z);
     mesh.isVisible = false;
-    const friction = r.kind === 'ice' ? ICE_FLOOR_FRICTION : FLOOR_FRICTION;
+    // L4: a wall is slid along, not gripped.
+    const friction = r.kind === 'ice' ? ICE_FLOOR_FRICTION : r.kind === 'wall' ? 0 : FLOOR_FRICTION;
     const aggregate = new PhysicsAggregate(mesh, PhysicsShapeType.BOX, { mass: 0, friction, restitution: 0 }, scene);
     aggregate.shape.filterMembershipMask = LAYER.ground;
     aggregate.shape.filterCollideMask = LAYER.ground | LAYER.character;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { followCamera, framed, wantedCamera } from './camera';
+import { FOLLOW, followCamera, followPose, framed, wantedCamera } from './camera';
+import { PLAZA } from '../arena/lobbySpace';
 import { CAMERA } from '../tuning';
 
 describe('the shared camera', () => {
@@ -64,5 +65,27 @@ describe('the shared camera', () => {
     expect(wide.z).toBe(CAMERA.bounds.z);
     // Nobody to frame: the middle of the arena.
     expect(wantedCamera([])).toMatchObject({ x: 0, z: 0 });
+  });
+});
+
+describe('the plaza’s follow camera (L4)', () => {
+  const bounds = { x: PLAZA.halfWidth, z: PLAZA.halfDepth };
+  it('looks at the followed Blobbi from a set distance, a little above its feet', () => {
+    expect(followPose({ x: 1.5, y: 0, z: -2 }, bounds)).toEqual({ x: 1.5, y: FOLLOW.lift, z: -2, radius: FOLLOW.radius });
+  });
+  it('keeps its look point over the plaza (just inside the fence), never out over the void', () => {
+    const p = followPose({ x: 30, y: -6, z: -30 }, bounds);
+    expect(p.x).toBe(PLAZA.halfWidth - FOLLOW.inset);
+    expect(p.z).toBe(-(PLAZA.halfDepth - FOLLOW.inset));
+    expect(p.y).toBe(FOLLOW.lift);
+  });
+  it('follows smoothly (the shared easing), and stays high enough to pass over the plaza’s decoration', () => {
+    const a = followPose({ x: 0, y: 0, z: 0 }, bounds);
+    const b = followPose({ x: 2, y: 0, z: 0 }, bounds);
+    const eased = followCamera(a, b, 1 / 60);
+    expect(eased.x).toBeGreaterThan(0);
+    expect(eased.x).toBeLessThan(2);
+    // The camera's lowest point over the look point: higher than the arch (2.2 m) and the lanterns (1.6 m) from the follow distance.
+    expect(FOLLOW.radius * Math.cos(FOLLOW.maxBeta) + FOLLOW.lift).toBeGreaterThan(2.6);
   });
 });

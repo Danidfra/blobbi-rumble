@@ -42,7 +42,10 @@ import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServer
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
 import { CONNECTION, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
-import { lifecyclePlays, refusalWords, visibleLineup } from './lobby';
+import { movementLive, refusalWords, tagMarks, visibleLineup } from './lobby';
+import { PLAZA_TERRAIN, isSocialSpace } from '../arena/lobbySpace';
+import { CLASSIC_TERRAIN } from './predict';
+import { arenaById } from '../arena/arenas';
 import { isTyping } from './dom';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
@@ -765,7 +768,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         }
         newest = m.tick;
         // L2: a new lineup (a lobby room's match without bots): a new view of the match, nothing interpolated across it.
-        if (buffer.newest && buffer.newest.players.join() !== m.snapshot.players.join()) {
+        // L4: and a new space (the plaza and an arena, either way): nothing is blended across a swap.
+        if (buffer.newest && (buffer.newest.players.join() !== m.snapshot.players.join() || buffer.newest.arena !== m.snapshot.arena)) {
           buffer = newBuffer();
           predictor.reset();
           players = m.snapshot.players;
@@ -778,9 +782,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         buffer.push(m.snapshot, now);
         // Your fighter: reconcile the prediction with what the server says it did with your inputs.
         const i = you ? m.snapshot.players.indexOf(you) : -1;
+        // L4: the model stands on the space this state names: the plaza's floor and fence, or the arena's.
+        predictor.setTerrain(isSocialSpace(m.snapshot.arena) ? PLAZA_TERRAIN : CLASSIC_TERRAIN);
         if (i >= 0) {
           const f = m.snapshot.fighters[i];
-          const allowed = usePredict && predictable(f, m.snapshot.phase === 'playing') && lifecyclePlays(lobby);
+          const allowed = usePredict && predictable(f, m.snapshot.phase === 'playing') && movementLive(lobby, m.snapshot.arena);
           const r = predictor.reconcile(f, m.tick, 1 / tickHz, m.acks[you!] ?? -1, m.ackTicks?.[you!] ?? m.tick, allowed);
           if (r.kind === 'kept' || r.kind === 'smoothed' || r.kind === 'snapped') errors.add(r.error);
         }
@@ -920,7 +926,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     const carrying = !!me?.holding;
     const move = out ? { x: 0, z: 0, run: false } : carrierIntent({ x: intent.x, z: intent.z, run: intent.run }, carrying);
     // The cosmetic punch starts only when the server's last word says a punch could start.
-    if (intent.punch && meIndex >= 0) {
+    // L4: none on the plaza (the server drops punches there).
+    if (intent.punch && meIndex >= 0 && !isSocialSpace(latestSnap!.arena)) {
       const c: CombatState = combatOf(latestSnap!.fighters[meIndex]);
       if (canAct(c) && c.punchCooldown <= 0 && predictor.predicting) {
         cosmeticPunch = now;
@@ -981,8 +988,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       touchControls.update({
         rotated: !!presenter?.viewTurned,
         // L3: in a lobby room, only while its match is on (nothing moves in the lobby; its card needs the room).
-        visible: conn.phase === 'playing' && !!you && !shell.modalOpen && lifecyclePlays(lobby),
-        context: touchContext(me, latestSnap?.phase ?? 'roundOver'),
+        // L3, L4: in a lobby room while its match is on, and on the plaza (walking; Jump only).
+        visible: conn.phase === 'playing' && !!you && !shell.modalOpen && movementLive(lobby, latestSnap?.arena),
+        context: touchContext(me, latestSnap?.phase ?? 'roundOver', isSocialSpace(latestSnap?.arena)),
         peel: me ? { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: alive >= BANANAS.minAlive } : undefined,
       });
     }
@@ -1054,8 +1062,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       const n = nameFor(id);
       const b = blobbiNameFor(id);
       // The tag: the person's name, and the Blobbi's when their fighter wears one (M9D); the slot label for guests and bots.
-      presenter.setTag(id, n === null ? null : b ? `${clip(n, 12)} · ${clip(b, 10)}` : clip(n, 14));
+      const name = n === null ? null : b ? `${clip(n, 12)} · ${clip(b, 10)}` : clip(n, 14);
+      // L4: in the lobby, the owner's star and a ready tick over the Blobbis.
+      const marks = tagMarks(lobby, id);
+      presenter.setTag(id, marks.before || marks.after ? `${marks.before}${name ?? id}${marks.after}` : name);
     }
+    // L4: the plaza's sign names the next match's arena.
+    if (lobby) presenter.setSign(arenaById(lobby.settings.arena)?.name ?? 'Blobbi Rumble');
     const ack = you ? state.acks[you] : undefined;
     const m = predictor.metrics;
     presenter.present(
@@ -1070,6 +1083,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           return s.players[i] === you ? `YOU · ${who}` : who;
         },
         matchOverHint: 'the next match starts soon',
+        // L4: on the plaza the camera follows this page's own Blobbi (a watcher: the overview).
+        follow: isSocialSpace(s.arena) ? you : null,
         // The text HUD is a developer view now: F4 (or F3).
         textHud: showNet,
         controls: CONTROLS,
@@ -1107,6 +1122,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         return presenter?.renderInfo ?? null;
       },
       measureRender: (n = 60) => presenter?.measureRender(n) ?? null,
+      /** L4: the scene's resources by name, for leak checks across swaps. */
+      get resources() {
+        return presenter?.resources ?? null;
+      },
       setGraphics: (choice: QualityChoice) => {
         quality = choice;
         presenter?.setQuality(choice, deviceHints());

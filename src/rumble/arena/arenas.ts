@@ -24,7 +24,8 @@ import type { Platform } from './geometry';
 import type { SweeperTuning } from './sweeper';
 import { ARENA, type Planar } from './layout';
 
-export type ArenaId = 'floating-islands-classic' | 'floating-islands-skyfall' | 'blobbi-factory' | 'frozen-lake';
+/** L4: `blobbi-plaza` is the social lobby's space (`lobbySpace.ts`): never a combat arena, never in `ARENAS`. */
+export type ArenaId = 'floating-islands-classic' | 'floating-islands-skyfall' | 'blobbi-factory' | 'frozen-lake' | 'blobbi-plaza';
 
 /** How a dynamic platform behaves. Seconds. */
 export type PieceRule =
@@ -65,7 +66,8 @@ export interface ArenaDef {
   id: ArenaId;
   name: string;
   description: string;
-  theme: 'garden' | 'factory' | 'frozen';
+  /** L4: 'social' is the social lobby's look (`view/socialView.ts`), never a combat arena's. */
+  theme: 'garden' | 'factory' | 'frozen' | 'social';
   platforms: readonly Platform[];
   dynamics: readonly Dynamic[];
   conveyors: readonly Conveyor[];

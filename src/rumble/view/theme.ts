@@ -137,6 +137,7 @@ export const FROZEN: ArenaTheme = Object.freeze({
   groundBounce: '#c8e2f3',
 });
 
-export function themeFor(name: 'garden' | 'factory' | 'frozen'): ArenaTheme {
+/** A theme by name (L4: the social lobby draws itself, `view/socialView.ts`; asked for a theme, it is the garden's). */
+export function themeFor(name: 'garden' | 'factory' | 'frozen' | 'social'): ArenaTheme {
   return name === 'factory' ? FACTORY : name === 'frozen' ? FROZEN : GARDEN;
 }

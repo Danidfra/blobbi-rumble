@@ -346,7 +346,7 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 
 ### 10a. Lobby rooms and the match lifecycle (L1)
 
-**Status: L1 (lifecycle core), L2 (room controls) and L3 (lobby and results interface) implemented, awaiting manual validation.** Approved 2026-10-11 after
+**Status: L1 (lifecycle core), L2 (room controls), L3 (lobby and results interface) and L4 (the social lobby, Blobbi Plaza) implemented, awaiting manual validation.** Approved 2026-10-11 after
 the lobby architecture audit. The **OPEN room keeps continuous drop-in
 play**; private rooms made by current clients get a lobby.
 
@@ -450,6 +450,40 @@ message and roster; `client/lobbyUi.ts`: the DOM), not a separate app.
 
 A lobby room's creation no longer opens the session panel (the card has
 the code, link and invitations); an older continuous room's still does.
+
+#### The social lobby: Blobbi Plaza (L4)
+
+**Status: L4 implemented, awaiting manual validation.** A lobby room's
+lobby is no longer an overlay on a standing-still arena: it is its own
+small, walkable 3D space, Blobbi Plaza.
+
+**One space at a time per room** (`RumbleHost`): the plaza
+(`sim/social.ts`, `SocialSpace`) in the lobby and the countdown until its
+swap; the match (`RumbleMatch`) from the countdown's swap tick to the end
+of the results; at each swap the old physics world is disposed and the new
+space carries the tick and clock on. A countdown cancelled after its swap
+returns to a new plaza at once (L6 may announce that return too). The
+OPEN room is untouched.
+
+| | |
+| --- | --- |
+| **Space** | `arena/lobbySpace.ts`: the plaza as data in an arena's shape (`blobbi-plaza`, theme `social`), never in `ARENAS`: never chosen, rotated to or listed. One flat 13 × 10 m floor inside a fence of four walls (`kind: 'wall'`, 1.6 m, frictionless) higher than any jump; the decoration stands outside the fence, in the view only. |
+| **Movement** | Each avatar is a `FighterSim` stepped as the match steps locomotion (`update`, `settle`, `turn`, fall line): the same walk, run, turn and jump. Punch, grab and throw requests are dropped on arrival; no pushing contest (bodies only bump); no score, elimination, rounds, orbs or hazards. Below the fall line an avatar returns to its seat's spot after 0.8 s. |
+| **Avatars** | The lineup: seated people, and every other seat when bots are on. Watchers keep watching (no avatar; the design leaves room for walking watchers later). Avatars are added and removed without rebuilding anything. |
+| **Bots** | `control/wander.ts`: a deterministic stroll (seeded per seat): walk to a spot inside the fence, idle, walk again; never run, jump or fight; stop short of people and step away from anyone closer than 0.9 m. Bots are always ready. |
+| **Sync** | No new message: the same input intents and 20 Hz states over the room's socket. The state names the plaza as its arena; the page predicts on the plaza's floor and fence (`PLAZA_TERRAIN`), so walking into the fence is not pulled back. |
+| **Camera** | On the plaza, a third-person follow of the page's own Blobbi (`view/camera.ts`, `followPose`): 6.2 m behind, the look point kept inside the fence, the angle the player's (mouse orbit; on touch, a finger drag, and Recenter puts it behind the Blobbi), never lower than 1.12 rad from overhead so it passes over the hedge, lanterns and arch. A watcher gets the shared overview; arenas keep the combat camera. |
+| **View** | `view/socialView.ts`: cream and peach tiles, a lilac gathering circle, a flower hedge, lanterns, mushrooms, benches, an inert portal arch (L6's place) and a sign naming the next match's arena. Static pieces merged per material; only Blobbis cast shadows. |
+| **UI** | The L3 card, folded by default on touch (its header keeps "n/m ready", Ready and the owner's Start); the owner's star and a ready tick in the name tags; touch shows the joystick and Jump only (no combat buttons), and the camera drag and Recenter. |
+
+**Resources.** Every swap disposes the old space's physics world (tested
+over repeated cycles), and on the page the old view: a browser run over
+three match cycles held the scene at the same counts each time (plaza: 80
+meshes, 55 materials, 8 textures; arena: 139, 90, 17). Finding that
+required fixing two older leaks that every match now reaches: an arena
+view left its decoration's and hazards' materials and every texture, and a
+fighter view its two ring materials. The interpolation buffer starts over
+on a change of space or lineup, so nothing is blended across a swap.
 
 **Reconnection is not seat recovery.** A dropped connection is a new
 connection: it gets a seat only by the L2 rules (a free seat in the

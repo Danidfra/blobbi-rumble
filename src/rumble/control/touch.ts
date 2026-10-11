@@ -138,10 +138,13 @@ export class TouchPad {
 }
 
 /** The fighter's moment, as far as the touch buttons care. */
-export type TouchContext = 'fight' | 'holding' | 'held' | 'ledge' | 'climbing' | 'out' | 'waiting';
+/** L4: 'social' is the social lobby's plaza: walk and jump, nothing else. */
+export type TouchContext = 'fight' | 'holding' | 'held' | 'ledge' | 'climbing' | 'out' | 'waiting' | 'social';
 
 /** The moment of a fighter (null: none of this screen's) in a match phase. */
-export function touchContext(me: FighterSnapshot | null, phase: MatchPhase): TouchContext {
+export function touchContext(me: FighterSnapshot | null, phase: MatchPhase, social = false): TouchContext {
+  // L4: on the social lobby's plaza only walking and jumping: no combat buttons.
+  if (social) return me ? 'social' : 'waiting';
   if (!me || phase !== 'playing') return 'waiting';
   if (me.eliminated) return 'out';
   if (me.heldBy) return 'held';
@@ -182,6 +185,9 @@ export function touchButtons(ctx: TouchContext, peel?: { left: number; cooldown:
     }
     case 'waiting':
       return { punch: face('punch', 'Punch', false), jump: face('jump', 'Jump', false), grab: face('grab', 'Grab', false) };
+    case 'social':
+      // L4: no combat on the plaza: the combat buttons are not shown at all.
+      return { punch: face('punch', 'Punch', false, false), jump: face('jump', 'Jump'), grab: face('grab', 'Grab', false, false) };
     default:
       return { punch: face('punch', 'Punch'), jump: face('jump', 'Jump'), grab: face('grab', 'Grab') };
   }

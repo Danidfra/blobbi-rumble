@@ -21,17 +21,28 @@
  * connection holding it. When the connection goes, so does its identity;
  * whoever takes the slot next starts as a guest.
  *
- * LOBBY ROOMS (L1): a host made with `lifecycle: 'lobby'` does not play
- * continuously. Its `Lifecycle` (`lifecycle.ts`) decides the stage: in the
- * lobby and the countdown the match stands still (`match.idle`: time
- * passes, nothing moves, no input is taken); the countdown's swap restarts
- * the match on the room's arena; play is the match as ever; a won match
- * shows its results, then the room goes back to its lobby (rotating its
- * arena if it does). Without a lifecycle (the OPEN room, older clients'
- * rooms) everything is as before: the next match starts by itself.
+ * LOBBY ROOMS (L1, L4): a host made with `lifecycle: 'lobby'` does not play
+ * continuously. Its `Lifecycle` (`lifecycle.ts`) decides the stage, and the
+ * stage decides the room's live SPACE (`sim/social.ts`'s `Space`):
  *
- * SEATS AND FIGHTERS (L2). `ids` are the room's seats (P1..P4); the match's
- * fighters are `match.ids`. In a continuous room, and in a lobby room with
+ *   lobby, countdown until its swap    the social lobby (`SocialSpace`):
+ *                                      Blobbis walk Blobbi Plaza, no combat
+ *   the countdown's swap tick          the plaza goes, the match is built on
+ *                                      the room's arena with the lineup
+ *   countdown after the swap           the match stands still (`idle`)
+ *   playing, results                   the match as ever
+ *   the results' swap tick             the match goes, the plaza comes back
+ *                                      (a rotating room picks its next arena)
+ *
+ * One physics world at a time: each swap disposes the old space; the new
+ * one carries the tick and clock on, so states always count up. A countdown
+ * cancelled after its swap goes back to the plaza at once. Without a
+ * lifecycle (the OPEN room, older clients' rooms) everything is as before:
+ * one match, the next one starting by itself.
+ *
+ * SEATS AND FIGHTERS (L2). `ids` are the room's seats (P1..P4); the live
+ * space's fighters are its own `ids` (on the plaza: the seated people, and
+ * the bots when they are on, strolling; `control/wander.ts`). In a continuous room, and in a lobby room with
  * bots, they are the same: bots drive every seat nobody holds. In a lobby
  * room without bots, the match is built at the countdown's swap with only
  * the seated people's seats (a new match on the same arena, its tick and
@@ -43,11 +54,13 @@
  * no score: nobody inherits what a bot or another person earned.
  */
 import { BotInput, botWorldFrom } from '../control/bot';
+import { WanderBot } from '../control/wander';
 import { createRumbleMatch, type RumbleMatch } from '../sim/match';
+import { SocialSpace, type Space } from '../sim/social';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
-import { CLASSIC, arenaById, nextArena, type ArenaDef } from '../arena/arenas';
+import { CLASSIC, arenaById, nextArena, type ArenaDef, type ArenaId } from '../arena/arenas';
 import { parseClientMessage, type Control, type LobbyCommand, type LobbyMessage, type LookReason, type MatchResults, type PongMessage, type RoomSettings, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
 import { Lifecycle, minHumans, type LifecycleView, type LobbyRefusal } from './lifecycle';
 
@@ -79,7 +92,10 @@ export interface HostConfig {
 export type ConnectionId = number;
 
 export class RumbleHost {
-  private current: RumbleMatch;
+  /** The arena match (always, in a continuous room; in a lobby room, from the countdown's swap to the results' end). */
+  private current: RumbleMatch | null = null;
+  /** L4: the social lobby (a lobby room, between matches). Exactly one of the two is live. */
+  private social: SocialSpace | null = null;
   /** The room's seats (the fighters are `match.ids`; the same unless a lobby room plays without bots). */
   readonly ids: readonly string[];
   readonly tickHz: number;
@@ -93,6 +109,8 @@ export class RumbleHost {
   /** M9C: the form each connection's fighter wears, bound to its proven pubkey; gone with the identity or the connection. */
   private readonly looks = new Map<ConnectionId, SlotForm>();
   private readonly bots: BotInput[];
+  /** L4: the bots' strolls on the plaza, by seat. */
+  private readonly wanderers: WanderBot[];
   /** Per slot: the last input sequence applied, the tick it arrived on, and what the latest step had applied. */
   private readonly lastSeq = new Map<string, number>();
   private readonly lastInputTick = new Map<string, number>();
@@ -122,23 +140,48 @@ export class RumbleHost {
     this.rotate = config.rotate === true;
     this.random = config.random ?? Math.random;
     this.havok = config.havok;
-    this.current = createRumbleMatch({ havok: config.havok, players: ids.map((id) => ({ id })), arena: config.arena ?? CLASSIC });
-    this.ids = this.current.ids;
+    if (new Set(ids).size !== ids.length || ids.length < 2 || ids.length > 4) throw new Error('a room has 2 to 4 distinct seats');
+    this.ids = Object.freeze([...ids]);
     this.bots = this.ids.map((_, i) => new BotInput(i + 1));
+    this.wanderers = this.ids.map((_, i) => new WanderBot(i + 1));
     for (const id of this.ids) this.holder.set(id, null);
-    this.snapshot = this.match.snapshot();
-    this.settings = { bots: true, arena: this.match.arena.id, rotate: this.rotate };
-    this.lobby = config.lifecycle === 'lobby' ? new Lifecycle(this.tickHz, this.match.tick) : null;
+    this.settings = { bots: true, arena: (config.arena ?? CLASSIC).id, rotate: this.rotate };
+    if (config.lifecycle === 'lobby') {
+      this.social = new SocialSpace({ havok: config.havok, seats: this.ids, players: this.nextLineup() });
+      this.lobby = new Lifecycle(this.tickHz, this.social.tick);
+    } else {
+      this.current = createRumbleMatch({ havok: config.havok, players: ids.map((id) => ({ id })), arena: config.arena ?? CLASSIC });
+      this.lobby = null;
+    }
+    this.snapshot = this.space.snapshot();
   }
 
-  /** The authoritative match (in a lobby room without bots, rebuilt for each match's lineup). */
+  /** The room's live space: the social lobby, or the match. */
+  private get space(): Space {
+    const s = this.social ?? this.current;
+    if (!s) throw new Error('the room is disposed');
+    return s;
+  }
+
+  /** The live space, or null once the room is disposed (a socket may still close after that). */
+  private get live(): Space | null {
+    return this.social ?? this.current;
+  }
+
+  /** The arena match. A lobby room has one only from its countdown's swap to the end of its results. */
   get match(): RumbleMatch {
+    if (!this.current) throw new Error('no match now: the room is in its social lobby');
     return this.current;
   }
 
-  /** M11A: the arena in play. */
+  /** L4: the social lobby, while the room is in it (null otherwise, and always in a continuous room). */
+  get plaza(): SocialSpace | null {
+    return this.social;
+  }
+
+  /** M11A: the arena in play; L4: in the social lobby, the arena the next match is played on. */
   get arena(): ArenaDef {
-    return this.match.arena;
+    return this.current?.arena ?? arenaById(this.settings.arena) ?? CLASSIC;
   }
 
   /** Steps between two states sent. */
@@ -153,7 +196,7 @@ export class RumbleHost {
     const free = !this.lobby || this.lobby.phase === 'lobby' ? this.freeSeat() : null;
     if (free) this.seat(conn, free);
     this.lobby?.join(conn);
-    return { t: 'welcome', you: free, players: [...this.match.ids], tickHz: this.tickHz, snapshotHz: this.snapshotHz, arena: { id: this.match.arena.id, rotate: this.settings.rotate } };
+    return { t: 'welcome', you: free, players: [...this.space.ids], tickHz: this.tickHz, snapshotHz: this.snapshotHz, arena: { id: this.arena.id, rotate: this.settings.rotate } };
   }
 
   private freeSeat(): string | null {
@@ -166,12 +209,12 @@ export class RumbleHost {
     this.slotOf.set(conn, slot);
     this.lastSeq.set(slot, -1);
     this.acked.set(slot, -1);
-    this.ackTick.set(slot, this.match.tick);
-    this.lastInputTick.set(slot, this.match.tick);
-    if (!this.match.ids.includes(slot)) return;
-    // From the bot to the person: nothing of the bot's last intent carries on.
-    this.match.clearInput(slot);
-    this.match.resetScore(slot);
+    this.ackTick.set(slot, this.space.tick);
+    this.lastInputTick.set(slot, this.space.tick);
+    if (!this.space.ids.includes(slot)) return;
+    // From the bot to the person: nothing of the bot's last intent carries on, and (in a match) none of its score.
+    this.space.clearInput(slot);
+    if (this.current && !this.social) this.current.resetScore(slot);
   }
 
   /** L2: in a lobby room's lobby, the free seats go to the watchers, longest-present first. */
@@ -201,15 +244,17 @@ export class RumbleHost {
       this.lastSeq.delete(slot);
       this.acked.delete(slot);
       this.ackTick.delete(slot);
-      if (this.match.ids.includes(slot)) {
-        this.match.clearInput(slot);
+      const space = this.live;
+      if (space?.ids.includes(slot)) {
+        space.clearInput(slot);
         // L2: in a match without bots nobody takes the fighter over: it forfeits.
-        if (this.lobby && !this.settings.bots && this.lobby.phase === 'playing') this.match.forfeit(slot);
+        if (this.current && !this.social && this.lobby && !this.settings.bots && this.lobby.phase === 'playing') this.current.forfeit(slot);
       }
       this.bots[this.ids.indexOf(slot)].reset(this.snapshot.round + 1000 * this.matches);
     }
     const life = this.lobby;
-    if (!life) return;
+    // A room already disposed (its last sockets closing after it): nothing more to keep.
+    if (!life || !this.live) return;
     life.leave(conn, this.view());
     if (life.phase === 'lobby') this.promote();
   }
@@ -228,19 +273,21 @@ export class RumbleHost {
   receive(conn: ConnectionId, raw: unknown): PongMessage | null {
     const msg = parseClientMessage(raw);
     if (!msg) return null;
-    if (msg.t === 'ping') return { t: 'pong', id: msg.id, ct: msg.ct, tick: this.match.tick };
+    const space = this.live;
+    if (!space) return null;
+    if (msg.t === 'ping') return { t: 'pong', id: msg.id, ct: msg.ct, tick: space.tick };
     if (msg.t !== 'input' && msg.t !== 'throw') return null;
     const slot = this.slotOf.get(conn);
-    if (!slot || this.holder.get(slot) !== conn || !this.match.ids.includes(slot)) return null;
+    if (!slot || this.holder.get(slot) !== conn || !space.ids.includes(slot)) return null;
     if (msg.t === 'throw') {
-      // M11F: the match judges the throw (out of the round, budget, cooldown, floor); a refusal is silent.
-      this.match.throwBanana(slot, msg.x, msg.z);
+      // M11F: the match judges the throw (out of the round, budget, cooldown, floor); a refusal is silent. L4: none on the plaza.
+      if (this.current && !this.social) this.current.throwBanana(slot, msg.x, msg.z);
       return null;
     }
     if (msg.seq <= (this.lastSeq.get(slot) ?? -1)) return null;
     this.lastSeq.set(slot, msg.seq);
-    this.lastInputTick.set(slot, this.match.tick);
-    this.match.setInput(slot, msg.intent);
+    this.lastInputTick.set(slot, space.tick);
+    space.setInput(slot, msg.intent);
     return null;
   }
 
@@ -326,43 +373,69 @@ export class RumbleHost {
     }
   }
 
-  /** This step's intents: a person's latest (let go of when it stalls), a bot's plan for every seat nobody holds. */
+  /**
+   * This step's intents in the live space: a person's latest (let go of
+   * when it stalls), and for every seat nobody holds a bot's: the match's
+   * test opponent in a match, a stroll on the plaza (L4).
+   */
   private drive() {
+    const space = this.space;
     const s = this.snapshot;
     const playing = s.phase === 'playing';
+    const onPlaza = space === this.social;
     const timeout = Math.round(NET.inputTimeout * this.tickHz);
-    this.match.ids.forEach((id, i) => {
+    const where = (id: string) => s.fighters.find((f) => f.id === id)?.position ?? null;
+    const people = onPlaza ? space.ids.filter((id) => this.holder.get(id) !== null).flatMap((id) => where(id) ?? []) : [];
+    space.ids.forEach((id) => {
       if (this.holder.get(id) !== null) {
         // A person whose inputs stopped arriving (a stalled tab) does not keep running.
-        if (this.match.tick - (this.lastInputTick.get(id) ?? 0) > timeout) this.match.setInput(id, {});
+        if (space.tick - (this.lastInputTick.get(id) ?? 0) > timeout) space.setInput(id, {});
         const seq = this.lastSeq.get(id) ?? -1;
         if (seq !== this.acked.get(id)) {
           this.acked.set(id, seq);
           // The step about to run is the first to apply it.
-          this.ackTick.set(id, this.match.tick + 1);
+          this.ackTick.set(id, space.tick + 1);
         }
         return;
       }
       // L2: a lobby room without bots: nobody drives a fighter whose person left.
-      if (this.lobby && !this.settings.bots) return this.match.setInput(id, {});
-      const bot = this.bots[this.ids.indexOf(id)];
-      bot.enabled = playing && !s.fighters[i].eliminated;
+      if (this.lobby && !this.settings.bots) return space.setInput(id, {});
+      const seat = this.ids.indexOf(id);
+      if (onPlaza) {
+        const at = where(id);
+        space.setInput(id, at ? this.wanderers[seat].plan({ x: at.x, z: at.z }, people, this.dt) : {});
+        return;
+      }
+      const bot = this.bots[seat];
+      const f = s.fighters.find((x) => x.id === id);
+      bot.enabled = playing && !!f && !f.eliminated;
       bot.plan(botWorldFrom(s, id), this.dt);
-      this.match.setInput(id, bot.read());
+      space.setInput(id, bot.read());
     });
   }
 
-  /** L1: a lobby room's step: the match plays only while the lifecycle says so, and the lifecycle moves on. */
+  /**
+   * L1, L4: a lobby room's step. The live space steps (the plaza, or the
+   * match in play and its results; the match stands still after the
+   * countdown's swap), then the lifecycle moves on, and at its swap ticks
+   * the space is swapped.
+   */
   private tickLobby(life: Lifecycle) {
-    const live = life.phase === 'playing' || life.phase === 'results';
     let events: ReturnType<RumbleMatch['step']> = [];
-    if (live) {
+    if (this.social) {
+      // The plaza: watchers seated as seats free up, the avatars follow the lineup, everyone walks.
+      if (life.phase === 'lobby') this.promote();
+      this.social.setLineup(this.nextLineup());
+      this.snapshot = this.social.snapshot();
+      this.drive();
+      this.social.step(this.dt);
+    } else if (life.phase === 'playing' || life.phase === 'results') {
       this.drive();
       events = this.match.step(this.dt);
     } else this.match.idle(this.dt);
-    this.snapshot = this.match.snapshot();
+    this.snapshot = this.space.snapshot();
     for (const e of events) if (e.kind === 'newRound') this.resetBots();
-    const now = this.match.tick;
+    const now = this.space.tick;
     if (life.phase === 'playing') {
       const won = events.find((e) => e.kind === 'match');
       // L2: the people still in the match; without them it is over: nobody left (abandoned), or one left without bots (theirs by forfeit).
@@ -371,19 +444,17 @@ export class RumbleHost {
       else if (people.length === 0) life.finish(now, this.results(null, 'abandoned'));
       else if (!this.settings.bots && people.length === 1) life.finish(now, this.results(people[0], 'forfeit'));
     }
-    if (life.phase === 'lobby') {
-      this.promote();
-      this.showLineup();
-    }
     for (const fx of life.advance(now, this.view())) {
-      if (fx === 'swapIn') this.buildLineup();
+      if (fx === 'swapIn') this.toArena();
       else if (fx === 'swapOut') {
         this.matches += 1;
-        // M11A: a rotating room moves to another arena with the new match (shown in the lobby, before it starts).
-        if (this.settings.rotate) this.settings.arena = nextArena(this.match.arena.id, this.random()).id;
-        this.restartOn(this.settings.arena);
+        // M11A: a rotating room moves to another arena with the new match (named in the lobby, before it starts).
+        if (this.settings.rotate) this.settings.arena = nextArena(this.settings.arena as ArenaId, this.random()).id;
+        this.toPlaza();
       }
     }
+    // A countdown cancelled after its swap: the room is in its lobby again, so on the plaza.
+    if (life.phase === 'lobby' && !this.social) this.toPlaza();
   }
 
   /** L2: the fighters of the next match: every seat with bots, only the seated people's without. */
@@ -391,47 +462,25 @@ export class RumbleHost {
     return this.settings.bots ? [...this.ids] : this.ids.filter((id) => this.holder.get(id) !== null);
   }
 
-  /** Whether the match's fighters are exactly `ids`. */
-  private lineupIs(ids: readonly string[]) {
-    return ids.length === this.match.ids.length && ids.every((id, i) => id === this.match.ids[i]);
-  }
-
-  /**
-   * L3: in the lobby, the match shows the next match's lineup (who is
-   * seated, and bots if they are on), so no fighter of the last match stays
-   * standing there. The match stands still in the lobby, so this moves no
-   * gameplay: a new match of two or more fighters, built only when the
-   * lineup changed. (One person alone without bots cannot be a match: the
-   * page then draws only the lineup's fighters it has.)
-   */
-  private showLineup() {
+  /** L4: the countdown's swap: the plaza goes; the match comes, on the room's arena, with the lineup, its tick and clock carried on. */
+  private toArena() {
+    const from = this.space;
     const ids = this.nextLineup();
-    if (ids.length >= 2 && !this.lineupIs(ids)) this.rebuild(ids);
-  }
-
-  /** L2: the countdown's swap: the match restarted on the room's arena with its lineup (a new match when the lineup changed). */
-  private buildLineup() {
-    const ids = this.nextLineup();
-    if (this.lineupIs(ids) || ids.length < 2) return this.restartOn(this.settings.arena);
-    this.rebuild(ids);
-  }
-
-  /** A new match of these fighters on the room's arena, its tick and clock carried on; the old one disposed. */
-  private rebuild(ids: string[]) {
-    const old = this.current;
-    this.current = createRumbleMatch({ havok: this.havok, players: ids.map((id) => ({ id })), arena: arenaById(this.settings.arena) ?? old.arena, startTick: old.tick, startTime: old.time });
-    old.dispose();
-    this.snapshot = this.match.snapshot();
+    this.current = createRumbleMatch({ havok: this.havok, players: ids.map((id) => ({ id })), arena: arenaById(this.settings.arena) ?? CLASSIC, startTick: from.tick, startTime: from.time });
+    this.social?.dispose();
+    this.social = null;
+    this.snapshot = this.current.snapshot();
     this.resetBots();
   }
 
-  /** The match back to its start on `arena` (switched if it is another): scores, rounds, fighters at their spawns. */
-  private restartOn(arena: string) {
-    const def = arenaById(arena) ?? this.match.arena;
-    if (def.id !== this.match.arena.id) this.match.switchArena(def);
-    this.match.restart();
-    this.snapshot = this.match.snapshot();
-    this.resetBots();
+  /** L4: back to the lobby: the match goes; the plaza comes, every avatar on its spot, its tick and clock carried on. */
+  private toPlaza() {
+    const from = this.space;
+    this.social = new SocialSpace({ havok: this.havok, seats: this.ids, players: this.nextLineup(), startTick: from.tick, startTime: from.time });
+    this.current?.dispose();
+    this.current = null;
+    this.wanderers.forEach((w) => w.reset(this.matches));
+    this.snapshot = this.social.snapshot();
   }
 
   /** L1: what the lifecycle needs to know about the room now. */
@@ -454,18 +503,15 @@ export class RumbleHost {
     if (!this.slotOf.has(conn)) return 'spectator';
     const view = this.view();
     if (cmd.t === 'ready') return life.setReady(conn, cmd.ready, view);
-    if (cmd.t === 'start') return life.ownerStart(conn, this.match.tick, view);
+    if (cmd.t === 'start') return life.ownerStart(conn, this.space.tick, view);
     const refused = life.maySet(conn);
     if (refused) return refused;
     const arena = cmd.arena === undefined ? undefined : arenaById(cmd.arena);
     if (arena === null) return 'malformed';
     if (cmd.bots !== undefined) this.settings.bots = cmd.bots;
     if (cmd.rotate !== undefined) this.settings.rotate = cmd.rotate;
-    if (arena && arena.id !== this.settings.arena) {
-      this.settings.arena = arena.id;
-      // Shown in the lobby now (the match stands still there).
-      this.restartOn(arena.id);
-    }
+    // L4: the next match's arena (named on the plaza's sign; played from the countdown's swap).
+    if (arena) this.settings.arena = arena.id;
     life.touch();
     return null;
   }
@@ -500,7 +546,7 @@ export class RumbleHost {
         const holder = this.holder.get(id);
         return holder !== null && holder !== undefined && life.ready.has(holder);
       }),
-      lineup: life.phase === 'lobby' || life.phase === 'countdown' ? this.nextLineup() : [...this.match.ids],
+      lineup: life.phase === 'lobby' || life.phase === 'countdown' ? this.nextLineup() : [...(this.live?.ids ?? [])],
       settings: { ...this.settings },
       canStart: life.canStart(view),
       need: minHumans(this.settings.bots),
@@ -518,7 +564,7 @@ export class RumbleHost {
     const control: Record<string, Control> = {};
     const acks: Record<string, number> = {};
     const ackTicks: Record<string, number> = {};
-    for (const id of this.match.ids) {
+    for (const id of this.space.ids) {
       control[id] = this.holder.get(id) !== null ? 'human' : this.lobby && !this.settings.bots ? 'none' : 'bot';
       if (this.holder.get(id) !== null) {
         acks[id] = this.acked.get(id) ?? -1;
@@ -533,7 +579,10 @@ export class RumbleHost {
   }
 
   dispose() {
-    this.match.dispose();
+    this.social?.dispose();
+    this.current?.dispose();
+    this.social = null;
+    this.current = null;
   }
 
   private resetBots() {

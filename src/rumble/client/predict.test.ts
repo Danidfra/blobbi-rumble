@@ -11,7 +11,8 @@ import { inputMessage, parseClientMessage } from '../net/protocol';
 import { RUMBLE_BODY } from '../profile';
 import type { PlayerIntent } from '../sim/intent';
 import type { FighterSnapshot } from '../sim/snapshot';
-import { advance, LocalPredictor, PREDICT, predictable, stepBody, type Body } from './predict';
+import { advance, CLASSIC_TERRAIN, LocalPredictor, PREDICT, predictable, stepBody, supported, type Body, type Terrain } from './predict';
+import { PLAZA, PLAZA_TERRAIN } from '../arena/lobbySpace';
 
 const IDLE: PlayerIntent = { x: 0, z: 0, run: false, jump: false, punch: false, grab: false };
 const east: PlayerIntent = { ...IDLE, x: 1 };
@@ -233,7 +234,7 @@ describe('reconciliation', () => {
     expect(Object.keys(m.intent).sort()).toEqual(['grab', 'jump', 'punch', 'run', 'x', 'z']);
     expect(parseClientMessage(JSON.stringify(m))).toEqual(m);
     // The predictor has no channel to the server at all: it only takes states and draws.
-    expect(Object.getOwnPropertyNames(LocalPredictor.prototype).sort()).toEqual(['constructor', 'frame', 'predicting', 'reconcile', 'reset', 'show']);
+    expect(Object.getOwnPropertyNames(LocalPredictor.prototype).sort()).toEqual(['constructor', 'frame', 'predicting', 'reconcile', 'reset', 'setTerrain', 'show']);
   });
 
   it('advance splits a long frame into server-sized steps and fires a jump once', () => {
@@ -241,5 +242,39 @@ describe('reconciliation', () => {
     expect(r.jumped).toBe(true);
     const once = stepBody(at(0), { ...IDLE, jump: true }, 1 / 60, allow).body;
     expect(r.body.vy).toBeLessThan(once.vy);
+  });
+});
+
+describe('the plaza’s terrain (L4)', () => {
+  const stand = RUMBLE_BODY.capsuleCenterY;
+  const body = (x: number, z: number): Body => ({ x, y: stand, z, vx: 0, vy: 0, vz: 0, yaw: 0 });
+  const runFor = (b: Body, intent: Partial<PlayerIntent>, seconds: number, terrain: Terrain = PLAZA_TERRAIN) => advance(b, { x: 0, z: 0, run: false, jump: false, punch: false, grab: false, ...intent }, seconds, { powerLevel: 0, carrying: false, terrain }).body;
+
+  it('the whole plaza is floor (the classic island’s floor is smaller): standing there is supported', () => {
+    const corner = body(PLAZA.halfWidth - 0.5, PLAZA.halfDepth - 0.5);
+    expect(supported(corner, PREDICT, PLAZA_TERRAIN)).toBe(true);
+    expect(supported(corner, PREDICT, CLASSIC_TERRAIN)).toBe(false);
+  });
+
+  it('running at the fence stops at it, a radius short, with no speed into it; along it the body still moves', () => {
+    const b = runFor(body(PLAZA.halfWidth - 2, 0), { x: 1, z: 0.4, run: true }, 3);
+    expect(b.x).toBeCloseTo(PLAZA.halfWidth - RUMBLE_BODY.capsuleRadius, 5);
+    expect(b.vx).toBe(0);
+    expect(b.y).toBeCloseTo(stand, 3);
+    expect(b.z).toBeGreaterThan(1);
+  });
+
+  it('elsewhere nothing changes: the classic island’s model is the default', () => {
+    const a = runFor(body(0, 0), { x: 1, run: true }, 1, CLASSIC_TERRAIN);
+    const b = advance(body(0, 0), { x: 1, z: 0, run: true, jump: false, punch: false, grab: false }, 1, { powerLevel: 0, carrying: false }).body;
+    expect(a).toEqual(b);
+    expect(stepBody(body(0, 0), { x: 1, z: 0, run: true, jump: false, punch: false, grab: false }, 1 / 60, { powerLevel: 0, carrying: false })).toEqual(stepBody(body(0, 0), { x: 1, z: 0, run: true, jump: false, punch: false, grab: false }, 1 / 60, { powerLevel: 0, carrying: false, terrain: CLASSIC_TERRAIN }));
+  });
+
+  it('the predictor uses the terrain it is given from the next frame on', () => {
+    const p = new LocalPredictor();
+    p.setTerrain(PLAZA_TERRAIN);
+    p.setTerrain(PLAZA_TERRAIN);
+    expect(Object.keys(p)).not.toContain('send');
   });
 });

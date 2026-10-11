@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { LobbyMessage } from '../net/protocol';
 import type { FighterSnapshot, MatchSnapshot } from '../sim/snapshot';
 import { initialConnection, onSeat, onWelcome, statusLine, watchingWords } from './connection';
-import { lifecyclePlays, refusalWords, visibleLineup } from './lobby';
+import { lifecyclePlays, movementLive, refusalWords, tagMarks, visibleLineup } from './lobby';
 
 const LOBBY: LobbyMessage = { t: 'lobby', phase: 'lobby', since: 0, deadline: null, transition: null, you: 'P1', owner: 'P1', youOwn: true, seated: ['P1'], ready: [], watchers: [], forced: false, lineup: ['P1', 'P2', 'P3', 'P4'], settings: { bots: true, arena: 'floating-islands-classic', rotate: false }, canStart: true, need: 1, results: null };
 
@@ -59,5 +59,22 @@ describe('the page’s reading of a lobby room', () => {
     expect(refusalWords('start', 'too-few')).toBe('Not enough players to start');
     expect(refusalWords('settings', 'phase')).toBe('Settings change only in the lobby');
     expect(refusalWords('ready', 'spectator')).toBe('You are watching: you get a seat in the next lobby');
+  });
+
+  it('moves on the plaza (L4): the fighter is live there whatever the lobby’s stage, and in play; not in an arena before play', () => {
+    expect(movementLive(LOBBY, 'blobbi-plaza')).toBe(true);
+    expect(movementLive({ ...LOBBY, phase: 'countdown' }, 'blobbi-plaza')).toBe(true);
+    expect(movementLive({ ...LOBBY, phase: 'countdown' }, 'floating-islands-classic')).toBe(false);
+    expect(movementLive({ ...LOBBY, phase: 'playing' }, 'floating-islands-classic')).toBe(true);
+    expect(movementLive({ ...LOBBY, phase: 'results' }, 'floating-islands-classic')).toBe(false);
+    expect(movementLive(null, 'floating-islands-classic')).toBe(true);
+  });
+
+  it('marks the owner and who is ready over the Blobbis in the lobby (L4), nothing in play', () => {
+    const l = { ...LOBBY, owner: 'P1', ready: ['P2'] };
+    expect(tagMarks(l, 'P1')).toEqual({ before: '★ ', after: '' });
+    expect(tagMarks(l, 'P2')).toEqual({ before: '', after: ' ✓' });
+    expect(tagMarks({ ...l, phase: 'playing' }, 'P1')).toEqual({ before: '', after: '' });
+    expect(tagMarks(null, 'P1')).toEqual({ before: '', after: '' });
   });
 });

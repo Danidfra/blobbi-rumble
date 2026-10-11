@@ -184,10 +184,12 @@ export class SnapshotBuffer {
     return this.offset;
   }
 
-  /** A state arrived at `arrival` (client seconds). Older or repeated ticks are refused: false. */
+  /** A state arrived at `arrival` (client seconds). Older or repeated ticks are refused: false. A new space or lineup starts the buffer over (L4). */
   push(s: MatchSnapshot, arrival: number): boolean {
     const last = this.entries.at(-1);
     if (last && s.tick <= last.snapshot.tick) return false;
+    // L4: a state of another space (the plaza and an arena) or another lineup is never blended with the ones before: they go.
+    if (last && (last.snapshot.arena !== s.arena || last.snapshot.players.join() !== s.players.join())) this.entries.length = 0;
     this.entries.push({ snapshot: s, lead: s.time - arrival, arrival });
     if (this.offset === null) this.offset = s.time - arrival;
     return true;

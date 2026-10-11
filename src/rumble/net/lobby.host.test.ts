@@ -15,6 +15,7 @@ import type { HavokInstance } from '../sim/physics';
 import { ROUND } from '../tuning';
 import { RumbleHost, type ConnectionId } from './host';
 import { LIFECYCLE } from './lifecycle';
+import { plazaSpot } from '../arena/lobbySpace';
 import { inputMessage } from './protocol';
 
 let havok: HavokInstance;
@@ -77,20 +78,26 @@ describe('a continuous room (the OPEN room)', () => {
 });
 
 describe('a lobby room: the lifecycle (L1)', () => {
-  it('stands still in the lobby: time passes, nothing moves', () => {
+  it('is on the plaza in its lobby (L4): time passes, bots stroll, nothing is scored or fought', () => {
     const h = new RumbleHost({ havok, lifecycle: 'lobby' });
     h.connect(1);
     const before = h.state().snapshot;
-    secs(h, 3);
+    expect(before.arena).toBe('blobbi-plaza');
+    expect(() => h.match).toThrow();
+    expect(h.plaza).not.toBeNull();
+    secs(h, 6);
     const after = h.state().snapshot;
     expect(h.lobby!.phase).toBe('lobby');
-    expect(after.tick).toBe(before.tick + 180);
-    expect(after.fighters.map((f) => f.position)).toEqual(before.fighters.map((f) => f.position));
-    expect(after.sweeper).toEqual(before.sweeper);
+    expect(after.tick).toBe(before.tick + 360);
+    expect(after.players).toEqual(['P1', 'P2', 'P3', 'P4']);
+    expect(after.fighters.slice(1).some((f, i) => Math.hypot(f.position.x - before.fighters[i + 1].position.x, f.position.z - before.fighters[i + 1].position.z) > 0.5)).toBe(true);
+    expect(after.fighters.every((f) => f.score === 0 && !f.eliminated && f.hits === 0)).toBe(true);
+    expect(after.sweeper).toBeNull();
+    expect(h.state().control).toEqual({ P1: 'human', P2: 'bot', P3: 'bot', P4: 'bot' });
     h.dispose();
   });
 
-  it('a ready person starts the countdown (bots on); inputs move nothing until play; the swap is on the announced tick', () => {
+  it('a ready person starts the countdown (bots on); they walk the plaza until the swap; then the arena, still until play (L4)', () => {
     const h = new RumbleHost({ havok, lifecycle: 'lobby' });
     expect(h.connect(1).you).toBe('P1');
     ready(h, 1);
@@ -98,13 +105,25 @@ describe('a lobby room: the lifecycle (L1)', () => {
     const l = h.lobbyFor(1)!;
     expect(l).toMatchObject({ t: 'lobby', phase: 'countdown', you: 'P1', owner: 'P1', youOwn: true, seated: ['P1'], ready: ['P1'], lineup: ['P1', 'P2', 'P3', 'P4'], canStart: true, need: 1, settings: { bots: true, arena: CLASSIC.id, rotate: false } });
     expect(l.transition!.kind).toBe('toArena');
-    const start = h.state().snapshot.fighters[0].position;
-    h.receive(1, JSON.stringify(inputMessage(1, { x: 1, z: 0, run: true }, { jump: true, punch: false, grab: false })));
+    // On the plaza the countdown is walked through.
+    const onPlaza = h.state().snapshot.fighters[0].position;
+    for (let k = 1; k < 40; k++) {
+      h.receive(1, JSON.stringify(inputMessage(k, { x: 1, z: 0, run: true }, { jump: false, punch: false, grab: false })));
+      h.tick();
+    }
+    expect(h.state().snapshot.arena).toBe('blobbi-plaza');
+    expect(h.state().snapshot.fighters[0].position.x).toBeGreaterThan(onPlaza.x + 0.5);
     while (h.state().tick < l.transition!.swapAt) h.tick();
+    // The swap: the arena, the match fresh, every fighter at its spawn.
+    expect(h.state().snapshot.arena).toBe(CLASSIC.id);
+    expect(h.plaza).toBeNull();
+    const start = h.state().snapshot.fighters[0].position;
+    h.receive(1, JSON.stringify(inputMessage(100, { x: 1, z: 0, run: true }, { jump: true, punch: false, grab: false })));
+    while (h.state().tick < l.deadline! - 1) h.tick();
     expect(h.state().snapshot.fighters[0].position).toEqual(start);
-    while (h.state().tick < l.deadline!) h.tick();
+    h.tick();
     expect(h.lobby!.phase).toBe('playing');
-    for (let k = 2; k < 30; k++) {
+    for (let k = 101; k < 130; k++) {
       h.receive(1, JSON.stringify(inputMessage(k, { x: 1, z: 0, run: true }, { jump: false, punch: false, grab: false })));
       h.tick();
     }
@@ -138,16 +157,22 @@ describe('a lobby room: the lifecycle (L1)', () => {
     h.dispose();
   });
 
-  it('a rotating lobby room moves to the next arena when it returns to the lobby', () => {
+  it('a rotating lobby room names its next arena when it returns to the plaza, and plays it after the next swap', () => {
     const h = new RumbleHost({ havok, lifecycle: 'lobby', players: ['P1', 'P2'], arena: SKYFALL, rotate: true, random: () => 0.5 });
     h.connect(1);
     ready(h, 1);
     toPlay(h);
+    expect(h.state().snapshot.arena).toBe(SKYFALL.id);
     loseMatch(h, 'P1');
     secs(h, LIFECYCLE.resultsSeconds + 0.1);
     const next = nextArena(SKYFALL.id, 0.5).id;
-    expect(h.state().snapshot.arena).toBe(next);
+    expect(h.state().snapshot.arena).toBe('blobbi-plaza');
     expect(h.lobbyFor(1)!.settings.arena).toBe(next);
+    expect(h.arena.id).toBe(next);
+    secs(h, LIFECYCLE.arriveSeconds + 0.1);
+    ready(h, 1);
+    toPlay(h);
+    expect(h.state().snapshot.arena).toBe(next);
     h.dispose();
   });
 
@@ -257,21 +282,24 @@ describe('a lobby room: starting, the owner, cancelling (L2)', () => {
 });
 
 describe('a lobby room: settings and bots (L2)', () => {
-  it('settings are the owner’s, in the lobby only; an arena is shown at once; a bad one is refused', () => {
+  it('settings are the owner’s, in the lobby only; the arena is the next match’s (named in the lobby, played after the swap); a bad one is refused', () => {
     const h = new RumbleHost({ havok, lifecycle: 'lobby' });
     h.connect(1);
     h.connect(2);
     expect(h.command(2, { t: 'settings', bots: false })).toBe('not-owner');
     expect(h.command(1, { t: 'settings', arena: 'nowhere' })).toBe('malformed');
+    expect(h.command(1, { t: 'settings', arena: 'blobbi-plaza' })).toBe('malformed');
     expect(h.command(1, { t: 'settings', arena: FACTORY.id, rotate: true })).toBeNull();
     h.tick();
-    expect(h.state().snapshot.arena).toBe(FACTORY.id);
+    expect(h.state().snapshot.arena).toBe('blobbi-plaza');
     expect(h.lobbyFor(2)!.settings).toEqual({ bots: true, arena: FACTORY.id, rotate: true });
     h.command(1, { t: 'start' });
     expect(h.command(1, { t: 'settings', bots: false })).toBe('phase');
     secs(h, LIFECYCLE.departSeconds + LIFECYCLE.arriveSeconds + 0.1);
     expect(h.command(1, { t: 'settings', bots: false })).toBe('phase');
     expect(h.lobby!.phase).toBe('playing');
+    expect(h.state().snapshot.arena).toBe(FACTORY.id);
+    expect(h.state().snapshot.sweeper).not.toBeNull();
     expect(h.settings.bots).toBe(true);
     expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3', 'P4']);
     h.dispose();
@@ -348,7 +376,7 @@ describe('a lobby room: settings and bots (L2)', () => {
 });
 
 describe('a lobby room: what the lobby shows (L3)', () => {
-  it('without bots, the lobby’s match is the next lineup: a fighter of the last match whose person left is not left standing', () => {
+  it('the plaza’s avatars are the lineup: without bots only the seated people (one alone too), with bots every seat; someone leaving takes their avatar away', () => {
     const h = new RumbleHost({ havok, lifecycle: 'lobby' });
     for (const c of [1, 2, 3]) h.connect(c);
     h.command(1, { t: 'settings', bots: false });
@@ -360,12 +388,10 @@ describe('a lobby room: what the lobby shows (L3)', () => {
     expect(h.state().snapshot.players).toEqual(['P1', 'P2']);
     expect(h.state().tick).toBe(tick + 1);
     expect(h.state().control).toEqual({ P1: 'human', P2: 'human' });
-    // One alone cannot be a match: the last lineup stays (the page draws only the lineup's fighters).
     h.disconnect(2);
     h.tick();
     expect(h.lobbyFor(1)!.lineup).toEqual(['P1']);
-    expect(h.state().snapshot.players).toEqual(['P1', 'P2']);
-    // Bots back on: every seat again.
+    expect(h.state().snapshot.players).toEqual(['P1']);
     h.command(1, { t: 'settings', bots: true });
     h.tick();
     expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3', 'P4']);
@@ -384,3 +410,122 @@ describe('a lobby room: what the lobby shows (L3)', () => {
     h.dispose();
   });
 });
+
+describe('a lobby room: the plaza and the arena (L4)', () => {
+  it('one physics world at a time: the plaza’s is disposed at the countdown’s swap, the match’s at the results’ end, cycle after cycle; ticks only go up', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby', players: ['P1', 'P2'] });
+    h.connect(1);
+    let last = h.state().tick;
+    const check = () => {
+      expect(h.state().tick).toBeGreaterThan(last);
+      last = h.state().tick;
+    };
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const plaza = h.plaza!.world.scene;
+      ready(h, 1);
+      toPlay(h);
+      check();
+      expect(plaza.isDisposed).toBe(true);
+      expect(h.plaza).toBeNull();
+      const arena = h.match.world.scene;
+      loseMatch(h, 'P1');
+      secs(h, LIFECYCLE.resultsSeconds + 0.1);
+      check();
+      expect(arena.isDisposed).toBe(true);
+      expect(h.state().snapshot.arena).toBe('blobbi-plaza');
+      expect(() => h.match).toThrow();
+      secs(h, LIFECYCLE.arriveSeconds + 0.1);
+    }
+    const scene = h.plaza!.world.scene;
+    h.dispose();
+    expect(scene.isDisposed).toBe(true);
+  });
+
+  it('a room disposed while its last sockets close: they leave quietly, nothing is stepped or thrown', () => {
+    for (const lifecycle of ['lobby', 'continuous'] as const) {
+      const h = new RumbleHost({ havok, lifecycle });
+      h.connect(1);
+      h.connect(2);
+      h.dispose();
+      expect(() => h.disconnect(1)).not.toThrow();
+      expect(h.receive(2, JSON.stringify({ t: 'ping', id: 1, ct: 0 }))).toBeNull();
+      expect(() => h.lobbyFor(2)).not.toThrow();
+      expect(() => h.disconnect(2)).not.toThrow();
+    }
+  });
+
+  it('a countdown cancelled before its swap moved nothing: still the same plaza; after its swap: back on a new plaza at once', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby' });
+    h.connect(1);
+    h.connect(2);
+    ready(h, 1, 2);
+    h.tick();
+    const plaza = h.plaza;
+    expect(h.lobby!.phase).toBe('countdown');
+    h.command(2, { t: 'ready', ready: false });
+    h.tick();
+    expect(h.lobby!.phase).toBe('lobby');
+    expect(h.plaza).toBe(plaza);
+    ready(h, 2);
+    h.tick();
+    secs(h, LIFECYCLE.departSeconds + 0.1);
+    expect(h.state().snapshot.arena).toBe(CLASSIC.id);
+    const arena = h.match.world.scene;
+    const tick = h.state().tick;
+    h.disconnect(2);
+    h.tick();
+    expect(h.lobby!.phase).toBe('lobby');
+    expect(h.state().snapshot.arena).toBe('blobbi-plaza');
+    expect(arena.isDisposed).toBe(true);
+    expect(h.state().tick).toBe(tick + 1);
+    h.dispose();
+  });
+
+  it('on the plaza a person walks by their inputs (acknowledged, for the page’s prediction); punch and grab do nothing', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby' });
+    h.connect(1);
+    h.command(1, { t: 'settings', bots: false });
+    h.connect(2);
+    secs(h, 0.3);
+    const p2 = h.state().snapshot.fighters[1].position;
+    for (let k = 1; k <= 60; k++) {
+      h.receive(1, JSON.stringify(inputMessage(k, { x: 1, z: 0, run: false }, { jump: false, punch: true, grab: true })));
+      h.tick();
+    }
+    const s = h.state();
+    expect(s.acks.P1).toBe(60);
+    expect(s.ackTicks.P1).toBeGreaterThan(0);
+    expect(s.snapshot.fighters[0].position.x).toBeGreaterThan(plazaStart(0) + 1);
+    expect(s.snapshot.fighters.every((f) => f.hits === 0 && f.combat.punchTime === -1 && f.holding === null)).toBe(true);
+    expect(s.snapshot.fighters[1].position.x).toBeCloseTo(p2.x, 1);
+    // A banana throw means nothing on the plaza.
+    h.receive(1, JSON.stringify({ t: 'throw', x: 0, z: 0 }));
+    h.tick();
+    expect(h.state().snapshot.bananas).toEqual([]);
+    h.dispose();
+  });
+
+  it('bots stroll only when they are on; switched off, their avatars go; a watcher has none', () => {
+    const h = new RumbleHost({ havok, lifecycle: 'lobby' });
+    for (let c = 1; c <= 5; c++) h.connect(c);
+    h.tick();
+    expect(h.state().snapshot.players).toEqual(['P1', 'P2', 'P3', 'P4']);
+    expect(h.slot(5)).toBeNull();
+    h.disconnect(4);
+    h.disconnect(3);
+    h.tick();
+    // The watcher took a seat; one seat is left for a bot.
+    expect(h.slot(5)).not.toBeNull();
+    expect(Object.values(h.state().control).filter((c) => c === 'bot')).toHaveLength(1);
+    h.command(1, { t: 'settings', bots: false });
+    h.tick();
+    expect(h.state().snapshot.players).toHaveLength(3);
+    expect(Object.values(h.state().control)).toEqual(['human', 'human', 'human']);
+    h.dispose();
+  });
+});
+
+/** Where seat `i` starts on the plaza (x). */
+function plazaStart(i: number) {
+  return plazaSpot(i).x;
+}

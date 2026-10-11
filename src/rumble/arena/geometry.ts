@@ -16,7 +16,8 @@ export interface Platform extends Rect {
   /** The slab's thickness below its top. */
   thickness: number;
   /** What it is made of, for the view and the rules (ice is slippery; a bridge breaks; a belt moves). */
-  kind: 'floor' | 'bridge' | 'platform' | 'ice' | 'conveyor';
+  /** L4: a 'wall' is a boundary to walk against (the social lobby's fence), never a floor to stand on. */
+  kind: 'floor' | 'bridge' | 'platform' | 'ice' | 'conveyor' | 'wall';
   /** A short label for the view's debug overlay. */
   name?: string;
 }

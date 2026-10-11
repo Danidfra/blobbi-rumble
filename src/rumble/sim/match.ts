@@ -36,7 +36,7 @@ import { stepStruggle } from '../combat/struggle';
 import { BANANAS, COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
 import { reactionKind } from '../combat/impact';
 import { createArenaBody, type ArenaBody } from './arenaBody';
-import { FighterSim, type PlayerId, type StepResult } from './fighter';
+import { FighterSim, fighterSnapshot, type PlayerId, type StepResult } from './fighter';
 import { IDLE_INTENT, sanitizeIntent, type PlayerIntent } from './intent';
 import { canCatch, reachableLedge } from './ledge';
 import { LEDGE } from '../tuning';
@@ -526,36 +526,9 @@ export class RumbleMatch {
       tick: this.tickCount,
       time: this.clock,
       players: [...this.ids],
-      fighters: this.fighters.map((f, i) => {
-        const p = f.body.position();
-        const q = f.body.rotation();
-        const v = f.body.velocity();
-        const c = f.combat;
-        return {
-          id: f.id,
-          position: { x: p.x, y: p.y, z: p.z },
-          rotation: { x: q.x, y: q.y, z: q.z, w: q.w },
-          upright: f.body.isUpright(),
-          yaw: f.yaw,
-          velocity: { x: v.x, y: v.y, z: v.z },
-          grounded: f.grounded,
-          alive: m.alive[i],
-          eliminated: f.eliminated,
-          score: m.score[i],
-          powerLevel: f.powerLevel,
-          combat: { punchTime: c.punchTime, punchCooldown: c.punchCooldown, stun: c.stun, tumble: c.tumble, recovering: c.recovering, holdTime: c.holding, holdAngle: c.holdAngle, struggle: c.struggle, grabImmune: c.grabImmune },
-          holding: idOf(c.victim),
-          heldBy: idOf(c.holder),
-          touching: idOf(this.contacts[i]),
-          tilt: f.tilt,
-          lastImpact: f.lastImpact,
-          ledge: f.ledge.hold ? { phase: f.ledge.hold.phase, x: f.ledge.hold.ledge.x, y: f.ledge.hold.ledge.y, z: f.ledge.hold.ledge.z, inX: f.ledge.hold.ledge.inX, inZ: f.ledge.hold.ledge.inZ, grip: +f.ledge.endurance.toFixed(3) } : null,
-          bananas: { left: Math.max(0, BANANAS.perRound - this.throwers[i].thrown), cooldown: +Math.max(0, BANANAS.cooldown - this.throwers[i].since).toFixed(2) },
-          hits: f.hits,
-          jumps: f.jumps,
-          escapes: f.escapes,
-        };
-      }),
+      fighters: this.fighters.map((f, i) =>
+        fighterSnapshot(f, { alive: m.alive[i], score: m.score[i], holding: idOf(f.combat.victim), heldBy: idOf(f.combat.holder), touching: idOf(this.contacts[i]), bananas: { left: Math.max(0, BANANAS.perRound - this.throwers[i].thrown), cooldown: +Math.max(0, BANANAS.cooldown - this.throwers[i].since).toFixed(2) } }),
+      ),
       phase: m.phase,
       round: m.round,
       roundTimer: m.timer,
