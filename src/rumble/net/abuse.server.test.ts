@@ -236,3 +236,34 @@ describe('room-code guessing (M3)', () => {
     expect((await open(base, '203.0.113.7')).welcome?.room?.id).toBe('OPEN');
   });
 });
+
+describe('what the log says about players (L2)', () => {
+  it('never puts a player address beside a Nostr key: connections carry a salted network tag, only refusals name the address', async () => {
+    const lines: string[] = [];
+    const base = await start({ log: (l) => lines.push(l), maxPerAddressPerRoom: 1, roomsPerMinute: 10 });
+    const sk = generateSecretKey();
+    const pk = getPublicKey(sk);
+    const c = await open(base, '203.0.113.7');
+    await prove(c, sk);
+    const made = await open(`${base}/ws?create=1`, '203.0.113.7');
+    await open(base, '203.0.113.7'); // refused: one per room
+    await open(base, '198.51.100.2');
+    c.ws.close();
+    made.ws.close();
+    await waitFor(() => lines.filter((l) => / left room /.test(l)).length === 2);
+    const withIp = lines.filter((l) => l.includes('203.0.113.7'));
+    // The address appears only where a connection was refused (no identity there).
+    expect(withIp.length).toBe(1);
+    expect(withIp[0]).toMatch(/^refused 203\.0\.113\.7/);
+    // The identity line carries no address; the connection lines carry a tag: the same for one network, another for another.
+    const identity = lines.find((l) => / is npub/.test(l));
+    expect(identity).toBeDefined();
+    expect(identity).not.toMatch(/203\.0\.113\.7|net /);
+    const tags = lines.map((l) => /from net ([0-9a-f]{8})/.exec(l)?.[1]).filter(Boolean);
+    expect(tags.length).toBe(3);
+    expect(tags[0]).toBe(tags[1]);
+    expect(tags[2]).not.toBe(tags[0]);
+    expect(lines.find((l) => / created by /.test(l))).toMatch(new RegExp(`created by net ${tags[0]}`));
+    expect(lines.join('\n')).not.toContain(pk);
+  });
+});

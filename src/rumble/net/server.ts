@@ -48,6 +48,7 @@
  * connection (in order, a bounded queue), to feel latency locally. They live
  * in the transport, never in the match or the protocol.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, Server as HttpServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { HavokInstance } from '../sim/physics';
@@ -302,7 +303,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     for (const c of members.get(room) ?? []) c.send(data);
   };
   /** The room a connection asked for (by the query of its URL): the open room, a known room, or a new one. */
-  const roomFor = (req: IncomingMessage, from: string, group: string | null): { room: Room } | { code: number; why: string } => {
+  const roomFor = (req: IncomingMessage, who: string, group: string | null): { room: Room } | { code: number; why: string } => {
     const q = new URL(req.url ?? '/', 'http://x').searchParams;
     if (q.has('create')) {
       // Per address group: an IPv6 /64 is one (rotating through it makes no more rooms).
@@ -316,7 +317,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       if (group !== null) owners.set(room, group);
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
-      log(`room ${room.id} created by ${from} (${room.listed ? 'listed' : 'unlisted'}) · ${rooms.size} rooms`);
+      log(`room ${room.id} created by ${who} (${room.listed ? 'listed' : 'unlisted'}) · ${rooms.size} rooms`);
       return { room };
     }
     if (!q.has('room')) return { room: rooms.open };
@@ -350,10 +351,20 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     return n;
   };
 
+  /**
+   * L2: the logs never put a player's address beside their Nostr key. A connection is logged with a tag of its address
+   * group (salted per process: the same network reads the same until a restart, and cannot be turned back into an
+   * address); only refusals, which never carry an identity, name the address (what an operator acts on).
+   */
+  const salt = randomBytes(16);
+  const netTag = (address: string) => (isLoopback(address) ? 'local' : createHash('sha256').update(salt).update(addressGroup(address)).digest('hex').slice(0, 8));
+
   wss.on('connection', (ws, req: IncomingMessage) => {
     const address = clientAddress(req);
     const group = isLoopback(address) ? null : addressGroup(address);
-    const from = `${address}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
+    const origin = req.headers.origin ? ` (${req.headers.origin})` : '';
+    const from = `${address}${origin}`;
+    const seen = `net ${netTag(address)}${origin}`;
     if (!originAllowed(req.headers.origin)) {
       stats.refused += 1;
       log(`refused ${from}: origin not allowed`);
@@ -374,7 +385,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       ws.close(1013, 'network full: too many connections from your network');
       return;
     }
-    const target = roomFor(req, from, group);
+    const target = roomFor(req, seen, group);
     if ('code' in target) {
       stats.refused += 1;
       log(`refused ${from}: ${target.why}`);
@@ -441,7 +452,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     const inRoom = members.get(room) ?? new Set<Client>();
     members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
-    log(`conn ${id} from ${from}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
+    log(`conn ${id} from ${seen}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
     const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
     client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list'], room: info, server }));
