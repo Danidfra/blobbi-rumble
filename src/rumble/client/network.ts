@@ -42,7 +42,8 @@ import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServer
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
 import { CONNECTION, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
-import { lifecyclePlays, lobbyLine } from './lobby';
+import { lifecyclePlays, lobbyLine, refusalWords } from './lobby';
+import { isTyping } from './dom';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
@@ -759,6 +760,12 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           return;
         }
         newest = m.tick;
+        // L2: a new lineup (a lobby room's match without bots): a new view of the match, nothing interpolated across it.
+        if (buffer.newest && buffer.newest.players.join() !== m.snapshot.players.join()) {
+          buffer = newBuffer();
+          predictor.reset();
+          players = m.snapshot.players;
+        }
         state = m;
         stats.states += 1;
         stats.lastStateBytes = text.length;
@@ -782,6 +789,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           predictor.reset();
           keyboard.held.clear();
         }
+      } else if (m.t === 'refused') {
+        // L2: a lobby request the server would not do.
+        shell.toast(refusalWords(m.of, m.reason));
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
       } else if (m.t === 'rooms') {
@@ -792,8 +802,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
           for (const [slot, now] of Object.entries(m.slots)) {
             const before = roster[slot];
             if (slot === you || !before) continue;
-            if (before.who === 'bot' && now.who !== 'bot') shell.toast(`${now.who === 'nostr' ? clip(displayName(profileOf(now.pubkey), now.pubkey), 20) : 'A guest'} joined as ${slot}`);
-            else if (before.who !== 'bot' && now.who === 'bot') shell.toast(`${slot} left (a bot plays it)`);
+            const nobody = (w: string) => w === 'bot' || w === 'empty';
+            if (nobody(before.who) && !nobody(now.who)) shell.toast(`${now.who === 'nostr' ? clip(displayName(profileOf(now.pubkey), now.pubkey), 20) : 'A guest'} joined as ${slot}`);
+            else if (!nobody(before.who) && nobody(now.who)) shell.toast(now.who === 'bot' ? `${slot} left (a bot plays it)` : `${slot} left`);
           }
         roster = m.slots;
         spectators = m.spectators ?? 0;
@@ -840,6 +851,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       showNet = !showNet;
       e.preventDefault();
     }
+    // L2: until the lobby's interface (L3), R says this seated person is (not) ready.
+    if (e.code === 'KeyR' && !e.repeat && !isTyping(e) && lobby && you && (lobby.phase === 'lobby' || lobby.phase === 'countdown')) send({ t: 'ready', ready: !lobby.ready.includes(you) });
   });
 
   /** Your fighter as drawn: predicted (or handed over from the interpolated authority), with the newest server word on everything discrete. */
@@ -1004,6 +1017,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       (drawn[i] ??= []).push({ x: f.position.x, z: f.position.z, t: now });
       if (drawn[i].length > 240) drawn[i].shift();
     });
+    // L2: the lineup changed (a lobby room's next match without bots): the fighters drawn follow; the new ones' looks are applied afresh.
+    if (presenter && presenter.fighterIds.join() !== s.players.join()) {
+      const had = new Set(presenter.fighterIds);
+      presenter.setFighters(s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })));
+      for (const id of s.players) if (!had.has(id)) worn.delete(id);
+      syncLooks();
+    }
     if (!presenter) {
       try {
         presenter = new RumblePresenter(canvas, hud, s.players.map((id) => ({ id, identity: ROSTER.find((e) => e.label === id)?.identity ?? id })), s.orbs, s.arena, { forceWebGL1: gfx.forceWebGL1, simulateFailure: gfx.simulateEngineFailure });
@@ -1082,10 +1102,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       get you() {
         return you;
       },
-      /** L1: the lobby room's lifecycle as last heard (null: a continuous room). */
+      /** L1: the lobby room's lifecycle as last heard (null: a continuous room); L2: its requests, for scripted checks until L3. */
       get lobby() {
         return lobby;
       },
+      lobbyReady: (ready = true) => send({ t: 'ready', ready }),
+      lobbyStart: () => send({ t: 'start' }),
+      lobbySettings: (settings: { bots?: boolean; arena?: string; rotate?: boolean }) => send({ t: 'settings', ...settings }),
       get connection() {
         return conn;
       },

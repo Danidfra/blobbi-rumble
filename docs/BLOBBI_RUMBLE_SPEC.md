@@ -346,7 +346,7 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 
 ### 10a. Lobby rooms and the match lifecycle (L1)
 
-**Status: L1 implemented (lifecycle core).** Approved 2026-10-11 after
+**Status: L1 (lifecycle core) and L2 (room controls) implemented, awaiting manual validation; the lobby UI is L3.** Approved 2026-10-11 after
 the lobby architecture audit. The **OPEN room keeps continuous drop-in
 play**; private rooms made by current clients get a lobby.
 
@@ -404,8 +404,36 @@ room):
 The server sends each connection of a lobby room a `lobby` message on
 every change (before the state of the tick it happened on): the stage, its
 start and deadline ticks, the transition, the connection's own seat
-(`you`, which may change between matches), the lineup, the settings, the
-minimum, and the last results.
+(`you`, which may change between matches), the owner's seat and whether
+this connection owns the room, the seated and ready seats, the lineup, the
+settings, the minimum, and the last results.
+
+#### Room controls and match management (L2)
+
+**Status: L2 implemented.** The server decides all of it; a client only
+requests (`ready`, `start`, `settings`) and is told `refused` with a
+reason (`not-owner`, `spectator`, `phase`, `too-few`, `busy`, `malformed`,
+`no-lobby`). Nothing a client says about ownership, seats or readiness is
+read.
+
+| Rule | |
+| --- | --- |
+| **Ready** | A seated person may be ready or not, in the lobby and the countdown. Bots are always ready. Back from the results, everyone is unready. |
+| **Automatic start** | When every seated person is ready and the minimum is met. |
+| **Owner's start** | The owner may start while some are not ready; never below the minimum, never during the return's arrival (`busy`). |
+| **Minimum** | Bots on: one seated person (against bots). Bots off: two. |
+| **Cancel** | Someone the countdown started with leaves; the room falls below the minimum; or (not for the owner's start) someone stops being ready. Back to the lobby; it starts again by itself if the rest are all ready. Nobody can hold a room in a countdown. |
+| **Owner** | The room's first connection. When the owner leaves, the longest-present seated person takes over, else the longest-present watcher, else nobody (the next to arrive owns it). It belongs to the connection, like an identity. |
+| **Settings** | The owner's, in the lobby only (refused in the countdown, play and results): `bots`, `arena` (switched at once, while the match stands still), `rotate`. Default bots on. A change applies to the next match; nothing can change a running one. |
+| **Bots on** | Every seat is a fighter; bots drive the ones nobody holds (the existing bot filling). A person leaving mid-match is replaced by a bot, as before. Nobody left: the match is `abandoned`. |
+| **Bots off** | The match is built at the countdown's swap with only the seated people's seats (a new `RumbleMatch` on the same arena, its tick and clock carried on, the old one disposed). An empty seat is `{ who: 'empty' }` in the roster, never a bot. A person leaving mid-match forfeits: their fighter is out of every round and driven by nobody; with one person left, they win by `forfeit`. |
+| **Seats** | Given only in the lobby. Someone arriving during the countdown, the match or the results watches, and is seated when the room is back in its lobby; free seats go to watchers, longest-present first. |
+| **Score ownership** | A fighter's score is its own. Nobody joins a lobby room's running match, so nobody inherits a score; results say who drove each fighter at the end. In the OPEN room, a drop-in player taking over a bot's fighter starts it at 0 (the only change to OPEN's behavior). |
+| **Rate limits** | Per connection, one `ready` per 250 ms, one `start` per 1 s, one `settings` per 500 ms; more are refused as `busy` (and still count against the message bucket). |
+
+Until the lobby interface (L3), a page shows the stage in its contextual
+message and **R** toggles readiness; the owner's start and settings are
+reachable only from `window.rumble` (`lobbyStart`, `lobbySettings`).
 
 ---
 

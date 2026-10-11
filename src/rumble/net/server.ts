@@ -60,7 +60,7 @@ import { arenaById } from '../arena/arenas';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
 import type { LookDeclaration } from './looks';
-import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
+import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type LobbyCommand, type RefusedMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
 import { RoomManager, type Room } from './rooms';
 import { addressGroup, isLoopback } from './address';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
@@ -99,6 +99,11 @@ export const SERVER_LIMITS = Object.freeze({
   roomsPerAddress: 3,
   /** M3: room codes one address may try in vain per minute; past that, joining by code waits for the minute to pass. */
   roomGuessesPerMinute: 10,
+  /**
+   * L2: one connection's lobby requests, at most one of each kind per interval, ms (more are refused as 'busy'):
+   * a ready toggle, an owner's start, a settings change (which can rebuild the arena's colliders).
+   */
+  lobbyEveryMs: Object.freeze({ ready: 250, start: 1000, settings: 500 }),
 });
 
 export interface ServerConfig {
@@ -164,6 +169,8 @@ export interface ServerConfig {
   idleMs?: number;
   /** The heartbeat (and idle check) interval, ms (SERVER_LIMITS.heartbeatMs). */
   heartbeatMs?: number;
+  /** L2 (SERVER_LIMITS defaults): the shortest interval between one connection's lobby requests of each kind, ms. */
+  lobbyEveryMs?: Partial<Record<'ready' | 'start' | 'settings', number>>;
   /** M1, M2, M3 (SERVER_LIMITS defaults): look interval, open rooms per address, failed room codes per address per minute. */
   lookEveryMs?: number;
   roomsPerAddress?: number;
@@ -307,9 +314,11 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   };
   /** L1: what each connection must know of a lobby room's lifecycle (its own seat in it), when anything in it changed. */
   const lobbySent = new Map<Room, number>();
-  const sendLobby = (room: Room) => {
+  const sendLobby = (room: Room, withRoster = true) => {
     if (!room.host.lobby || lobbySent.get(room) === room.host.lobbyVersion) return;
     lobbySent.set(room, room.host.lobbyVersion);
+    // L2: seats change only with the lifecycle (a watcher seated in the lobby): the roster goes with it.
+    if (withRoster) sendRoster(room);
     for (const c of members.get(room) ?? []) {
       const m = room.host.lobbyFor(c.id);
       if (m) c.send(JSON.stringify(m));
@@ -443,6 +452,25 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     let waitingLook: { form: LookDeclaration | null } | null = null;
     let lookTimer: ReturnType<typeof setTimeout> | null = null;
     const lookEveryMs = config.lookEveryMs ?? SERVER_LIMITS.lookEveryMs;
+    /** L2: when this connection's last lobby request of each kind was taken. */
+    const lastLobbyAt: Record<LobbyCommand['t'], number> = { ready: -Infinity, start: -Infinity, settings: -Infinity };
+    const lobbyCommand = (cmd: LobbyCommand) => {
+      const t = performance.now();
+      const every = config.lobbyEveryMs?.[cmd.t] ?? SERVER_LIMITS.lobbyEveryMs[cmd.t];
+      const refuse = (reason: RefusedMessage['reason']) => client.send(JSON.stringify({ t: 'refused', of: cmd.t, reason } satisfies RefusedMessage));
+      if (t - lastLobbyAt[cmd.t] < every) {
+        stats.rateDropped += 1;
+        return refuse('busy');
+      }
+      lastLobbyAt[cmd.t] = t;
+      const refused = host.command(id, cmd);
+      if (refused) return refuse(refused);
+      if (cmd.t === 'settings') {
+        log(`room ${room.id}: settings by conn ${id}${cmd.bots !== undefined ? ` · bots ${cmd.bots ? 'on' : 'off'}` : ''}${cmd.arena ? ` · arena ${room.host.settings.arena}` : ''}${cmd.rotate !== undefined ? ` · rotate ${cmd.rotate ? 'on' : 'off'}` : ''}`);
+      } else if (cmd.t === 'start') log(`room ${room.id}: started by its owner (conn ${id})`);
+      // With the roster: bots on or off changes what an empty seat is.
+      sendLobby(room);
+    };
     const applyLook = (form: LookDeclaration | null) => {
       lastLook = performance.now();
       const r = host.setLook(id, form);
@@ -475,11 +503,11 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
     log(`conn ${id} from ${seen}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}), ...(room.lifecycle === 'lobby' ? { lifecycle: 'lobby' as const } : {}) };
+    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.host.settings.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}), ...(room.lifecycle === 'lobby' ? { lifecycle: 'lobby' as const } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
     client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby'], room: info, server }));
     sendRoster(room);
-    sendLobby(room);
+    sendLobby(room, false);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
     const identityMessage = (msg: ClientMessage) => {
       const reply = (m: AuthReply | ChallengeMessage) => client.send(JSON.stringify(m));
@@ -564,6 +592,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       inbound(() => {
         if (!clients.has(ws)) return;
         if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout' || msg.t === 'look' || msg.t === 'rooms') return identityMessage(msg);
+        if (msg.t === 'ready' || msg.t === 'start' || msg.t === 'settings') return lobbyCommand(msg);
         const reply = host.receive(id, raw);
         if (reply) client.send(JSON.stringify(reply));
       });
@@ -578,9 +607,9 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       challenges.drop(id);
       rooms.leave(room, id);
       members.get(room)?.delete(client);
-      log(`conn ${id} left room ${room.id}${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
+      log(`conn ${id} left room ${room.id}${slot ? `: ${slot} ${room.host.lobby && !room.host.settings.bots ? 'empty' : 'back to its bot'}` : ''} · ${clients.size} connected`);
       sendRoster(room);
-      sendLobby(room);
+      sendLobby(room, false);
     });
     ws.on('error', () => ws.terminate());
   });

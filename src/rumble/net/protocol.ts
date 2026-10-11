@@ -15,6 +15,9 @@
  *                                                     only for a connection with a proven identity, and only a
  *                                                     Blobbi address that identity owns (`looks.ts`)
  *     { t: 'rooms' }                                  M10B: list this server's public rooms (bounded, rate-limited)
+ *     { t: 'ready', ready }                           L2: in a lobby room, this seated person is (not) ready
+ *     { t: 'start' }                                  L2: the room's owner starts the match (never below the minimum)
+ *     { t: 'settings', bots?, arena?, rotate? }       L2: the owner changes the room's settings, in the lobby only
  *
  *   server → client
  *     { t: 'welcome', you, players, tickHz, snapshotHz, features?, room?, server? }
@@ -30,10 +33,11 @@
  *                                                     M9C: and the form their fighter wears, if any
  *     { t: 'look', ok, reason? }                      M9C: the answer to a look
  *     { t: 'rooms', rooms }                           M10B: the public rooms, counts only (never who is in them)
- *     { t: 'lobby', phase, since, deadline, transition, you, lineup, settings, canStart, need, results }
+ *     { t: 'lobby', phase, since, deadline, transition, you, owner, youOwn, seated, ready, lineup, settings, canStart, need, results }
  *                                                     L1: a lobby room's lifecycle (`lifecycle.ts`), on every change,
  *                                                     to each connection (`you`: its seat now, which can change
  *                                                     between matches)
+ *     { t: 'refused', of, reason }                    L2: why a ready / start / settings was not done
  *
  * THE LOBBY (L1) is negotiated both ways, so no client misreads a room: a
  * client that knows it says so in the socket URL (`caps=lobby`); a server
@@ -119,7 +123,22 @@ export interface LookMessage {
 export interface RoomsRequest {
   t: 'rooms';
 }
-export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage | RoomsRequest | ThrowMessage;
+/** L2: lobby requests. Each is only a request; the server decides (`lifecycle.ts`). */
+export interface ReadyMessage {
+  t: 'ready';
+  ready: boolean;
+}
+export interface StartMessage {
+  t: 'start';
+}
+export interface SettingsMessage {
+  t: 'settings';
+  bots?: boolean;
+  arena?: string;
+  rotate?: boolean;
+}
+export type LobbyCommand = ReadyMessage | StartMessage | SettingsMessage;
+export type ClientMessage = InputMessage | PingMessage | ChallengeRequest | AuthMessage | LogoutMessage | LookMessage | RoomsRequest | ThrowMessage | LobbyCommand;
 
 export interface WelcomeMessage {
   t: 'welcome';
@@ -192,6 +211,12 @@ export interface LobbyMessage {
   transition: Transition | null;
   /** This connection's seat now (null: watching until the next lobby has a seat for it). */
   you: string | null;
+  /** L2: the owner's seat (null: the owner watches, or nobody owns the room), and whether this connection is the owner. */
+  owner: string | null;
+  youOwn: boolean;
+  /** L2: the seats people hold, and those whose people said they are ready (bots always are, and are not listed). */
+  seated: string[];
+  ready: string[];
   /** The fighters of the match (the next one, in the lobby). */
   lineup: string[];
   settings: RoomSettings;
@@ -279,7 +304,7 @@ export interface AuthReply {
   reason?: AuthReason;
 }
 /** Who drives a slot, as far as the server can vouch; and (M9C) the form its fighter wears, bound to that pubkey. */
-export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; pubkey: string; form?: SlotForm };
+export type SlotIdentity = { who: 'bot' } | { who: 'guest' } | { who: 'nostr'; pubkey: string; form?: SlotForm } | { who: 'empty' };
 export type LookReason = 'no-identity' | 'not-yours' | 'spectator' | 'malformed';
 export interface LookReply {
   t: 'look';
@@ -292,7 +317,14 @@ export interface RosterMessage {
   /** M8B: how many connections in the room are watching. */
   spectators?: number;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage | LobbyMessage;
+/** L2: why a lobby request was not done. */
+export type LobbyRefusalReason = 'not-owner' | 'spectator' | 'phase' | 'too-few' | 'busy' | 'malformed' | 'no-lobby';
+export interface RefusedMessage {
+  t: 'refused';
+  of: LobbyCommand['t'];
+  reason: LobbyRefusalReason;
+}
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage | LobbyMessage | RefusedMessage;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -349,6 +381,22 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (v.t === 'ping') {
     if (!finite(v.id) || !finite(v.ct)) return null;
     return { t: 'ping', id: v.id, ct: v.ct };
+  }
+  // L2: lobby requests, shape-checked only (the host decides whether they may be done).
+  if (v.t === 'ready') return typeof v.ready === 'boolean' ? { t: 'ready', ready: v.ready } : null;
+  if (v.t === 'start') return { t: 'start' };
+  if (v.t === 'settings') {
+    const out: SettingsMessage = { t: 'settings' };
+    for (const k of ['bots', 'rotate'] as const) {
+      if (v[k] === undefined) continue;
+      if (typeof v[k] !== 'boolean') return null;
+      out[k] = v[k] as boolean;
+    }
+    if (v.arena !== undefined) {
+      if (typeof v.arena !== 'string' || v.arena.length > 64) return null;
+      out.arena = v.arena;
+    }
+    return out;
   }
   if (v.t === 'throw') {
     if (!finite(v.x) || !finite(v.z) || Math.abs(v.x) > 100 || Math.abs(v.z) > 100) return null;

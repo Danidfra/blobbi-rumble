@@ -50,6 +50,9 @@ export interface RumbleMatchConfig {
   players: readonly { id: PlayerId }[];
   /** M11A: which arena (the classic island by default). */
   arena?: ArenaDef;
+  /** L2: the tick and clock to start from (a room's next match keeps counting, so states stay in order). */
+  startTick?: number;
+  startTime?: number;
 }
 
 /** M11D / M11E: how a belt and ice act on a body standing on them. */
@@ -90,6 +93,8 @@ export class RumbleMatch {
   private events: MatchEvent[] = [];
   private tickCount = 0;
   private clock = 0;
+  /** L2: fighters whose player left a match without bots: out of every round from now on. */
+  private readonly forfeited: boolean[];
 
   constructor(config: RumbleMatchConfig) {
     const n = config.players.length;
@@ -118,6 +123,26 @@ export class RumbleMatch {
     this.lastIntents = this.ids.map(() => ({ ...IDLE_INTENT }));
     this.contacts = Array(n).fill(-1);
     this.throwers = createThrowers(n);
+    this.forfeited = Array(n).fill(false);
+    this.tickCount = config.startTick ?? 0;
+    this.clock = config.startTime ?? 0;
+  }
+
+  /**
+   * L2: this fighter's player left a match nobody else may drive (a room
+   * without bots). It is out of the round at the next step of play, and of
+   * every round after, like a ring-out (its holds end, it scores nothing
+   * more); its score so far stays its own.
+   */
+  forfeit(id: PlayerId) {
+    const i = this.indexOf(id);
+    this.forfeited[i] = true;
+    this.clearInput(id);
+  }
+
+  /** L2: this fighter's score back to nothing (a new player took it over: they do not inherit what another earned). */
+  resetScore(id: PlayerId) {
+    this.match.score[this.indexOf(id)] = 0;
   }
 
   /**
@@ -460,7 +485,8 @@ export class RumbleMatch {
     });
 
     // Ring-outs: who crossed the fall line this step. Each is out of the round: its holds end, its body leaves play.
-    const fell = fighters.map((f) => !f.eliminated && f.checkFall(dt));
+    // L2: a forfeited fighter goes out with the ring-outs, in play only (between rounds nobody leaves).
+    const fell = fighters.map((f, i) => !f.eliminated && (f.checkFall(dt) || (playing && this.forfeited[i])));
     if (fell.some(Boolean)) {
       const list = this.combatants();
       fell.forEach((out, i) => {

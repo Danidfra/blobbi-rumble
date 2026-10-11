@@ -400,6 +400,40 @@ export class RumblePresenter {
     view?.setTag(name ?? id, name === null);
   }
 
+  /** The fighter ids drawn, in snapshot order. */
+  get fighterIds(): string[] {
+    return this.views.map((v) => v.id);
+  }
+
+  /**
+   * L2: a new lineup (a lobby room's next match without bots): the fighters
+   * drawn become exactly these, in this order. A fighter that stays keeps
+   * its body (and the look it wears); one that goes is disposed; a new one
+   * gets its default body (the roster's look follows). No snapshot is
+   * compared across the change.
+   */
+  setFighters(fighters: readonly PresentedFighter[]) {
+    const old = new Map(this.views.map((v) => [v.id, v]));
+    const next = fighters.map((f) => {
+      const kept = old.get(f.id);
+      if (kept) {
+        old.delete(f.id);
+        return kept;
+      }
+      if (!this.defaults.has(f.id)) this.defaults.set(f.id, seedFromLabel(f.identity));
+      const view = new FighterView(f.id, f.id, this.scene, this.defaults.get(f.id)!, this.env.shadows);
+      view.showDebug(this.debug.on);
+      return view;
+    });
+    for (const [id, view] of old) {
+      view.dispose();
+      this.worn.delete(id);
+    }
+    this.views.splice(0, this.views.length, ...next);
+    this.previous = null;
+    this.cameraPose = null;
+  }
+
   /** M11A: the arena the snapshot names: rebuilt when it changes (a rotation, another room). */
   private syncArena(s: MatchSnapshot) {
     if (s.arena === this.def.id) return;

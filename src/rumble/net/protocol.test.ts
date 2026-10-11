@@ -4,7 +4,7 @@
  * how a client tells a stale state from a fresh one.
  */
 import { describe, expect, it } from 'vitest';
-import { isNewer, parseClientMessage, parseIntent, PROTOCOL } from './protocol';
+import { isNewer, parseCaps, parseClientMessage, parseIntent, PROTOCOL } from './protocol';
 
 const input = (seq: unknown, intent: unknown) => JSON.stringify({ t: 'input', seq, intent });
 
@@ -95,5 +95,28 @@ describe('rooms and the protocol version (M10)', () => {
     expect(parseClientMessage(JSON.stringify({ t: 'rooms', pad: 'x'.repeat(PROTOCOL.maxClientMessage) }))).toBeNull();
     expect(PROTOCOL.version).toBe(1);
     expect(PROTOCOL.maxListedRooms).toBeGreaterThan(0);
+  });
+});
+
+describe('the lobby (L1, L2)', () => {
+  it('reads the capabilities a socket URL announces: known ones only, bounded', () => {
+    expect([...parseCaps('lobby')]).toEqual(['lobby']);
+    expect([...parseCaps('lobby,future')]).toEqual(['lobby']);
+    expect([...parseCaps(null)]).toEqual([]);
+    expect([...parseCaps(`lobby,${'x'.repeat(80)}`)]).toEqual([]);
+  });
+
+  it('reads ready, start and settings as requests only: no owner, seat, phase or readiness of anyone else rides along', () => {
+    expect(parseClientMessage(JSON.stringify({ t: 'ready', ready: true, who: 'P2', owner: true }))).toEqual({ t: 'ready', ready: true });
+    expect(parseClientMessage(JSON.stringify({ t: 'ready' }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'ready', ready: 1 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'start', force: true, phase: 'playing' }))).toEqual({ t: 'start' });
+    expect(parseClientMessage(JSON.stringify({ t: 'settings', bots: false, arena: 'frozen-lake', rotate: true, owner: 'P1' }))).toEqual({ t: 'settings', bots: false, arena: 'frozen-lake', rotate: true });
+    expect(parseClientMessage(JSON.stringify({ t: 'settings' }))).toEqual({ t: 'settings' });
+    expect(parseClientMessage(JSON.stringify({ t: 'settings', bots: 'no' }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'settings', rotate: null }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'settings', arena: 7 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: 'settings', arena: 'x'.repeat(65) }))).toBeNull();
+    for (const t of ['lobby', 'phase', 'owner', 'seat', 'results', 'countdown']) expect(parseClientMessage(JSON.stringify({ t }))).toBeNull();
   });
 });

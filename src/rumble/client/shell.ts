@@ -1041,7 +1041,7 @@ export function createShell(a: ShellActions) {
         const b = v.blobbiNameOf(slot);
         tag = `${mine ? 'you · ' : ''}nostr${b ? ` · ${clip(b, 16)} (Rumble form)` : ''}`;
       } else {
-        name = id.who === 'bot' ? 'Bot' : 'Guest';
+        name = id.who === 'bot' ? 'Bot' : id.who === 'empty' ? 'Empty seat' : 'Guest';
         pic = avatar(null, undefined, 18);
       }
       list.append(el('span', 'slot', slot), pic, el('span', 'nm', name), el('span', 'rs-sub', tag));
