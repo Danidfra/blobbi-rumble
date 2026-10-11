@@ -12,6 +12,7 @@
  * (`serverIdentity.ts`), readable from any origin.
  */
 import { createReadStream, statSync } from 'node:fs';
+import { pipeline } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 
@@ -102,6 +103,8 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
       res.end();
       return;
     }
-    createReadStream(file).pipe(res);
+    // pipeline, not pipe: a client that hangs up mid-download (or a read error) closes the file and its buffer. With
+    // `.pipe()` every aborted transfer kept an open file and its read buffer for good (security audit H2).
+    pipeline(createReadStream(file), res, () => {});
   };
 }
