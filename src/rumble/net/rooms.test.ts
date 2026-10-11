@@ -40,8 +40,10 @@ describe('room ids', () => {
 
 describe('the room manager', () => {
   it('always has the open room; creates private rooms up to the limit, each with its own match', () => {
-    const m = new RoomManager({ havok, maxRooms: 3 });
+    // L4.1: the open room and the plaza count toward the limit.
+    const m = new RoomManager({ havok, maxRooms: 4 });
     expect(m.open.id).toBe(OPEN_ROOM);
+    expect(m.plaza.kind).toBe('plaza');
     const a = m.create()!;
     const b = m.create()!;
     expect(m.create()).toBeNull();
@@ -98,7 +100,7 @@ describe('the room manager', () => {
 
 describe('the public listing (M10B)', () => {
   it('the open room and listed code rooms, counts only, busiest first, bounded; unlisted rooms never appear', () => {
-    const m = new RoomManager({ havok, maxRooms: 6 });
+    const m = new RoomManager({ havok, maxRooms: 7 });
     const pub = m.create({ listed: true })!;
     const priv = m.create()!;
     const pub2 = m.create({ listed: true })!;
@@ -108,7 +110,8 @@ describe('the public listing (M10B)', () => {
     m.enter(pub2, 2);
     pub2.host.connect(2);
     const rows = m.listing();
-    expect(rows.map((r) => r.id)).toEqual(['OPEN', pub2.id, pub.id]);
+    // L4.1: the plaza first (the server lists it only to clients that speak it), then the open room.
+    expect(rows.map((r) => r.id)).toEqual(['PLAZA', 'OPEN', pub2.id, pub.id]);
     expect(rows.find((r) => r.id === pub2.id)).toMatchObject({ kind: 'private', players: 2, maxPlayers: 4, spectators: 0, maxConnections: m.perRoom, joinable: true });
     expect(rows.find((r) => r.id === 'OPEN')).toMatchObject({ kind: 'open', players: 0, joinable: true });
     expect(JSON.stringify(rows)).not.toContain(priv.id);

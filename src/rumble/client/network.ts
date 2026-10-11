@@ -41,7 +41,8 @@ import { Keyboard, NET_BINDINGS, PlayerInput, type MoveIntent } from '../control
 import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
-import { CONNECTION, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
+import { CONNECTION, idleConnection, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
+import { OPEN_ROOM, PLAZA_ROOM } from '../net/roomId';
 import { movementLive, refusalWords, tagMarks, visibleLineup } from './lobby';
 import { PLAZA_TERRAIN, isSocialSpace } from '../arena/lobbySpace';
 import { CLASSIC_TERRAIN } from './predict';
@@ -92,7 +93,6 @@ const safeStorage = (): Storage | null => {
     return null;
   }
 };
-const START_SEEN = 'rumble:start-seen';
 /** M12: no signer on a touch device. Rumble never asks for a private key, so it only works with a signer the browser provides. */
 const MOBILE_NO_SIGNER = 'This browser has no Nostr signer (NIP-07). On a phone that takes a browser with a signer extension, or a Nostr app’s built-in browser. Rumble never asks for your private key. You can keep playing as a guest.';
 /** How many times this page started the network client (diagnostics: more than once means a duplicate initialisation). */
@@ -363,8 +363,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let buffer = newBuffer();
   const predictor = new LocalPredictor();
   let ws: WebSocket | null = null;
-  const targetRoom = (t: RoomIntent) => (t.kind === 'join' ? t.id : t.kind === 'invalid' ? t.raw : null);
-  let conn = initialConnection(url, targetRoom(target));
+  const targetRoom = (t: RoomIntent) => (t.kind === 'join' ? t.id : t.kind === 'invalid' ? t.raw : t.kind === 'plaza' ? PLAZA_ROOM : null);
+  // L4.1: a plain visit is the menu: nothing connects until the player chooses.
+  let conn = target.kind === 'menu' ? idleConnection(url) : initialConnection(url, targetRoom(target));
   let connectingSince = 0;
   let status = 'connecting';
   let you: string | null = null;
@@ -430,22 +431,6 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     if (identity.state.pubkey) pks.push(identity.state.pubkey);
     if (pks.length) profiles().ask(pks);
   };
-  // The start card: once, on a first visit that lands in the open room (a share link goes straight in).
-  let startSeen = target.kind !== 'open' || (() => {
-    try {
-      return storage?.getItem(START_SEEN) === '1';
-    } catch {
-      return false;
-    }
-  })();
-  const seeStart = () => {
-    startSeen = true;
-    try {
-      storage?.setItem(START_SEEN, '1');
-    } catch {
-      // Not remembered: shown again next visit.
-    }
-  };
   // Development-only diagnostics of the Nostr connection lifecycle (dev builds; `?nostr-diag=1` too): stages and timings,
   // never a key, a signature, a challenge or a message. Shown in the session panel with a Copy button, and on the console.
   const diagOn = import.meta.env.DEV || q.get('nostr-diag') === '1';
@@ -501,8 +486,27 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     keyboard.held.clear();
     identity.onClose();
     conn = initialConnection(url, targetRoom(next));
-    if (next.kind === 'open') history.replaceState(null, '', pageAddress(null, location.search));
+    // L4.1: Quick Match and the plaza keep their names in the address (a reload goes back there, not to the menu).
+    if (next.kind === 'open') history.replaceState(null, '', pageAddress(OPEN_ROOM, location.search));
+    if (next.kind === 'plaza') history.replaceState(null, '', pageAddress(PLAZA_ROOM, location.search));
     connect();
+  };
+  /** L4.1: back to the menu: the room's connection closes (its seat is freed at once), nothing connects again. */
+  const toMenu = () => {
+    target = { kind: 'menu' };
+    inviteStatus = null;
+    const old = ws;
+    ws = null;
+    old?.close(1000, 'menu');
+    you = null;
+    roster = null;
+    room = null;
+    lobby = null;
+    predictor.reset();
+    keyboard.held.clear();
+    identity.onClose();
+    conn = idleConnection(url);
+    history.replaceState(null, '', pageAddress(null, location.search));
   };
   /** M8C-A: a private Nostr invite to an npub / nprofile, from this page straight to the recipient's NIP-17 inbox (never via the game server). */
   const doSendInvite = (input: string) => {
@@ -548,10 +552,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     },
     refreshRooms: () => askRooms(true),
     joinGame: (id) => switchTo({ kind: 'join', id }),
-    connectNostr: () => {
-      seeStart();
-      void identity.connect();
-    },
+    connectNostr: () => void identity.connect(),
     disconnectNostr: () => identity.disconnect(),
     dismissIdentityError: () => identity.dismissError(),
     // M9B.1: the extension holds another identity than the remembered one: only a click connects it.
@@ -582,7 +583,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     lobbyReady: (ready) => send({ t: 'ready', ready }),
     lobbyStart: () => send({ t: 'start' }),
     lobbySettings: (change) => send({ t: 'settings', ...change }),
-    startSeen: seeStart,
+    // L4.1: the menu's ways in, and back to it.
+    enterPlaza: () => switchTo({ kind: 'plaza' }),
+    quickMatch: () => switchTo({ kind: 'open' }),
+    toMenu: () => toMenu(),
     // M8C-A: a private Nostr invite to a pasted npub / nprofile.
     sendInvite: (input) => doSendInvite(input),
     // M8C-C: the chosen person, through the same sender; nothing is sent without this click.
@@ -688,6 +692,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   };
   const connect = () => {
     if (graphicsDown) return;
+    // L4.1: the menu connects to nothing.
+    if (target.kind === 'menu') return;
     if (target.kind === 'invalid') {
       // A share link with a malformed code: nothing to connect to; the banner offers the open room or a new game.
       conn = { ...initialConnection(url, target.raw || '?'), phase: 'missing' };
@@ -739,9 +745,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         trust = classifyServer(url, serverInfo);
         if (serverInfo?.operator) profiles().ask([serverInfo.operator]);
         // From now on (reconnects, reloads) this page means this room, not "a new one".
-        target = room.kind === 'private' ? { kind: 'join', id: room.id } : { kind: 'open' };
+        target = room.kind === 'private' ? { kind: 'join', id: room.id } : room.kind === 'plaza' ? { kind: 'plaza' } : { kind: 'open' };
         conn = { ...conn, room: room.kind === 'private' ? room.id : null };
-        history.replaceState(null, '', pageAddress(room.kind === 'private' ? room.id : null, location.search));
+        history.replaceState(null, '', pageAddress(room.kind === 'private' ? room.id : room.kind === 'plaza' ? PLAZA_ROOM : OPEN_ROOM, location.search));
         if (created) {
           shell.toast(`Room ${room.id} is ready: share the link or the code`, 6000);
           // L3: a lobby room's card has the code, the link and the invitations at hand; an older room opens the session panel.
@@ -813,8 +819,11 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
             const before = roster[slot];
             if (slot === you || !before) continue;
             const nobody = (w: string) => w === 'bot' || w === 'empty';
-            if (nobody(before.who) && !nobody(now.who)) shell.toast(`${now.who === 'nostr' ? clip(displayName(profileOf(now.pubkey), now.pubkey), 20) : 'A guest'} joined as ${slot}`);
-            else if (!nobody(before.who) && nobody(now.who)) shell.toast(now.who === 'bot' ? `${slot} left (a bot plays it)` : `${slot} left`);
+            const someone = now.who === 'nostr' ? clip(displayName(profileOf(now.pubkey), now.pubkey), 20) : 'A guest';
+            // L4.1: on the plaza people come and go; a seat is no place there.
+            const onPlaza = room?.kind === 'plaza';
+            if (nobody(before.who) && !nobody(now.who)) shell.toast(onPlaza ? `${someone} came to the plaza` : `${someone} joined as ${slot}`);
+            else if (!nobody(before.who) && nobody(now.who)) shell.toast(onPlaza ? `${before.who === 'nostr' ? clip(displayName(profileOf(before.pubkey), before.pubkey), 20) : 'A guest'} left the plaza` : now.who === 'bot' ? `${slot} left (a bot plays it)` : `${slot} left`);
           }
         roster = m.slots;
         spectators = m.spectators ?? 0;
@@ -967,7 +976,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       // L3: between a lobby room's matches its cards speak; the match's own messages are for play.
       message: lobby && lobby.phase !== 'playing' ? '' : (presenter?.currentMessage ?? ''),
       nameOf: nameFor,
-      startCard: !startSeen && room?.kind === 'open',
+      menu: target.kind === 'menu',
+      plaza: room?.kind === 'plaza' ? { here: Object.values(roster ?? {}).filter((x) => x.who === 'guest' || x.who === 'nostr').length, capacity: Object.keys(roster ?? {}).length || 8, blobbi: currentForm()?.blobbi.name ?? null } : null,
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
       people: people && room?.kind === 'private' ? people.state : null,
       blobbis: blobbis && identity.verified ? { state: blobbis.state, form: currentForm(), note: lookNote, shared: serverLooks() } : null,
@@ -1062,7 +1072,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       const n = nameFor(id);
       const b = blobbiNameFor(id);
       // The tag: the person's name, and the Blobbi's when their fighter wears one (M9D); the slot label for guests and bots.
-      const name = n === null ? null : b ? `${clip(n, 12)} · ${clip(b, 10)}` : clip(n, 14);
+      // L4.1: the plaza's ambient bots (no seat, no roster entry) are called what they are.
+      const ambient = !roster?.[id] && control[id] === 'bot';
+      const name = ambient ? 'Bot' : n === null ? null : b ? `${clip(n, 12)} · ${clip(b, 10)}` : clip(n, 14);
       // L4: in the lobby, the owner's star and a ready tick over the Blobbis.
       const marks = tagMarks(lobby, id);
       presenter.setTag(id, marks.before || marks.after ? `${marks.before}${name ?? id}${marks.after}` : name);
@@ -1181,6 +1193,13 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       refreshRooms: () => askRooms(true),
       join: (id: string) => switchTo({ kind: 'join', id }),
       openRoom: () => switchTo({ kind: 'open' }),
+      /** L4.1: the menu's ways, for scripted checks. */
+      enterPlaza: () => switchTo({ kind: 'plaza' }),
+      quickMatch: () => switchTo({ kind: 'open' }),
+      toMenu: () => toMenu(),
+      get socketOpen() {
+        return ws !== null && ws.readyState <= 1;
+      },
       shell,
       /** M8C-B invites, for scripted checks (valid invites only; nothing else is held). */
       get inbox() {

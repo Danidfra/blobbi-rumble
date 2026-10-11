@@ -13,7 +13,12 @@ describe('room intents from the page address', () => {
     expect(roomIntent({ pathname: '/play/a7f2', search: '?server=ws://x' })).toEqual({ kind: 'join', id: 'A7F2' });
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&room=a7-f2' })).toEqual({ kind: 'join', id: 'A7F2' });
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1' })).toEqual({ kind: 'create', listed: false });
-    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1' })).toEqual({ kind: 'open' });
+    // L4.1: a plain visit is the menu; the open room is Quick Match, by its name; the plaza by its name.
+    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1' })).toEqual({ kind: 'menu' });
+    expect(roomIntent({ pathname: '/rumble.html', search: '' })).toEqual({ kind: 'menu' });
+    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&room=OPEN' })).toEqual({ kind: 'open' });
+    expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&room=PLAZA' })).toEqual({ kind: 'plaza' });
+    expect(roomIntent({ pathname: '/play/plaza', search: '' })).toEqual({ kind: 'plaza' });
     expect(roomIntent({ pathname: '/play/OPEN', search: '' })).toEqual({ kind: 'open' });
   });
 
@@ -27,15 +32,20 @@ describe('room intents from the page address', () => {
 
 describe('links', () => {
   it('the socket URL carries the room (and nothing else changes), and says this page speaks the lobby (L1)', () => {
-    expect(socketUrl('wss://rumble.example/ws', { kind: 'join', id: 'A7F2' })).toBe('wss://rumble.example/ws?room=A7F2&caps=lobby');
-    expect(socketUrl('ws://127.0.0.1:8787', { kind: 'create' })).toBe('ws://127.0.0.1:8787/?create=1&caps=lobby');
-    expect(socketUrl('wss://rumble.example/ws?room=ZZZZ', { kind: 'open' })).toBe('wss://rumble.example/ws?caps=lobby');
+    expect(socketUrl('wss://rumble.example/ws', { kind: 'join', id: 'A7F2' })).toBe('wss://rumble.example/ws?room=A7F2&caps=lobby%2Cplaza');
+    expect(socketUrl('ws://127.0.0.1:8787', { kind: 'create' })).toBe('ws://127.0.0.1:8787/?create=1&caps=lobby%2Cplaza');
+    expect(socketUrl('wss://rumble.example/ws?room=ZZZZ', { kind: 'open' })).toBe('wss://rumble.example/ws?caps=lobby%2Cplaza');
+    // L4.1: the plaza by its name.
+    expect(socketUrl('wss://rumble.example/ws', { kind: 'plaza' })).toBe('wss://rumble.example/ws?room=PLAZA&caps=lobby%2Cplaza');
   });
 
   it('the page address after a switch keeps the flags that matter', () => {
     expect(pageAddress('A7F2', '?network=1&create=1&server=ws%3A%2F%2Fx&relays=ws%3A%2F%2Fr')).toBe('/play/A7F2?server=ws%3A%2F%2Fx&relays=ws%3A%2F%2Fr');
     expect(pageAddress('A7F2', '')).toBe('/play/A7F2');
     expect(pageAddress(null, '?room=A7F2&interp=0')).toBe('/rumble.html?interp=0&network=1');
+    // L4.1: Quick Match and the plaza keep their names in the address, so a reload goes back there (not to the menu).
+    expect(pageAddress('OPEN', '?interp=0')).toBe('/rumble.html?interp=0&network=1&room=OPEN');
+    expect(pageAddress('PLAZA', '')).toBe('/rumble.html?network=1&room=PLAZA');
   });
 
   it('the share link: the server’s canonical one if it gave one (http(s) only), else this page’s origin', () => {
@@ -66,13 +76,13 @@ describe('public rooms and server-aware links (M10)', () => {
   it('?create=1&public=1 asks for a listed room; the socket URL carries it; a plain create stays unlisted', () => {
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1&public=1' })).toEqual({ kind: 'create', listed: true });
     expect(roomIntent({ pathname: '/rumble.html', search: '?create=1' })).toEqual({ kind: 'create', listed: false });
-    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1&caps=lobby');
-    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1&caps=lobby');
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1&caps=lobby%2Cplaza');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1&caps=lobby%2Cplaza');
     // M11A: the arena and rotation ride the same address, and never leak into a join or the open room.
     expect(roomIntent({ pathname: '/rumble.html', search: '?create=1&arena=blobbi-factory&rotate=1' })).toEqual({ kind: 'create', listed: false, arena: 'blobbi-factory', rotate: true });
-    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true, arena: 'frozen-lake', rotate: true })).toBe('wss://s.example/ws?create=1&public=1&arena=frozen-lake&rotate=1&caps=lobby');
-    expect(socketUrl('wss://s.example/ws?arena=frozen-lake&rotate=1', { kind: 'join', id: 'ABCDE' })).toBe('wss://s.example/ws?room=ABCDE&caps=lobby');
-    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2&caps=lobby');
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true, arena: 'frozen-lake', rotate: true })).toBe('wss://s.example/ws?create=1&public=1&arena=frozen-lake&rotate=1&caps=lobby%2Cplaza');
+    expect(socketUrl('wss://s.example/ws?arena=frozen-lake&rotate=1', { kind: 'join', id: 'ABCDE' })).toBe('wss://s.example/ws?room=ABCDE&caps=lobby%2Cplaza');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2&caps=lobby%2Cplaza');
   });
   it('a share link names the server when the page is not served by it (and has no public address); the server’s own address needs nothing', () => {
     expect(shareLink('A7F2', 'https://site.example', undefined, 'wss://site.example/ws')).toBe('https://site.example/play/A7F2');

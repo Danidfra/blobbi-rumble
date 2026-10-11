@@ -2,18 +2,21 @@
  * WHICH ROOM A PAGE WANTS, and the links for it. Pure.
  *
  *   /play/A7F2  or  ?room=A7F2     join that room
+ *   ?room=PLAZA                    L4.1: the public social plaza
+ *   ?room=OPEN                     Quick Match: the open combat room
  *   ?create=1                      make a new room (then the page's address
  *                                  becomes the room's link, so a reload or a
  *                                  reconnect rejoins instead of making another)
- *   anything else                  the open room
+ *   anything else                  L4.1: the MENU (nothing connects until the
+ *                                  player chooses; it used to be the open room)
  *
  * The page's other query flags that matter across a switch (`server`,
  * `relays`, dev knobs) are kept; `room`, `create` and `network` are the
  * room's to set.
  */
-import { OPEN_ROOM, normalizeRoomId } from '../net/roomId';
+import { OPEN_ROOM, PLAZA_ROOM, normalizeRoomId } from '../net/roomId';
 
-export type RoomIntent = { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create'; listed?: boolean; arena?: string; rotate?: boolean } | { kind: 'invalid'; raw: string };
+export type RoomIntent = { kind: 'menu' } | { kind: 'plaza' } | { kind: 'open' } | { kind: 'join'; id: string } | { kind: 'create'; listed?: boolean; arena?: string; rotate?: boolean } | { kind: 'invalid'; raw: string };
 
 export function roomIntent(loc: { pathname: string; search: string }): RoomIntent {
   const q = new URLSearchParams(loc.search);
@@ -27,9 +30,9 @@ export function roomIntent(loc: { pathname: string; search: string }): RoomInten
   if (raw !== null) {
     const id = normalizeRoomId(raw);
     if (!id) return { kind: 'invalid', raw: raw.slice(0, 16) };
-    return id === OPEN_ROOM ? { kind: 'open' } : { kind: 'join', id };
+    return id === OPEN_ROOM ? { kind: 'open' } : id === PLAZA_ROOM ? { kind: 'plaza' } : { kind: 'join', id };
   }
-  if (!q.has('create')) return { kind: 'open' };
+  if (!q.has('create')) return { kind: 'menu' };
   const arena = q.get('arena');
   return { kind: 'create', listed: q.get('public') === '1', ...(arena ? { arena } : {}), ...(q.get('rotate') === '1' ? { rotate: true } : {}) };
 }
@@ -44,25 +47,31 @@ export function socketUrl(serverUrl: string, intent: RoomIntent): string {
   const u = new URL(serverUrl);
   for (const k of ['room', 'create', 'public', 'arena', 'rotate', 'caps']) u.searchParams.delete(k);
   if (intent.kind === 'join') u.searchParams.set('room', intent.id);
+  else if (intent.kind === 'plaza') u.searchParams.set('room', PLAZA_ROOM);
   else if (intent.kind === 'create') {
     u.searchParams.set('create', '1');
     if (intent.listed) u.searchParams.set('public', '1');
     if (intent.arena) u.searchParams.set('arena', intent.arena);
     if (intent.rotate) u.searchParams.set('rotate', '1');
   }
-  u.searchParams.set('caps', 'lobby');
+  u.searchParams.set('caps', 'lobby,plaza');
   return u.toString();
 }
 
 const KEEP = ['server', 'relays', 'interp', 'predict', 'delay'];
 
-/** The page address (path + query) for being in `roomId` (null: the open room), keeping the flags that matter. */
+/**
+ * The page address (path + query) for being in `roomId`, keeping the flags
+ * that matter: a private room's share path; L4.1: `?room=OPEN` (Quick Match)
+ * and `?room=PLAZA`, so a reload goes back there; null: the menu.
+ */
 export function pageAddress(roomId: string | null, search: string): string {
   const from = new URLSearchParams(search);
   const q = new URLSearchParams();
   for (const k of KEEP) if (from.has(k)) q.set(k, from.get(k)!);
-  if (!roomId || roomId === OPEN_ROOM) {
+  if (!roomId || roomId === OPEN_ROOM || roomId === PLAZA_ROOM) {
     q.set('network', '1');
+    if (roomId) q.set('room', roomId);
     return `/rumble.html?${q.toString()}`;
   }
   const rest = q.toString();

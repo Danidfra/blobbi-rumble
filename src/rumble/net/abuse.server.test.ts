@@ -205,7 +205,7 @@ describe('private-room exhaustion (M2)', () => {
     await waitFor(() => server!.stats.clients === 0);
     server!.rooms.all().forEach((r) => (r.emptySince = r.kind === 'private' ? 0 : r.emptySince));
     server!.sweep();
-    expect(server!.rooms.size).toBe(1);
+    expect(server!.rooms.size).toBe(2);
     expect((await open(`${base}/ws?create=1`, '203.0.113.7')).welcome?.room?.kind).toBe('private');
   });
 

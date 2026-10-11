@@ -346,7 +346,7 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 
 ### 10a. Lobby rooms and the match lifecycle (L1)
 
-**Status: L1 (lifecycle core), L2 (room controls), L3 (lobby and results interface) and L4 (the social lobby, Blobbi Plaza) implemented, awaiting manual validation.** Approved 2026-10-11 after
+**Status: L1 (lifecycle core), L2 (room controls), L3 (lobby and results interface), L4 (the social lobby, Blobbi Plaza) and L4.1 (plaza first: the menu and the public plaza) implemented, awaiting manual validation.** Approved 2026-10-11 after
 the lobby architecture audit. The **OPEN room keeps continuous drop-in
 play**; private rooms made by current clients get a lobby.
 
@@ -450,6 +450,25 @@ message and roster; `client/lobbyUi.ts`: the DOM), not a separate app.
 
 A lobby room's creation no longer opens the session panel (the card has
 the code, link and invitations); an older continuous room's still does.
+
+#### Plaza first: the menu and the public plaza (L4.1)
+
+**Status: L4.1 implemented, awaiting manual validation.** A plain visit
+no longer drops anyone into combat: it shows a **menu** and connects to
+nothing until the player chooses.
+
+| | |
+| --- | --- |
+| **Menu** | **Enter Plaza** (primary), **Quick Match** (the OPEN room, as before), Create room, Join room (code); who you play as. Direct links still connect at once: `/play/CODE`, `?room=OPEN`, `?room=PLAZA`. Quick Match and the plaza keep their names in the page address, so a reload goes back there. |
+| **Public plaza** | One permanent room, `PLAZA` (an L: never a generated code), on every server, never reaped. Its host's `plaza` mode is only the social plaza: the L4 `SocialSpace`, movement, physics, camera, touch controls and Blobbi looks, with no lifecycle, match, ready, owner, bots in seats, scoring or combat. Guests and proven Nostr identities alike. |
+| **Capacity** | **8 people**, one avatar per connection (no watchers there); the 9th is refused with 1013 "plaza full": the page says "Blobbi Plaza is full." and offers Try again, Create private room and Quick Match, never retrying by itself and never sending anyone into a match. One plaza per server for now. Measured server cost: 0.05 ms per tick at 8 avatars; ~5.2 KB per state, ~102 KB/s per client, ~0.8 MB/s for a full plaza. |
+| **Ambient bots** | `B1`, `B2` (never a seat's id): 2 for 0–1 people, 1 for 2, none from 3. No connection, identity, roster entry or capacity; they stroll (`control/wander.ts`), never fight. A change settles 2 s (no flicker on a reload); a bot appears on a far corner, and the one that goes is the one furthest from anyone. Tagged "Bot". |
+| **Plaza card** | Who you are (a display name, never a key), the Blobbi worn (Choose… opens the session panel's picker), Create room, Join room, Quick Match, Menu; "Everyone here sees your name and your Blobbi." Folded on touch (Quick Match kept in the header). No ready, start, owner, bots or rotation. |
+| **Negotiation** | `caps=plaza` (pages now say `caps=lobby,plaza`); a client without it is refused the plaza (1008, update required) and never sees it in the listing. |
+| **Switching** | All in one page, one socket at a time (`switchTo`); Menu closes the connection (its seat freed at once). Identity is proven again and the chosen Blobbi declared again on each new connection. Late messages of an old socket are ignored. |
+
+The plaza takes one of the server's 16 rooms (OPEN, PLAZA and up to 14
+private rooms).
 
 #### The social lobby: Blobbi Plaza (L4)
 

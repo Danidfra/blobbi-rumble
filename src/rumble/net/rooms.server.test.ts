@@ -89,7 +89,7 @@ describe('rooms over the socket', () => {
     const guest = await open(`${base}/?room=${id.toLowerCase()}`);
     expect(guest.welcome!.room!.id).toBe(id);
     expect(guest.welcome!.you).toBe('P2');
-    expect(server.rooms.size).toBe(2);
+    expect(server.rooms.size).toBe(3);
   });
 
   it('a missing or malformed room is refused with 4004; nothing is created', async () => {
@@ -99,7 +99,7 @@ describe('rooms over the socket', () => {
       const c = await open(`${base}/?room=${q}`);
       expect(c.closed, q).toEqual({ code: 4004, reason: 'no such room' });
     }
-    expect(server.rooms.size).toBe(1);
+    expect(server.rooms.size).toBe(2);
   });
 
   it('room capacity: four play, the rest watch, then the room is full; the open room is unaffected', async () => {
@@ -183,7 +183,7 @@ describe('rooms over the socket', () => {
     expect(server.rooms.get(id)).toBeNull();
     expect(lines.some((l) => l.includes(`room ${id} closed`))).toBe(true);
     expect((await open(`${base}/?room=${id}`)).closed?.code).toBe(4004);
-    expect(server.rooms.size).toBe(1);
+    expect(server.rooms.size).toBe(2);
   });
 
   it('room creation is bounded: per address per minute, and in total', async () => {
@@ -193,7 +193,7 @@ describe('rooms over the socket', () => {
     expect((await open(`${base}/?create=1`)).welcome).toBeTruthy();
     expect((await open(`${base}/?create=1`)).closed).toEqual({ code: 4003, reason: 'too many new rooms, wait a minute' });
     await server.close();
-    server = await startRumbleServer({ havok, port: 0, manual: true, maxRooms: 2 });
+    server = await startRumbleServer({ havok, port: 0, manual: true, maxRooms: 3 });
     const b2 = `ws://127.0.0.1:${server.port}`;
     expect((await open(`${b2}/?create=1`)).welcome).toBeTruthy();
     expect((await open(`${b2}/?create=1`)).closed).toEqual({ code: 4003, reason: 'room limit reached' });
@@ -240,7 +240,7 @@ describe('rooms over the socket', () => {
     const c = await open(`${base}/?create=1`);
     expect(c.welcome!.room!.url).toBe(`https://rumble.example/play/${c.welcome!.room!.id}`);
     expect(c.welcome!.server).toEqual({ name: 'Garden', operator, url: 'https://rumble.example' });
-    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby']);
+    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby', 'plaza']);
     expect((await open(base)).welcome!.room!.url).toBe('https://rumble.example/');
   });
 });

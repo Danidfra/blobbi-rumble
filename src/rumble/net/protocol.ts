@@ -43,7 +43,10 @@
  * client that knows it says so in the socket URL (`caps=lobby`); a server
  * that has it lists 'lobby' in `features`. A room made by a client that
  * asked for it (`create=1&caps=lobby`) is a lobby room (`room.lifecycle`);
- * any other room plays continuously, as before. A client that did not say
+ * any other room plays continuously, as before. L4.1: the public plaza
+ * (`room=PLAZA`, `room.kind: 'plaza'`) is negotiated the same way with
+ * `caps=plaza`: listed only to, and joined only by, clients that say it;
+ * full (eight people), it refuses with 1013 "plaza full". A client that did not say
  * `caps=lobby` is refused a lobby room with close code 1008 and the reason
  * "update required" (which a pre-lobby page shows as a refusal, without
  * retrying), never let in to misread it.
@@ -160,7 +163,7 @@ export interface WelcomeMessage {
   arena?: { id: string; rotate: boolean };
 }
 /** L1: what a client may announce it understands, in the socket URL's `caps` (comma-separated). */
-export const CLIENT_CAPS = Object.freeze(['lobby'] as const);
+export const CLIENT_CAPS = Object.freeze(['lobby', 'plaza'] as const);
 export type ClientCap = (typeof CLIENT_CAPS)[number];
 /** The capabilities a socket URL's query announces (unknown ones ignored, bounded). */
 export function parseCaps(raw: string | null): Set<ClientCap> {
@@ -233,7 +236,8 @@ export interface LobbyMessage {
 }
 export interface RoomInfo {
   id: string;
-  kind: 'open' | 'private';
+  /** L4.1: 'plaza' is the public social plaza. */
+  kind: 'open' | 'private' | 'plaza';
   mode: 'casual';
   /** The canonical share link, when the server knows its public address. */
   url?: string;
@@ -248,7 +252,7 @@ export interface RoomInfo {
 /** M10B: one public room as the listing shows it: counts, never who. */
 export interface RoomListing {
   id: string;
-  kind: 'open' | 'private';
+  kind: 'open' | 'private' | 'plaza';
   /** People playing (slots held by a connection) and the slots there are. */
   players: number;
   maxPlayers: number;

@@ -9,19 +9,21 @@
  * names a room; it is not a secret and grants nothing beyond what any
  * visitor of the server can do (a future invite ticket will carry access).
  *
- * The open room, where a plain visit lands, is `OPEN`: it contains an O, so
- * no generated code can ever be it.
+ * The open room (Quick Match, L4.1) is `OPEN`: it contains an O, so no
+ * generated code can ever be it. L4.1: the public social plaza is `PLAZA`
+ * (an L: never generated either).
  */
 export const ROOM_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 export const ROOM_ID_LENGTH = 4;
 export const OPEN_ROOM = 'OPEN';
+export const PLAZA_ROOM = 'PLAZA';
 const GENERATED = new RegExp(`^[${ROOM_ALPHABET}]{${ROOM_ID_LENGTH}}$`);
 
 /** A room id from anything a person typed or a URL carried: upper-cased, spaces and dashes dropped; null if it is not one. */
 export function normalizeRoomId(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw.length > 16) return null;
   const s = raw.trim().toUpperCase().replace(/[\s-]/g, '');
-  return s === OPEN_ROOM || GENERATED.test(s) ? s : null;
+  return s === OPEN_ROOM || s === PLAZA_ROOM || GENERATED.test(s) ? s : null;
 }
 
 /** A fresh code no live room has. `random` gives integers in [0, n) (crypto in production). */

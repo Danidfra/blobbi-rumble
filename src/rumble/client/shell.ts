@@ -10,7 +10,8 @@
  *   H Help
  *
  *   on demand:  session panel (room + share link, host / join, players,
- *               identity, server), help panel (H), start card (first visit),
+ *               identity, server), help panel (H), L4.1: the menu (a plain
+ *               visit, before anything connects) and the plaza card,
  *               the automatic-invites question (once, a corner card)
  *   loud:       the centred banner when play is impossible (offline, a
  *               missing room, …), with what to do about it
@@ -48,6 +49,8 @@ import type { LobbyMessage } from '../net/protocol';
 import { lobbyView } from './lobbyView';
 import { LOBBY_CSS, createLobbyUi } from './lobbyUi';
 import { lookPreview } from './blobbiPreview';
+import { PLAZA_CSS, createPlazaUi } from './plazaUi';
+import { isSocialSpace } from '../arena/lobbySpace';
 import { seedFromLabel } from '../../playground/seeds';
 import { ROSTER } from '../roster';
 
@@ -71,8 +74,10 @@ export interface ShellActions {
   dismissIdentityError(): void;
   /** The code field took the keyboard: let go of every game key. */
   releaseKeys(): void;
-  /** The start card was answered (don't show it again). */
-  startSeen(): void;
+  /** L4.1: the menu's and the plaza card's ways: the public plaza, Quick Match (the open room), back to the menu. */
+  enterPlaza(): void;
+  quickMatch(): void;
+  toMenu(): void;
   /** Send a private Nostr invite to an npub / nprofile (M8C-A). */
   sendInvite(recipient: string): void;
   /** M8C-C: finding whom to invite (follows, search, selection); only sendSelectedInvite sends, through the M8C-A sender. */
@@ -146,7 +151,10 @@ export interface ShellView {
   nameOf: (slot: string) => string | null;
   /** M9D: the Blobbi a slot's fighter wears, by name, or null. */
   blobbiNameOf: (slot: string) => string | null;
-  startCard: boolean;
+  /** L4.1: the menu is up (nothing is connected). */
+  menu: boolean;
+  /** L4.1: on the public plaza: how many are there, how many it holds, the Blobbi this player wears (null: not on the plaza). */
+  plaza: { here: number; capacity: number; blobbi: string | null } | null;
   invite: { mode: InviteMode; status: InviteStatus | null; busy: boolean };
   /** M8C-C: the people finder of the connected identity (null: none, or not a private room). */
   people: PeopleState | null;
@@ -340,7 +348,7 @@ const TOUCH_HELP: [string, string][] = [
 
 export function createShell(a: ShellActions) {
   const style = el('style');
-  style.textContent = CSS + LOBBY_CSS;
+  style.textContent = CSS + LOBBY_CSS + PLAZA_CSS;
   document.head.appendChild(style);
 
   // Top bar.
@@ -365,7 +373,6 @@ export function createShell(a: ShellActions) {
   hint.append(el('kbd', undefined, 'H'), document.createTextNode(' Help'));
   const panel = el('div', 'rs-card rs-panel');
   const help = el('div', 'rs-card rs-help');
-  const start = el('div', 'rs-card rs-start');
   // M8C-B.2: the one-time question about automatic invites (small, a corner, only until answered).
   const consent = el('div', 'rs-card rs-consent');
   const toasts = el('div', 'rs-toasts');
@@ -397,7 +404,18 @@ export function createShell(a: ShellActions) {
     },
     { preview: lookPreview, defaultLook: (seat) => ({ seed: seedFromLabel(ROSTER.find((e) => e.label === seat)?.identity ?? seat), algorithm: 1 }) },
   );
-  document.body.append(top, msg, struggle, corner, panel, help, start, consent, toasts, banner, rotate, settings, fpsBox, ...lobbyUi.nodes);
+  // L4.1: the menu and the plaza card.
+  const plazaUi = createPlazaUi({
+    enterPlaza: () => a.enterPlaza(),
+    quickMatch: () => a.quickMatch(),
+    createRoom: () => a.hostGame(false),
+    joinRoom: (code) => a.joinGame(code),
+    toMenu: () => a.toMenu(),
+    openSession: () => togglePanel(true),
+    connectNostr: () => a.connectNostr(),
+    releaseKeys: () => a.releaseKeys(),
+  });
+  document.body.append(top, msg, struggle, corner, panel, help, consent, toasts, banner, rotate, settings, fpsBox, ...lobbyUi.nodes, ...plazaUi.nodes);
 
   // The help card: built for keys, rebuilt for touch (M12).
   let touch = false;
@@ -518,7 +536,6 @@ export function createShell(a: ShellActions) {
   let lastMsg = '';
   let lastStruggle = '';
   let lastPanel = '';
-  let lastStart = '';
   let lastConsent = false;
   let lastBanner = '';
 
@@ -1050,8 +1067,12 @@ export function createShell(a: ShellActions) {
       (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom));
       parts.push(...hostForm());
       parts.push(...inviteSection(v));
+    } else if (v.room?.kind === 'plaza') {
+      // L4.1: the public plaza: no code to share (everyone on this server can come), the ways on from here.
+      parts.push(el('div', 'rs-sub', 'Blobbi Plaza: the public square of this server. Anyone can come here to walk around and meet other Blobbis.'));
+      parts.push(...hostForm());
     } else {
-      parts.push(el('div', 'rs-sub', 'The open room: anyone who opens this server plays here, with bots in the empty slots.'));
+      parts.push(el('div', 'rs-sub', 'Quick Match: anyone who chooses it on this server plays here, with bots in the empty slots.'));
       parts.push(...hostForm());
       parts.push(el('div', 'rs-sub', 'A public game is listed below for anyone on this server; a private one is reached by its code or link only (a code is an address, not a secret).'));
     }
@@ -1145,30 +1166,6 @@ export function createShell(a: ShellActions) {
     panel.replaceChildren(...parts);
   };
 
-  const renderStart = (v: ShellView) => {
-    const parts: Node[] = [el('h3', undefined, 'BLOBBI RUMBLE'), el('p', undefined, 'You’re already in the open room, with bots in the empty slots.')];
-    const err = el('div', 'rs-err');
-    const joining = el('div');
-    joining.style.display = 'none';
-    joining.append(joinRow(err), err);
-    const row = el('div');
-    row.append(
-      button('Play', () => a.startSeen(), 'rs-btn go'),
-      button('Host a game', () => {
-        a.startSeen();
-        a.hostGame(true);
-      }),
-      button('Join a game', () => {
-        joining.style.display = '';
-        (joining.querySelector('input') as HTMLInputElement | null)?.focus();
-      }),
-    );
-    const id = el('div', 'id');
-    if (v.identity.phase === 'verified' && v.identity.pubkey) id.append(document.createTextNode(`Playing as ${clip(displayName(v.profile(v.identity.pubkey), v.identity.pubkey), 24)}`));
-    else id.append(document.createTextNode('Playing as a guest · '), button('Connect Nostr', a.connectNostr));
-    parts.push(row, joining, id);
-    start.replaceChildren(...parts);
-  };
 
   return {
     toast,
@@ -1184,7 +1181,7 @@ export function createShell(a: ShellActions) {
     },
     /** M12: something over the arena wants the player's fingers (a panel, a card, the banner, the rotate ask): the touch controls step aside. */
     get modalOpen() {
-      return panelOpen || helpOpen || settingsOpen || lobbyUi.resultsOpen || start.style.display === 'block' || banner.style.display === 'flex' || rotate.style.display === 'flex';
+      return panelOpen || helpOpen || settingsOpen || lobbyUi.resultsOpen || plazaUi.menuOpen || banner.style.display === 'flex' || rotate.style.display === 'flex';
     },
     /** M12: the player plays by touch: touch help, the help chip as a button, no browser gestures on the game. */
     setTouch(on: boolean) {
@@ -1217,12 +1214,12 @@ export function createShell(a: ShellActions) {
       }
       const healthy = c.phase === 'playing' || c.phase === 'watching';
       // Session chip: room · server, and a dot for the connection (quiet when healthy).
-      const roomText = v.room ? (v.room.kind === 'private' ? v.room.id : 'Open room') : c.room ?? '…';
+      const roomText = c.phase === 'idle' ? 'Menu' : v.room ? (v.room.kind === 'private' ? v.room.id : v.room.kind === 'plaza' ? 'Blobbi Plaza' : 'Quick Match') : c.room ?? '…';
       const sKey = JSON.stringify([c.phase, roomText, v.trust?.label, !!v.lobby]);
       if (sKey !== lastSession) {
         lastSession = sKey;
         const dot = el('span', `dot${healthy ? '' : c.phase === 'connecting' ? ' wait' : ' off'}`);
-        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : 'offline'}${c.phase === 'watching' ? (v.lobby ? ' · waiting for next match' : ' · watching') : ''}`));
+        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : c.phase === 'idle' ? 'not connected' : 'offline'}${c.phase === 'watching' ? (v.lobby ? ' · waiting for next match' : ' · watching') : ''}`));
         sessionChip.title = 'Room, players, identity and server';
       }
       // Identity chip.
@@ -1259,7 +1256,7 @@ export function createShell(a: ShellActions) {
         }
       }
       // L3: in a lobby room between matches the lobby and results cards speak; the scoreboard is for play.
-      const between = !!v.lobby && v.lobby.phase !== 'playing';
+      const between = (!!v.lobby && v.lobby.phase !== 'playing') || isSocialSpace(snap?.arena);
       board.style.display = snap && healthy && !between ? '' : 'none';
       // The contextual message, with names for slot ids.
       const m = v.message ? v.message.replace(/\bP[1-4]\b/g, (id) => clip(label(v, id), 16)) : '';
@@ -1302,14 +1299,10 @@ export function createShell(a: ShellActions) {
           renderPeople(v);
         }
       }
-      // The start card (first visit, open room).
-      const showStart = v.startCard && healthy;
-      const stK = showStart ? JSON.stringify([s.phase, s.pubkey, own?.displayName]) : '';
-      if (stK !== lastStart && !start.contains(document.activeElement)) {
-        lastStart = stK;
-        start.style.display = showStart ? 'block' : 'none';
-        if (showStart) renderStart(v);
-      }
+      // L4.1: the menu (a plain visit: nothing connected until the player chooses).
+      const who = { name: s.phase === 'verified' && s.pubkey ? clip(displayName(own, s.pubkey), 24) : null, busy: s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring' };
+      const showStart = v.menu && !panelOpen && !helpOpen && !settingsOpen;
+      plazaUi.showMenu(showStart ? { who } : null);
       // The automatic-invites question (M8C-B.2): a corner card while unanswered, unless the panel (which asks it too) is open.
       const showConsent = !!v.inbox?.offer && healthy && !showStart && !panelOpen;
       if (showConsent !== lastConsent) {
@@ -1320,6 +1313,8 @@ export function createShell(a: ShellActions) {
       // L3: the lobby (its card steps aside for the session panel, help, settings, the start card and the banner).
       shareNow = v.share;
       const otherCard = panelOpen || helpOpen || settingsOpen || showStart || !!describe(c, v.now);
+      // L4.1: the plaza card (the public plaza only), stepping aside like the lobby's.
+      plazaUi.showPlaza(v.plaza && healthy && !otherCard ? { who, here: v.plaza.here, capacity: v.plaza.capacity, blobbi: v.plaza.blobbi ? clip(v.plaza.blobbi, 20) : null, touch } : null);
       lobbyUi.show(
         v.lobby && healthy && !otherCard
           ? {
@@ -1339,7 +1334,9 @@ export function createShell(a: ShellActions) {
         banner.style.display = d ? 'flex' : 'none';
         if (d) {
           const acts: Record<BannerAction, () => HTMLButtonElement> = {
-            retry: () => button(c.phase === 'refused' ? 'Try again' : 'Retry now', a.retry, 'rs-btn go'),
+            retry: () => button(c.phase === 'refused' || c.phase === 'plazaFull' ? 'Try again' : 'Retry now', a.retry, 'rs-btn go'),
+            quick: () => button('Quick Match', a.quickMatch),
+            private: () => button('Create private room', () => a.hostGame(false)),
             open: () => button('Play in the open room', a.openRoom, c.phase === 'missing' ? 'rs-btn go' : 'rs-btn'),
             host: () => button('Host a new game', () => a.hostGame(true)),
           };

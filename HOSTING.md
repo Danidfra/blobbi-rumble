@@ -46,6 +46,7 @@ with the reason.
   then its match is disposed. Rooms live in memory: **restarting the
   server ends every private room** (players see "Room … isn't here" and
   can go to the open room or host a new game).
+- **Rooms (L4.1)**: OPEN (Quick Match) and PLAZA (the public plaza, 8 people) always exist and count toward the room limit.
 - **Limits**: 16 rooms, 8 connections per room (4 play, 4 watch), 64
   connections in all, 5 new rooms per address per minute, 3 private rooms
   open per address at once, 10 wrong room codes per address per minute

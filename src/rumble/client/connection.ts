@@ -10,12 +10,17 @@
  *   the room asked for does not exist ──► missing (no retry: the page offers the open room or a new one)
  *   no new room can be made now ──► refused (no retry)
  *
+ * L4.1: `idle` is the menu (nothing connected, nothing to say), and the
+ * public plaza being full is its own refusal: said plainly, with another
+ * room or Quick Match offered, never retried by itself and never turned
+ * into a match.
+ *
  * A reconnect is a new connection: it gets whatever slot is free, never a
  * promise of the fighter it had (that fighter went to a bot).
  */
-export type ConnectionPhase = 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'missing' | 'refused' | 'incompatible' | 'rejected';
-/** What the banner may offer: try again, go to the open room, make a new room. */
-export type BannerAction = 'retry' | 'open' | 'host';
+export type ConnectionPhase = 'idle' | 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'plazaFull' | 'missing' | 'refused' | 'incompatible' | 'rejected';
+/** What the banner may offer: try again, go to the open room, make a new room; L4.1: Quick Match, a private room. */
+export type BannerAction = 'retry' | 'open' | 'host' | 'quick' | 'private';
 
 export interface ConnectionState {
   phase: ConnectionPhase;
@@ -46,6 +51,9 @@ export const CONNECTION = Object.freeze({
   noteFor: 6,
 });
 
+/** L4.1: the menu: no connection at all (nothing to show but the menu). */
+export const idleConnection = (url: string): ConnectionState => ({ ...initialConnection(url), phase: 'idle' });
+
 export const initialConnection = (url: string, room: string | null = null): ConnectionState => ({ phase: 'connecting', url, you: null, everConnected: false, previous: null, attempts: 0, retryAt: 0, note: '', noteUntil: 0, room, why: '' });
 
 /** What watching means: in a lobby room (L3) waiting for the next match; in a continuous room, all four slots are taken. */
@@ -72,6 +80,8 @@ export function onClose(s: ConnectionState, code: number, reason: string, now: n
   // M10: the server would not have this page (its origin, or a policy): no retry; the player picks another server.
   if (code === 4005 || code === 1008) return { ...s, phase: 'rejected', you: null, attempts, retryAt: Infinity, why: reason };
   if (s.phase === 'incompatible') return { ...s, you: null, attempts, retryAt: Infinity };
+  // L4.1: the plaza is full: no retry by itself (the player chooses: try again, another room, Quick Match).
+  if (code === 1013 && /plaza full/i.test(reason)) return { ...s, phase: 'plazaFull', you: null, attempts, retryAt: Infinity };
   const full = code === 1013 && /full/i.test(reason);
   const wait = full ? CONNECTION.retryFull : Math.min(CONNECTION.retryMax, CONNECTION.retryBase * 2 ** (attempts - 1));
   const phase: ConnectionPhase = full ? 'full' : s.everConnected ? 'lost' : 'failed';
@@ -96,6 +106,8 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
   const inS = Math.max(0, Math.ceil(s.retryAt - now));
   const room = s.room ? `Room ${s.room}` : 'That room';
   switch (s.phase) {
+    case 'plazaFull':
+      return { title: 'Blobbi Plaza is full.', detail: 'Eight Blobbis are there already. Try again in a moment, make a private room for your friends, or jump into a Quick Match.', retry: false, actions: ['retry', 'private', 'quick'] };
     case 'connecting':
       return { title: s.everConnected ? 'Reconnecting…' : 'Connecting to the Rumble server…', detail: s.url.replace(/\?.*$/, ''), retry: false, actions: [] };
     case 'failed':
@@ -138,6 +150,10 @@ export function statusLine(s: ConnectionState, rttMs: number, lobbyRoom = false)
       return '○ server full';
     case 'incompatible':
       return '○ incompatible server';
+    case 'idle':
+      return '○ not connected';
+    case 'plazaFull':
+      return '○ plaza full';
     case 'rejected':
       return '○ server refused this page';
     default:

@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { LobbyMessage } from '../net/protocol';
 import type { FighterSnapshot, MatchSnapshot } from '../sim/snapshot';
-import { initialConnection, onSeat, onWelcome, statusLine, watchingWords } from './connection';
+import { describe as describeConn, idleConnection, initialConnection, onClose, onSeat, onWelcome, statusLine, watchingWords } from './connection';
 import { lifecyclePlays, movementLive, refusalWords, tagMarks, visibleLineup } from './lobby';
 
 const LOBBY: LobbyMessage = { t: 'lobby', phase: 'lobby', since: 0, deadline: null, transition: null, you: 'P1', owner: 'P1', youOwn: true, seated: ['P1'], ready: [], watchers: [], forced: false, lineup: ['P1', 'P2', 'P3', 'P4'], settings: { bots: true, arena: 'floating-islands-classic', rotate: false }, canStart: true, need: 1, results: null };
@@ -76,5 +76,24 @@ describe('the page’s reading of a lobby room', () => {
     expect(tagMarks(l, 'P2')).toEqual({ before: '', after: ' ✓' });
     expect(tagMarks({ ...l, phase: 'playing' }, 'P1')).toEqual({ before: '', after: '' });
     expect(tagMarks(null, 'P1')).toEqual({ before: '', after: '' });
+  });
+
+  it('the menu is no connection at all (L4.1): nothing to say, no banner', () => {
+    const idle = idleConnection('ws://x');
+    expect(idle.phase).toBe('idle');
+    expect(describeConn(idle, 0)).toBeNull();
+    expect(statusLine(idle, NaN)).toBe('○ not connected');
+  });
+
+  it('a full plaza (L4.1) is said plainly, offers trying again, a private room or Quick Match, and never retries by itself', () => {
+    const s = onClose({ ...initialConnection('ws://x', null), everConnected: true }, 1013, 'plaza full', 10);
+    expect(s.phase).toBe('plazaFull');
+    expect(s.retryAt).toBe(Infinity);
+    const d = describeConn(s, 10)!;
+    expect(d.title).toBe('Blobbi Plaza is full.');
+    expect(d.actions).toEqual(['retry', 'private', 'quick']);
+    expect(d.retry).toBe(false);
+    // An ordinary full room still retries slowly, as before.
+    expect(onClose(initialConnection('ws://x', null), 1013, 'room full', 10).phase).toBe('full');
   });
 });

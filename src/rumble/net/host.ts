@@ -40,6 +40,16 @@
  * lifecycle (the OPEN room, older clients' rooms) everything is as before:
  * one match, the next one starting by itself.
  *
+ * THE PUBLIC PLAZA (L4.1): a host made with `lifecycle: 'plaza'` is only
+ * ever the social plaza: no lifecycle, no match, no ready, no owner, no
+ * bots in seats. Its seats (up to eight) are people's; an empty seat is
+ * empty. While few people are there, up to two AMBIENT bots stroll about
+ * (two for none or one person, one for two, none from three): they are
+ * not seats, hold no connection, no identity and no place in the roster,
+ * and their ids (`B1`, `B2`) cannot be a seat's. They come and go after a
+ * short settle (no flicker as someone reloads), appear on the far corner
+ * spots, and the one that goes is the one furthest from anyone.
+ *
  * SEATS AND FIGHTERS (L2). `ids` are the room's seats (P1..P4); the live
  * space's fighters are its own `ids` (on the plaza: the seated people, and
  * the bots when they are on, strolling; `control/wander.ts`). In a continuous room, and in a lobby room with
@@ -57,6 +67,7 @@ import { BotInput, botWorldFrom } from '../control/bot';
 import { WanderBot } from '../control/wander';
 import { createRumbleMatch, type RumbleMatch } from '../sim/match';
 import { SocialSpace, type Space } from '../sim/social';
+import { LOBBY_SPACE } from '../arena/lobbySpace';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
@@ -85,9 +96,18 @@ export interface HostConfig {
   rotate?: boolean;
   /** For a rotation: 0..1 (tests make it deterministic). */
   random?: () => number;
-  /** L1: 'lobby' for a room with the lobby lifecycle; continuous play otherwise (the default). */
-  lifecycle?: 'continuous' | 'lobby';
+  /** L1: 'lobby' for a room with the lobby lifecycle; L4.1: 'plaza' for the public plaza; continuous play otherwise (the default). */
+  lifecycle?: 'continuous' | 'lobby' | 'plaza';
 }
+
+/** L4.1: the public plaza's ambient bots: their ids (never a seat's), how many for how many people, and how long a change settles. */
+export const AMBIENT = Object.freeze({
+  ids: Object.freeze(['B1', 'B2']),
+  /** Ambient bots wanted for this many people on the plaza. */
+  forPeople: (people: number) => (people <= 1 ? 2 : people === 2 ? 1 : 0),
+  /** A change of how many waits this long before a bot comes or goes, seconds. */
+  settleSeconds: 2,
+});
 
 export type ConnectionId = number;
 
@@ -111,6 +131,12 @@ export class RumbleHost {
   private readonly bots: BotInput[];
   /** L4: the bots' strolls on the plaza, by seat. */
   private readonly wanderers: WanderBot[];
+  /** L4.1: the public plaza (no lifecycle, no match; ambient bots). */
+  readonly isPlaza: boolean;
+  /** L4.1: the ambient bots strolling now, their strolls, and since when (tick) the wanted number has differed. */
+  private ambient: string[] = [];
+  private readonly ambientWalks = new Map<string, WanderBot>(AMBIENT.ids.map((id, i) => [id, new WanderBot(101 + i)]));
+  private ambientPending: number | null = null;
   /** Per slot: the last input sequence applied, the tick it arrived on, and what the latest step had applied. */
   private readonly lastSeq = new Map<string, number>();
   private readonly lastInputTick = new Map<string, number>();
@@ -140,13 +166,21 @@ export class RumbleHost {
     this.rotate = config.rotate === true;
     this.random = config.random ?? Math.random;
     this.havok = config.havok;
-    if (new Set(ids).size !== ids.length || ids.length < 2 || ids.length > 4) throw new Error('a room has 2 to 4 distinct seats');
+    this.isPlaza = config.lifecycle === 'plaza';
+    const [least, most] = this.isPlaza ? [1, 8] : [2, 4];
+    if (new Set(ids).size !== ids.length || ids.length < least || ids.length > most || ids.some((id) => AMBIENT.ids.includes(id))) throw new Error(`a room has ${least} to ${most} distinct seats`);
     this.ids = Object.freeze([...ids]);
     this.bots = this.ids.map((_, i) => new BotInput(i + 1));
     this.wanderers = this.ids.map((_, i) => new WanderBot(i + 1));
     for (const id of this.ids) this.holder.set(id, null);
     this.settings = { bots: true, arena: (config.arena ?? CLASSIC).id, rotate: this.rotate };
-    if (config.lifecycle === 'lobby') {
+    if (this.isPlaza) {
+      // L4.1: the plaza from the start, with its ambient bots for nobody there yet.
+      this.social = new SocialSpace({ havok: config.havok, seats: [...this.ids, ...AMBIENT.ids], players: [] });
+      this.ambient = AMBIENT.ids.slice(0, AMBIENT.forPeople(0));
+      this.social.setLineup(this.ambient);
+      this.lobby = null;
+    } else if (config.lifecycle === 'lobby') {
       this.social = new SocialSpace({ havok: config.havok, seats: this.ids, players: this.nextLineup() });
       this.lobby = new Lifecycle(this.tickHz, this.social.tick);
     } else {
@@ -179,8 +213,9 @@ export class RumbleHost {
     return this.social;
   }
 
-  /** M11A: the arena in play; L4: in the social lobby, the arena the next match is played on. */
+  /** M11A: the arena in play; L4: in the social lobby, the arena the next match is played on; L4.1: the public plaza's own space. */
   get arena(): ArenaDef {
+    if (this.isPlaza) return LOBBY_SPACE;
     return this.current?.arena ?? arenaById(this.settings.arena) ?? CLASSIC;
   }
 
@@ -257,6 +292,11 @@ export class RumbleHost {
     if (!life || !this.live) return;
     life.leave(conn, this.view());
     if (life.phase === 'lobby') this.promote();
+  }
+
+  /** Whether a person holds this seat (an ambient bot's id, never a seat, is nobody's). */
+  private held(id: string): boolean {
+    return (this.holder.get(id) ?? null) !== null;
   }
 
   /** The slot a connection drives, or null. */
@@ -342,8 +382,8 @@ export class RumbleHost {
       const conn = this.holder.get(id) ?? null;
       const pubkey = conn === null ? null : this.identity.get(conn);
       const form = conn === null ? null : this.looks.get(conn);
-      // L2: in a lobby room without bots, a seat nobody holds is empty, not a bot's.
-      const nobody: SlotIdentity = this.lobby && !this.settings.bots ? { who: 'empty' } : { who: 'bot' };
+      // L2: in a lobby room without bots, a seat nobody holds is empty, not a bot's; L4.1: on the public plaza always.
+      const nobody: SlotIdentity = this.isPlaza || (this.lobby && !this.settings.bots) ? { who: 'empty' } : { who: 'bot' };
       slots[id] = conn === null ? nobody : pubkey ? { who: 'nostr', pubkey, ...(form ? { form } : {}) } : { who: 'guest' };
     }
     return { t: 'roster', slots };
@@ -351,6 +391,7 @@ export class RumbleHost {
 
   /** One fixed step of the match: bots decide for their fighters, then the match advances by exactly dt. */
   tick() {
+    if (this.isPlaza) return this.tickPlaza();
     if (this.lobby) return this.tickLobby(this.lobby);
     this.drive();
     const events = this.match.step(this.dt);
@@ -385,9 +426,9 @@ export class RumbleHost {
     const onPlaza = space === this.social;
     const timeout = Math.round(NET.inputTimeout * this.tickHz);
     const where = (id: string) => s.fighters.find((f) => f.id === id)?.position ?? null;
-    const people = onPlaza ? space.ids.filter((id) => this.holder.get(id) !== null).flatMap((id) => where(id) ?? []) : [];
+    const people = onPlaza ? space.ids.filter((id) => this.held(id)).flatMap((id) => where(id) ?? []) : [];
     space.ids.forEach((id) => {
-      if (this.holder.get(id) !== null) {
+      if (this.held(id)) {
         // A person whose inputs stopped arriving (a stalled tab) does not keep running.
         if (space.tick - (this.lastInputTick.get(id) ?? 0) > timeout) space.setInput(id, {});
         const seq = this.lastSeq.get(id) ?? -1;
@@ -398,8 +439,15 @@ export class RumbleHost {
         }
         return;
       }
+      // L4.1: an ambient bot strolls the public plaza.
+      const ambientWalk = this.ambientWalks.get(id);
+      if (onPlaza && ambientWalk) {
+        const at = where(id);
+        space.setInput(id, at ? ambientWalk.plan({ x: at.x, z: at.z }, people, this.dt) : {});
+        return;
+      }
       // L2: a lobby room without bots: nobody drives a fighter whose person left.
-      if (this.lobby && !this.settings.bots) return space.setInput(id, {});
+      if (this.isPlaza || (this.lobby && !this.settings.bots)) return space.setInput(id, {});
       const seat = this.ids.indexOf(id);
       if (onPlaza) {
         const at = where(id);
@@ -439,7 +487,7 @@ export class RumbleHost {
     if (life.phase === 'playing') {
       const won = events.find((e) => e.kind === 'match');
       // L2: the people still in the match; without them it is over: nobody left (abandoned), or one left without bots (theirs by forfeit).
-      const people = this.match.ids.filter((id) => this.holder.get(id) !== null);
+      const people = this.match.ids.filter((id) => this.held(id));
       if (won) life.finish(now, this.results(won.who ?? null, 'won'));
       else if (people.length === 0) life.finish(now, this.results(null, 'abandoned'));
       else if (!this.settings.bots && people.length === 1) life.finish(now, this.results(people[0], 'forfeit'));
@@ -457,9 +505,51 @@ export class RumbleHost {
     if (life.phase === 'lobby' && !this.social) this.toPlaza();
   }
 
+  /**
+   * L4.1: the public plaza's step: the avatars are the people seated and the
+   * ambient bots; everyone walks. The number of ambient bots follows how
+   * many people are there, once the change has settled.
+   */
+  private tickPlaza() {
+    const social = this.social!;
+    const people = this.ids.filter((id) => this.held(id));
+    this.settleAmbient(people.length, social.tick);
+    social.setLineup([...people, ...this.ambient]);
+    this.snapshot = social.snapshot();
+    this.drive();
+    social.step(this.dt);
+    this.snapshot = social.snapshot();
+  }
+
+  /** L4.1: one ambient bot more or fewer, once the wanted number has differed for the settle time: added on a free far corner, removed furthest from anyone. */
+  private settleAmbient(people: number, tick: number) {
+    const want = AMBIENT.forPeople(people);
+    if (want === this.ambient.length) {
+      this.ambientPending = null;
+      return;
+    }
+    this.ambientPending ??= tick;
+    if (tick - this.ambientPending < Math.round(AMBIENT.settleSeconds * this.tickHz)) return;
+    this.ambientPending = null;
+    if (want > this.ambient.length) {
+      const id = AMBIENT.ids.find((b) => !this.ambient.includes(b))!;
+      this.ambientWalks.get(id)!.reset(tick);
+      this.ambient = AMBIENT.ids.filter((b) => b === id || this.ambient.includes(b));
+      return;
+    }
+    const at = (id: string) => this.snapshot.fighters.find((f) => f.id === id)?.position;
+    const humans = this.ids.flatMap((id) => (this.held(id) ? (at(id) ?? []) : []));
+    const distance = (id: string) => {
+      const p = at(id);
+      return p ? Math.min(Infinity, ...humans.map((h) => Math.hypot(h.x - p.x, h.z - p.z))) : Infinity;
+    };
+    const leaving = [...this.ambient].sort((a, b) => distance(b) - distance(a))[0];
+    this.ambient = this.ambient.filter((b) => b !== leaving);
+  }
+
   /** L2: the fighters of the next match: every seat with bots, only the seated people's without. */
   private nextLineup(): string[] {
-    return this.settings.bots ? [...this.ids] : this.ids.filter((id) => this.holder.get(id) !== null);
+    return this.settings.bots ? [...this.ids] : this.ids.filter((id) => this.held(id));
   }
 
   /** L4: the countdown's swap: the plaza goes; the match comes, on the room's arena, with the lineup, its tick and clock carried on. */
@@ -536,7 +626,7 @@ export class RumbleHost {
       you: this.slotOf.get(conn) ?? null,
       owner: life.owner === null ? null : (this.slotOf.get(life.owner) ?? null),
       youOwn: life.owner === conn,
-      seated: this.ids.filter((id) => this.holder.get(id) !== null),
+      seated: this.ids.filter((id) => this.held(id)),
       watchers: this.arrivals.filter((c) => !this.slotOf.get(c)).map((c): SlotIdentity => {
         const pubkey = this.identity.get(c);
         return pubkey ? { who: 'nostr', pubkey } : { who: 'guest' };
@@ -565,8 +655,9 @@ export class RumbleHost {
     const acks: Record<string, number> = {};
     const ackTicks: Record<string, number> = {};
     for (const id of this.space.ids) {
-      control[id] = this.holder.get(id) !== null ? 'human' : this.lobby && !this.settings.bots ? 'none' : 'bot';
-      if (this.holder.get(id) !== null) {
+      // L4.1: the public plaza's ambient bots are bots; its unheld seats are not in it at all.
+      control[id] = this.held(id) ? 'human' : this.ambientWalks.has(id) ? 'bot' : this.lobby && !this.settings.bots ? 'none' : 'bot';
+      if (this.held(id)) {
         acks[id] = this.acked.get(id) ?? -1;
         ackTicks[id] = this.ackTick.get(id) ?? this.snapshot.tick;
       }

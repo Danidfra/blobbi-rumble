@@ -7,6 +7,7 @@
  *   /ws                the open room (where a plain visit plays)
  *   /ws?room=A7F2      that room; refused (4004) if there is none
  *   /ws?create=1       a new private room (4003 when over the limits)
+ *   /ws?room=PLAZA     L4.1: the public plaza (needs caps=plaza; "plaza full" at eight)
  *   …&caps=lobby       L1: the client speaks the lobby: a room it creates is a
  *                      lobby room; without it, a lobby room is refused (1008,
  *                      "update required") rather than misread
@@ -417,7 +418,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       return;
     }
     const room = target.room;
-    if (room.lifecycle === 'lobby' && !caps.has('lobby')) {
+    if ((room.lifecycle === 'lobby' && !caps.has('lobby')) || (room.kind === 'plaza' && !caps.has('plaza'))) {
       // L1: a page that does not know the lobby would misread this room: refused, plainly, without a retry loop.
       stats.refused += 1;
       log(`refused ${from}: room ${room.id} needs a newer client`);
@@ -427,7 +428,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if (!rooms.hasRoom(room)) {
       stats.refused += 1;
       log(`refused ${from}: room ${room.id} full`);
-      ws.close(1013, 'room full');
+      // L4.1: the plaza says so in its own words (the page offers another room or Quick Match, never sends anyone into a match).
+      ws.close(1013, room.kind === 'plaza' ? 'plaza full' : 'room full');
       return;
     }
     if (group !== null && heldBy(group, room) >= maxPerAddressPerRoom) {
@@ -505,7 +507,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     log(`conn ${id} from ${seen}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
     const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.host.settings.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}), ...(room.lifecycle === 'lobby' ? { lifecycle: 'lobby' as const } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
-    client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby'], room: info, server }));
+    client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby', 'plaza'], room: info, server }));
     sendRoster(room);
     sendLobby(room, false);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
@@ -529,7 +531,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         const t = performance.now();
         if (t - lastRooms < PROTOCOL.roomsEveryMs) return;
         lastRooms = t;
-        client.send(JSON.stringify({ t: 'rooms', rooms: rooms.listing() } satisfies RoomsMessage));
+        // L4.1: the plaza is listed only to a client that can go there.
+        client.send(JSON.stringify({ t: 'rooms', rooms: rooms.listing().filter((r) => r.kind !== 'plaza' || caps.has('plaza')) } satisfies RoomsMessage));
         return;
       }
       // M9C: the look of this connection's own fighter; the host binds it to the proven identity.

@@ -30,12 +30,23 @@ export const PLAZA = Object.freeze({ halfWidth: 6.5, halfDepth: 5, wallHeight: 1
 const wall = (x: number, z: number, halfWidth: number, halfDepth: number, name: string): Platform => ({ x, z, halfWidth, halfDepth, y: PLAZA.wallHeight, thickness: PLAZA.wallHeight + 0.6, kind: 'wall', name });
 const t = PLAZA.wallThickness / 2;
 
-/** The seats' spots, by seat index (P1..P4): a ring round the middle. */
+/**
+ * The spots, by index among a space's seats: a ring of four round the
+ * middle (a lobby room's P1..P4), a wider ring of four (L4.1: the public
+ * plaza's P5..P8), then two far corners for the plaza's ambient bots, so
+ * a bot appears away from where people stand.
+ */
 const SPOTS: readonly Planar[] = Object.freeze([
   { x: -2.2, z: 1.2 },
   { x: 2.2, z: 1.2 },
   { x: -2.2, z: -1.4 },
   { x: 2.2, z: -1.4 },
+  { x: 0, z: 2.9 },
+  { x: 0, z: -3.1 },
+  { x: -4.4, z: -0.1 },
+  { x: 4.4, z: -0.1 },
+  { x: -5.3, z: 3.9 },
+  { x: 5.3, z: 3.9 },
 ]);
 
 export const LOBBY_SPACE: ArenaDef = Object.freeze({
@@ -54,7 +65,7 @@ export const LOBBY_SPACE: ArenaDef = Object.freeze({
   conveyors: Object.freeze([]),
   sweeper: null,
   orbs: Object.freeze([]),
-  spawnSets: { 2: SPOTS.slice(0, 2), 3: SPOTS.slice(0, 3), 4: SPOTS },
+  spawnSets: { 2: SPOTS.slice(0, 2), 3: SPOTS.slice(0, 3), 4: SPOTS.slice(0, 4) },
   fallY: -4,
   ledges: false,
   camera: { bounds: { x: PLAZA.halfWidth, z: PLAZA.halfDepth }, maxRadius: 12 },
