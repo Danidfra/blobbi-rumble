@@ -30,7 +30,9 @@
  * flood is disconnected), frames of at most 4 KB, no per-client send queue
  * past `maxBufferedBytes` (states are skipped for a slow client, which is
  * dropped if it falls far behind), and a heartbeat that drops connections
- * that stopped answering.
+ * that stopped answering, or that said nothing for `idleMs`. One address
+ * (an IPv4, or an IPv6 /64) holds at most `maxPerAddress` connections, and
+ * `maxPerAddressPerRoom` in one room: a single client can fill neither.
  *
  * IDENTITY (M8A): any connection may prove it holds a Nostr key, NIP-42
  * style (`social/auth.ts`): it asks for a challenge, signs a kind-22242
@@ -55,6 +57,7 @@ import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
 import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage } from './protocol';
 import { RoomManager, type Room } from './rooms';
+import { addressGroup, isLoopback } from './address';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
 
 export const SERVER_LIMITS = Object.freeze({
@@ -76,6 +79,15 @@ export const SERVER_LIMITS = Object.freeze({
   challengeEveryMs: 1000,
   /** New private rooms one address may create per minute. */
   roomsPerMinute: 5,
+  /**
+   * Security audit H1: connections one address (an IPv4, or an IPv6 /64; `address.ts`) may hold at once, server-wide and
+   * in one room. Room for a household playing together (four fighters), never every place of a room or the server.
+   * Loopback is not limited (the operator; see `address.ts`).
+   */
+  maxPerAddress: 8,
+  maxPerAddressPerRoom: 4,
+  /** A connection that sent nothing at all for this long, ms, is closed (a real page pings every second, standing still or not). */
+  idleMs: 120_000,
 });
 
 export interface ServerConfig {
@@ -134,6 +146,13 @@ export interface ServerConfig {
    * header is missing or malformed.
    */
   clientIpHeader?: string;
+  /** Per-address limits (SERVER_LIMITS defaults): connections server-wide and in one room. */
+  maxPerAddress?: number;
+  maxPerAddressPerRoom?: number;
+  /** Close a connection silent for this long, ms (SERVER_LIMITS.idleMs); checked on the heartbeat. */
+  idleMs?: number;
+  /** The heartbeat (and idle check) interval, ms (SERVER_LIMITS.heartbeatMs). */
+  heartbeatMs?: number;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
 }
@@ -215,6 +234,10 @@ interface Client {
   room: Room;
   send: (data: string, droppable?: boolean) => void;
   alive: boolean;
+  /** The address group it counts against (null: loopback, not limited). */
+  group: string | null;
+  /** When it last sent a valid message (performance.now()). */
+  heard: number;
 }
 
 export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
@@ -296,8 +319,19 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     setTimeout(() => ws.terminate(), 1000).unref?.();
   };
 
+  const maxPerAddress = config.maxPerAddress ?? SERVER_LIMITS.maxPerAddress;
+  const maxPerAddressPerRoom = config.maxPerAddressPerRoom ?? SERVER_LIMITS.maxPerAddressPerRoom;
+  /** Connections held by an address group, server-wide or in one room. */
+  const heldBy = (group: string, room?: Room) => {
+    let n = 0;
+    for (const c of room ? (members.get(room) ?? []) : clients.values()) if (c.group === group) n += 1;
+    return n;
+  };
+
   wss.on('connection', (ws, req: IncomingMessage) => {
-    const from = `${clientAddress(req)}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
+    const address = clientAddress(req);
+    const group = isLoopback(address) ? null : addressGroup(address);
+    const from = `${address}${req.headers.origin ? ` (${req.headers.origin})` : ''}`;
     if (!originAllowed(req.headers.origin)) {
       stats.refused += 1;
       log(`refused ${from}: origin not allowed`);
@@ -309,6 +343,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       stats.refused += 1;
       log(`refused ${from}: server full (${clients.size}/${maxConnections})`);
       ws.close(1013, 'server full');
+      return;
+    }
+    if (group !== null && heldBy(group) >= maxPerAddress) {
+      // H1: one address cannot hold the server; refused before it takes a room or any state.
+      stats.refused += 1;
+      log(`refused ${from}: ${maxPerAddress} connections from this address already`);
+      ws.close(1013, 'network full: too many connections from your network');
       return;
     }
     const target = roomFor(req, from);
@@ -323,6 +364,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       stats.refused += 1;
       log(`refused ${from}: room ${room.id} full`);
       ws.close(1013, 'room full');
+      return;
+    }
+    if (group !== null && heldBy(group, room) >= maxPerAddressPerRoom) {
+      // H1: nor every place of one room.
+      stats.refused += 1;
+      log(`refused ${from}: ${maxPerAddressPerRoom} connections from this address in room ${room.id} already`);
+      ws.close(1013, 'network full: too many connections from your network in this room');
       return;
     }
     const host = room.host;
@@ -342,6 +390,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       id,
       room,
       alive: true,
+      group,
+      heard: performance.now(),
       send: (data, droppable = false) =>
         out(() => {
           if (ws.readyState !== ws.OPEN) return;
@@ -433,6 +483,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
         }
         return;
       }
+      client.heard = performance.now();
       inbound(() => {
         if (!clients.has(ws)) return;
         if (msg.t === 'challenge' || msg.t === 'auth' || msg.t === 'logout' || msg.t === 'look' || msg.t === 'rooms') return identityMessage(msg);
@@ -455,17 +506,24 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     ws.on('error', () => ws.terminate());
   });
 
-  // Heartbeat: a connection that did not answer the last ping (a vanished laptop, a dead route) is dropped.
+  // Heartbeat: a connection that did not answer the last ping (a vanished laptop, a dead route) is dropped; so is one
+  // that answers pings (any WebSocket library does, by itself) but has said nothing for `idleMs` (H1: a parked socket).
+  const idleMs = config.idleMs ?? SERVER_LIMITS.idleMs;
   const heartbeat = setInterval(() => {
+    const now = performance.now();
     for (const [ws, c] of clients) {
       if (!c.alive) {
         kick(ws, 1001, 'no heartbeat');
         continue;
       }
+      if (now - c.heard > idleMs) {
+        kick(ws, 4008, 'idle');
+        continue;
+      }
       c.alive = false;
       ws.ping();
     }
-  }, SERVER_LIMITS.heartbeatMs);
+  }, config.heartbeatMs ?? SERVER_LIMITS.heartbeatMs);
   heartbeat.unref?.();
 
   /** Empty private rooms past their grace period go, with their match. */

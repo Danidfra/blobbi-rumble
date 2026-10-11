@@ -94,6 +94,8 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
     case 'lost':
       return { title: 'Connection lost', detail: `Your Blobbi is now played by a bot. Reconnecting in ${inS} s (you will get a free slot, maybe a different one).`, retry: true, actions: ['retry'] };
     case 'full':
+      // Security audit H1: one network (household, school, office) holds only so many connections.
+      if (/network/i.test(s.why)) return { title: 'Too many connections from your network', detail: `Someone on the same network (or other tabs of yours) already holds as many as this server allows. Trying again in ${inS} s.`, retry: true, actions: ['retry', 'open'] };
       return { title: /room/i.test(s.why) ? `${room} is full` : 'The server is full', detail: `Trying again in ${inS} s.`, retry: true, actions: ['retry', 'open'] };
     case 'missing':
       return { title: `${room} isn’t here`, detail: 'It may have ended (empty rooms close after a couple of minutes), or the code is mistyped.', retry: false, actions: ['open', 'host'] };

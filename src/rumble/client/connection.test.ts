@@ -48,6 +48,17 @@ describe('the connection', () => {
     expect(s.retryAt).toBe(CONNECTION.retryFull);
     expect(words(s, 0)?.title).toMatch(/full/);
   });
+
+  it('too many connections from one network (security audit H1) is said as such, and tried again slowly', () => {
+    for (const why of ['network full: too many connections from your network', 'network full: too many connections from your network in this room']) {
+      const s = onClose(initialConnection('x'), 1013, why, 0);
+      expect(s.phase).toBe('full');
+      expect(s.retryAt).toBe(CONNECTION.retryFull);
+      expect(words(s, 0)?.title).toBe('Too many connections from your network');
+    }
+    // An idle socket closed by the server is a lost connection: it comes back by itself.
+    expect(onClose({ ...initialConnection('x'), everConnected: true }, 4008, 'idle', 0).phase).toBe('lost');
+  });
 });
 
 describe('servers a page cannot play with (M10)', () => {
