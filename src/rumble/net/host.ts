@@ -20,14 +20,24 @@
  * roster reports, per slot, a bot, a guest, or the proven pubkey of the
  * connection holding it. When the connection goes, so does its identity;
  * whoever takes the slot next starts as a guest.
+ *
+ * LOBBY ROOMS (L1): a host made with `lifecycle: 'lobby'` does not play
+ * continuously. Its `Lifecycle` (`lifecycle.ts`) decides the stage: in the
+ * lobby and the countdown the match stands still (`match.idle`: time
+ * passes, nothing moves, no input is taken); the countdown's swap restarts
+ * the match on the room's arena; play is the match as ever; a won match
+ * shows its results, then the room goes back to its lobby (rotating its
+ * arena if it does). Without a lifecycle (the OPEN room, older clients'
+ * rooms) everything is as before: the next match starts by itself.
  */
 import { BotInput, botWorldFrom } from '../control/bot';
 import { createRumbleMatch, type RumbleMatch } from '../sim/match';
 import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
-import { CLASSIC, nextArena, type ArenaDef } from '../arena/arenas';
-import { parseClientMessage, type Control, type LookReason, type PongMessage, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
+import { CLASSIC, arenaById, nextArena, type ArenaDef } from '../arena/arenas';
+import { parseClientMessage, type Control, type LobbyMessage, type LookReason, type MatchResults, type PongMessage, type RoomSettings, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
+import { Lifecycle, minHumans, type LifecycleView } from './lifecycle';
 
 export const NET = Object.freeze({
   /** The authoritative simulation rate, steps per second. */
@@ -50,6 +60,8 @@ export interface HostConfig {
   rotate?: boolean;
   /** For a rotation: 0..1 (tests make it deterministic). */
   random?: () => number;
+  /** L1: 'lobby' for a room with the lobby lifecycle; continuous play otherwise (the default). */
+  lifecycle?: 'continuous' | 'lobby';
 }
 
 export type ConnectionId = number;
@@ -80,6 +92,12 @@ export class RumbleHost {
   /** M11A: rotate to another arena between matches. */
   readonly rotate: boolean;
   private readonly random: () => number;
+  /** L1: the lobby lifecycle, or null (continuous play). */
+  readonly lobby: Lifecycle | null;
+  /** L1: a lobby room's settings (the arena of the next match; bots). */
+  readonly settings: RoomSettings;
+  /** Connections in the order they arrived (the lobby's seating and handoff order). */
+  private readonly arrivals: ConnectionId[] = [];
 
   constructor(config: HostConfig) {
     const ids = config.players ?? ['P1', 'P2', 'P3', 'P4'];
@@ -94,6 +112,8 @@ export class RumbleHost {
     this.bots = this.ids.map((_, i) => new BotInput(i + 1));
     for (const id of this.ids) this.holder.set(id, null);
     this.snapshot = this.match.snapshot();
+    this.settings = { bots: true, arena: this.match.arena.id, rotate: this.rotate };
+    this.lobby = config.lifecycle === 'lobby' ? new Lifecycle(this.tickHz, this.match.tick) : null;
   }
 
   /** M11A: the arena in play. */
@@ -108,6 +128,8 @@ export class RumbleHost {
 
   /** A new connection: the first free slot is its, or none (it watches). */
   connect(conn: ConnectionId): WelcomeMessage {
+    this.arrivals.push(conn);
+    this.lobby?.touch();
     const free = this.ids.find((id) => this.holder.get(id) === null) ?? null;
     this.slotOf.set(conn, free);
     if (free) {
@@ -124,6 +146,9 @@ export class RumbleHost {
 
   /** A connection left: its slot (if any) goes back to its bot at once, with no input of the person's left held. */
   disconnect(conn: ConnectionId) {
+    const at = this.arrivals.indexOf(conn);
+    if (at >= 0) this.arrivals.splice(at, 1);
+    this.lobby?.touch();
     const slot = this.slotOf.get(conn) ?? null;
     this.slotOf.delete(conn);
     this.identity.delete(conn);
@@ -225,6 +250,30 @@ export class RumbleHost {
 
   /** One fixed step of the match: bots decide for their fighters, then the match advances by exactly dt. */
   tick() {
+    if (this.lobby) return this.tickLobby(this.lobby);
+    this.drive();
+    const events = this.match.step(this.dt);
+    this.snapshot = this.match.snapshot();
+    for (const e of events) {
+      if (e.kind === 'newRound') this.resetBots();
+      if (e.kind === 'match') this.matchOverFor = 0;
+    }
+    // A won match: the arena settles, then the next match starts by itself.
+    if (this.snapshot.phase === 'matchOver') {
+      this.matchOverFor += this.dt;
+      if (this.matchOverFor >= NET.nextMatchDelay) {
+        this.matches += 1;
+        // M11A: a rotating room moves to another arena with the new match.
+        if (this.rotate) this.match.switchArena(nextArena(this.match.arena.id, this.random()));
+        this.match.restart();
+        this.snapshot = this.match.snapshot();
+        this.resetBots();
+      }
+    }
+  }
+
+  /** This step's intents: a person's latest (let go of when it stalls), a bot's plan for every seat nobody holds. */
+  private drive() {
     const s = this.snapshot;
     const playing = s.phase === 'playing';
     const timeout = Math.round(NET.inputTimeout * this.tickHz);
@@ -245,24 +294,78 @@ export class RumbleHost {
       bot.plan(botWorldFrom(s, id), this.dt);
       this.match.setInput(id, bot.read());
     });
-    const events = this.match.step(this.dt);
+  }
+
+  /** L1: a lobby room's step: the match plays only while the lifecycle says so, and the lifecycle moves on. */
+  private tickLobby(life: Lifecycle) {
+    const live = life.phase === 'playing' || life.phase === 'results';
+    let events: ReturnType<RumbleMatch['step']> = [];
+    if (live) {
+      this.drive();
+      events = this.match.step(this.dt);
+    } else this.match.idle(this.dt);
     this.snapshot = this.match.snapshot();
-    for (const e of events) {
-      if (e.kind === 'newRound') this.resetBots();
-      if (e.kind === 'match') this.matchOverFor = 0;
+    for (const e of events) if (e.kind === 'newRound') this.resetBots();
+    const now = this.match.tick;
+    if (life.phase === 'playing') {
+      const won = events.find((e) => e.kind === 'match');
+      if (won) life.finish(now, this.results(won.who ?? null, 'won'));
     }
-    // A won match: the arena settles, then the next match starts by itself.
-    if (this.snapshot.phase === 'matchOver') {
-      this.matchOverFor += this.dt;
-      if (this.matchOverFor >= NET.nextMatchDelay) {
+    for (const fx of life.advance(now, this.view())) {
+      if (fx === 'swapIn') this.restartOn(this.settings.arena);
+      else if (fx === 'swapOut') {
         this.matches += 1;
-        // M11A: a rotating room moves to another arena with the new match.
-        if (this.rotate) this.match.switchArena(nextArena(this.match.arena.id, this.random()));
-        this.match.restart();
-        this.snapshot = this.match.snapshot();
-        this.resetBots();
+        // M11A: a rotating room moves to another arena with the new match (shown in the lobby, before it starts).
+        if (this.settings.rotate) this.settings.arena = nextArena(this.match.arena.id, this.random()).id;
+        this.restartOn(this.settings.arena);
       }
     }
+  }
+
+  /** The match back to its start on `arena` (switched if it is another): scores, rounds, fighters at their spawns. */
+  private restartOn(arena: string) {
+    const def = arenaById(arena) ?? this.match.arena;
+    if (def.id !== this.match.arena.id) this.match.switchArena(def);
+    this.match.restart();
+    this.snapshot = this.match.snapshot();
+    this.resetBots();
+  }
+
+  /** L1: what the lifecycle needs to know about the room now. */
+  private view(): LifecycleView {
+    const humans = this.arrivals.filter((c) => this.slotOf.get(c));
+    return { humans, bots: this.settings.bots };
+  }
+
+  /** L1: how the match ended, per fighter: who drives it now and its score. */
+  private results(winner: string | null, reason: MatchResults['reason']): MatchResults {
+    const slots = this.roster().slots;
+    return { winner, reason, arena: this.match.arena.id, fighters: this.snapshot.fighters.map((f) => ({ id: f.id, who: slots[f.id] ?? { who: 'bot' }, score: f.score })) };
+  }
+
+  /** L1: a lobby room's state, as one connection hears it (its own seat); null for a continuous room. */
+  lobbyFor(conn: ConnectionId): LobbyMessage | null {
+    const life = this.lobby;
+    if (!life) return null;
+    const view = this.view();
+    return {
+      t: 'lobby',
+      phase: life.phase,
+      since: life.since,
+      deadline: life.deadline,
+      transition: life.transition,
+      you: this.slotOf.get(conn) ?? null,
+      lineup: [...this.match.ids],
+      settings: { ...this.settings },
+      canStart: life.canStart(view),
+      need: minHumans(this.settings.bots),
+      results: life.results,
+    };
+  }
+
+  /** L1: bumped whenever any connection's lobby message would change. */
+  get lobbyVersion(): number {
+    return this.lobby?.version ?? 0;
   }
 
   /** The state message for the match as it stands. */

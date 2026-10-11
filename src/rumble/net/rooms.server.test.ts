@@ -240,7 +240,7 @@ describe('rooms over the socket', () => {
     const c = await open(`${base}/?create=1`);
     expect(c.welcome!.room!.url).toBe(`https://rumble.example/play/${c.welcome!.room!.id}`);
     expect(c.welcome!.server).toEqual({ name: 'Garden', operator, url: 'https://rumble.example' });
-    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks', 'rooms-list']);
+    expect(c.welcome!.features).toEqual(['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby']);
     expect((await open(base)).welcome!.room!.url).toBe('https://rumble.example/');
   });
 });

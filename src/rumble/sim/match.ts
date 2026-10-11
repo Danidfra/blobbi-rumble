@@ -245,6 +245,21 @@ export class RumbleMatch {
     return holdsConsistent(this.combatants());
   }
 
+  /**
+   * L1: time passes and nothing moves: a private room between matches (its
+   * lobby, its countdown). The tick and the clock advance, so states keep
+   * coming in order; no body, piece, hazard or rule is stepped and no input
+   * is taken. Returns what was queued (nothing can be, outside play).
+   */
+  idle(dt: number): MatchEvent[] {
+    this.events = this.queued;
+    this.queued = [];
+    this.clock += dt;
+    this.tickCount += 1;
+    for (const p of this.pending) p.jump = p.punch = p.grab = false;
+    return this.events;
+  }
+
   /** Advance the match by `dt` seconds. Returns what it decided during the step. */
   step(dt: number): MatchEvent[] {
     this.events = this.queued;

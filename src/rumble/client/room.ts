@@ -34,10 +34,15 @@ export function roomIntent(loc: { pathname: string; search: string }): RoomInten
   return { kind: 'create', listed: q.get('public') === '1', ...(arena ? { arena } : {}), ...(q.get('rotate') === '1' ? { rotate: true } : {}) };
 }
 
-/** The WebSocket URL for a room: the server's URL with `room=` or `create=1` (any other query kept). */
+/**
+ * The WebSocket URL for a room: the server's URL with `room=` or `create=1`
+ * (any other query kept), and (L1) `caps=lobby`: this page understands lobby
+ * rooms, so a room it creates is one and a lobby room lets it in. A server
+ * that does not know the lobby ignores it.
+ */
 export function socketUrl(serverUrl: string, intent: RoomIntent): string {
   const u = new URL(serverUrl);
-  for (const k of ['room', 'create', 'public', 'arena', 'rotate']) u.searchParams.delete(k);
+  for (const k of ['room', 'create', 'public', 'arena', 'rotate', 'caps']) u.searchParams.delete(k);
   if (intent.kind === 'join') u.searchParams.set('room', intent.id);
   else if (intent.kind === 'create') {
     u.searchParams.set('create', '1');
@@ -45,6 +50,7 @@ export function socketUrl(serverUrl: string, intent: RoomIntent): string {
     if (intent.arena) u.searchParams.set('arena', intent.arena);
     if (intent.rotate) u.searchParams.set('rotate', '1');
   }
+  u.searchParams.set('caps', 'lobby');
   return u.toString();
 }
 

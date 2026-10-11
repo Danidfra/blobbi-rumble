@@ -41,7 +41,8 @@ import { Keyboard, NET_BINDINGS, PlayerInput, type MoveIntent } from '../control
 import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
-import { CONNECTION, initialConnection, onClose, onRetry, onWelcome, statusLine } from './connection';
+import { CONNECTION, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
+import { lifecyclePlays, lobbyLine } from './lobby';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
@@ -53,7 +54,7 @@ import { declarationOf, lookFromSlotForm, planLooks, rumbleFormOf, type RumbleFo
 import { pageAddress, roomIntent, shareLink, socketUrl, type RoomIntent } from './room';
 import { classifyServer, type ServerTrust } from '../net/serverTrust';
 import type { RoomInfo, ServerInfo } from '../net/protocol';
-import { inputMessage, isNewer, type ClientMessage, type Control, type ServerMessage, type StateMessage } from '../net/protocol';
+import { inputMessage, isNewer, type ClientMessage, type Control, type LobbyMessage, type ServerMessage, type StateMessage } from '../net/protocol';
 import { moveAim, wantsThrow } from '../control/aim';
 import { ROSTER } from '../roster';
 import { combatOf } from '../sim/read';
@@ -363,6 +364,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let connectingSince = 0;
   let status = 'connecting';
   let you: string | null = null;
+  /** L1: a lobby room's lifecycle as the server last said it (null: a continuous room). */
+  let lobby: LobbyMessage | null = null;
   let players: string[] = [];
   let tickHz = 60;
   let state: StateMessage | null = null;
@@ -721,6 +724,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         conn = onWelcome(conn, m.you, now);
         status = `connected · ${m.tickHz} Hz match, ${m.snapshotHz} Hz state`;
         roster = null;
+        lobby = null;
         // The room (an older server has one match: the open room).
         const created = target.kind === 'create';
         room = m.room ?? { id: 'OPEN', kind: 'open', mode: 'casual' };
@@ -765,9 +769,18 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         const i = you ? m.snapshot.players.indexOf(you) : -1;
         if (i >= 0) {
           const f = m.snapshot.fighters[i];
-          const allowed = usePredict && predictable(f, m.snapshot.phase === 'playing');
+          const allowed = usePredict && predictable(f, m.snapshot.phase === 'playing') && lifecyclePlays(lobby);
           const r = predictor.reconcile(f, m.tick, 1 / tickHz, m.acks[you!] ?? -1, m.ackTicks?.[you!] ?? m.tick, allowed);
           if (r.kind === 'kept' || r.kind === 'smoothed' || r.kind === 'snapped') errors.add(r.error);
+        }
+      } else if (m.t === 'lobby') {
+        // L1: the room's stage, and this connection's seat in it (which changes only between matches).
+        lobby = m;
+        if (m.you !== you) {
+          you = m.you;
+          conn = onSeat(conn, you);
+          predictor.reset();
+          keyboard.held.clear();
         }
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
@@ -927,7 +940,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       spectators,
       you,
       snapshot: buffer.newest ?? null,
-      message: presenter?.currentMessage ?? '',
+      message: lobbyLine(lobby, state?.tick ?? 0, tickHz, (id) => nameFor(id) ?? id) ?? presenter?.currentMessage ?? '',
       nameOf: nameFor,
       startCard: !startSeen && room?.kind === 'open',
       invite: { mode: inviteMode(), status: inviteStatus, busy: inviteBusy },
@@ -1068,6 +1081,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       mode: 'network',
       get you() {
         return you;
+      },
+      /** L1: the lobby room's lifecycle as last heard (null: a continuous room). */
+      get lobby() {
+        return lobby;
       },
       get connection() {
         return conn;

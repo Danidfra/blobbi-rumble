@@ -7,6 +7,9 @@
  *   /ws                the open room (where a plain visit plays)
  *   /ws?room=A7F2      that room; refused (4004) if there is none
  *   /ws?create=1       a new private room (4003 when over the limits)
+ *   …&caps=lobby       L1: the client speaks the lobby: a room it creates is a
+ *                      lobby room; without it, a lobby room is refused (1008,
+ *                      "update required") rather than misread
  *
  *   room clients ──input / ping──► its host.receive ··· every host.tick() @ 60 Hz ··· every 3rd tick ──state──► that room's clients
  *
@@ -57,7 +60,7 @@ import { arenaById } from '../arena/arenas';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
 import type { LookDeclaration } from './looks';
-import { parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage } from './protocol';
+import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
 import { RoomManager, type Room } from './rooms';
 import { addressGroup, isLoopback } from './address';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
@@ -302,8 +305,18 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     const data = JSON.stringify({ ...roster, spectators: [...room.connections].filter((c) => room.host.slot(c) === null).length });
     for (const c of members.get(room) ?? []) c.send(data);
   };
+  /** L1: what each connection must know of a lobby room's lifecycle (its own seat in it), when anything in it changed. */
+  const lobbySent = new Map<Room, number>();
+  const sendLobby = (room: Room) => {
+    if (!room.host.lobby || lobbySent.get(room) === room.host.lobbyVersion) return;
+    lobbySent.set(room, room.host.lobbyVersion);
+    for (const c of members.get(room) ?? []) {
+      const m = room.host.lobbyFor(c.id);
+      if (m) c.send(JSON.stringify(m));
+    }
+  };
   /** The room a connection asked for (by the query of its URL): the open room, a known room, or a new one. */
-  const roomFor = (req: IncomingMessage, who: string, group: string | null): { room: Room } | { code: number; why: string } => {
+  const roomFor = (req: IncomingMessage, who: string, group: string | null, lobby: boolean): { room: Room } | { code: number; why: string } => {
     const q = new URL(req.url ?? '/', 'http://x').searchParams;
     if (q.has('create')) {
       // Per address group: an IPv6 /64 is one (rotating through it makes no more rooms).
@@ -312,12 +325,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
       // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
       // M11A: `arena=<id>` picks the arena (unknown: the classic island); `rotate=1` moves to another after each match.
-      const room = rooms.create({ listed: q.get('public') === '1', arena: arenaById(q.get('arena')) ?? undefined, rotate: q.get('rotate') === '1' });
+      // L1: a client that speaks the lobby makes a lobby room; an older one, a continuous room it understands.
+      const room = rooms.create({ listed: q.get('public') === '1', arena: arenaById(q.get('arena')) ?? undefined, rotate: q.get('rotate') === '1', lifecycle: lobby ? 'lobby' : 'continuous' });
       if (!room) return { code: 4003, why: 'room limit reached' };
       if (group !== null) owners.set(room, group);
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
-      log(`room ${room.id} created by ${who} (${room.listed ? 'listed' : 'unlisted'}) · ${rooms.size} rooms`);
+      log(`room ${room.id} created by ${who} (${room.listed ? 'listed' : 'unlisted'}${room.lifecycle === 'lobby' ? ', lobby' : ''}) · ${rooms.size} rooms`);
       return { room };
     }
     if (!q.has('room')) return { room: rooms.open };
@@ -385,7 +399,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       ws.close(1013, 'network full: too many connections from your network');
       return;
     }
-    const target = roomFor(req, seen, group);
+    const caps = parseCaps(new URL(req.url ?? '/', 'http://x').searchParams.get('caps'));
+    const target = roomFor(req, seen, group, caps.has('lobby'));
     if ('code' in target) {
       stats.refused += 1;
       log(`refused ${from}: ${target.why}`);
@@ -393,6 +408,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       return;
     }
     const room = target.room;
+    if (room.lifecycle === 'lobby' && !caps.has('lobby')) {
+      // L1: a page that does not know the lobby would misread this room: refused, plainly, without a retry loop.
+      stats.refused += 1;
+      log(`refused ${from}: room ${room.id} needs a newer client`);
+      ws.close(1008, UPDATE_REQUIRED);
+      return;
+    }
     if (!rooms.hasRoom(room)) {
       stats.refused += 1;
       log(`refused ${from}: room ${room.id} full`);
@@ -453,10 +475,11 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     members.set(room, inRoom.add(client));
     const welcome = host.connect(id);
     log(`conn ${id} from ${seen}: room ${room.id}, ${welcome.you ?? 'spectator'} · ${clients.size} connected`);
-    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}) };
+    const info: RoomInfo = { id: room.id, kind: room.kind, mode: room.mode, listed: room.listed, arena: room.host.arena.id, rotate: room.rotate, ...(identity.public ? { url: roomShareUrl(identity.public.origin, room.id) } : {}), ...(room.lifecycle === 'lobby' ? { lifecycle: 'lobby' as const } : {}) };
     const server: ServerInfo = { ...(identity.name ? { name: identity.name } : {}), ...(identity.operator ? { operator: identity.operator } : {}), ...(identity.public ? { url: identity.public.origin } : {}) };
-    client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list'], room: info, server }));
+    client.send(JSON.stringify({ ...welcome, protocol: PROTOCOL.version, features: ['nostr-auth', 'rooms', 'looks', 'rooms-list', 'lobby'], room: info, server }));
     sendRoster(room);
+    sendLobby(room);
     /** The identity handshake (M8A): challenge, proof, logout. Off the match entirely. */
     const identityMessage = (msg: ClientMessage) => {
       const reply = (m: AuthReply | ChallengeMessage) => client.send(JSON.stringify(m));
@@ -557,6 +580,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       members.get(room)?.delete(client);
       log(`conn ${id} left room ${room.id}${slot ? `: ${slot} back to its bot` : ''} · ${clients.size} connected`);
       sendRoster(room);
+      sendLobby(room);
     });
     ws.on('error', () => ws.terminate());
   });
@@ -585,7 +609,10 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const sweep = () => {
     for (const id of rooms.reap()) {
       const room = [...members.keys()].find((r) => r.id === id);
-      if (room) members.delete(room);
+      if (room) {
+        members.delete(room);
+        lobbySent.delete(room);
+      }
       for (const r of owners.keys()) if (r.id === id) owners.delete(r);
       stats.roomsClosed += 1;
       log(`room ${id} closed (empty for ${Math.round(rooms.graceMs / 1000)} s) · ${rooms.size} rooms`);
@@ -604,7 +631,10 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     for (const c of members.get(room) ?? []) c.send(data, true);
   };
   const broadcast = () => {
-    for (const room of rooms.all()) broadcastRoom(room);
+    for (const room of rooms.all()) {
+      sendLobby(room);
+      broadcastRoom(room);
+    }
   };
 
   // The fixed-step loop on the monotonic clock: every room steps on the same beat.
@@ -624,6 +654,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       stats.lateMax = Math.max(stats.lateMax, late);
       for (const room of rooms.all()) {
         room.host.tick();
+        // L1: a lifecycle change goes out before the state of the tick it happened on.
+        sendLobby(room);
         if (room.host.latest.tick % ticksPerSnapshot === 0) broadcastRoom(room);
       }
       stats.ticks += 1;

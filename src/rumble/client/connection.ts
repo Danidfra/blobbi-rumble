@@ -54,6 +54,12 @@ export function onWelcome(s: ConnectionState, you: string | null, now: number): 
   return { ...s, phase: you ? 'playing' : 'watching', you, everConnected: true, attempts: 0, note, noteUntil: note ? now + CONNECTION.noteFor : 0 };
 }
 
+/** L1: a lobby room gave this connection a seat, or took it back to watching, between matches. */
+export function onSeat(s: ConnectionState, you: string | null): ConnectionState {
+  if (s.phase !== 'playing' && s.phase !== 'watching') return s;
+  return { ...s, phase: you ? 'playing' : 'watching', you };
+}
+
 /** The socket closed (or went silent). `code`/`reason` as the close event gave them. */
 export function onClose(s: ConnectionState, code: number, reason: string, now: number): ConnectionState {
   s = { ...s, why: reason };
@@ -107,6 +113,8 @@ export function describe(s: ConnectionState, now: number): { title: string; deta
     case 'incompatible':
       return { title: 'This server speaks a newer Rumble', detail: 'Update the game (reload a newer page) or pick another server in the session panel.', retry: false, actions: ['retry'] };
     case 'rejected':
+      // L1: a room this build cannot play (a newer server's room kind).
+      if (/update required/i.test(s.why)) return { title: 'This room needs a newer Blobbi Rumble', detail: 'Reload the page to update the game, then join again.', retry: false, actions: ['retry', 'open'] };
       return { title: 'This server turned this page away', detail: /origin/i.test(s.why) ? 'It does not accept connections from this site. Pick another server in the session panel.' : `It refused the connection${s.why ? ` (${s.why})` : ''}. Pick another server in the session panel.`, retry: false, actions: ['retry'] };
     default:
       return null;

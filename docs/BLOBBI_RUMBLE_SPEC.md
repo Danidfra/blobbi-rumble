@@ -343,6 +343,70 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 > code-addressed rooms, not access-controlled or cryptographically private
 > rooms. Anyone with the code or link can join.
 
+
+### 10a. Lobby rooms and the match lifecycle (L1)
+
+**Status: L1 implemented (lifecycle core).** Approved 2026-10-11 after
+the lobby architecture audit. The **OPEN room keeps continuous drop-in
+play**; private rooms made by current clients get a lobby.
+
+A lobby is a **stage of an existing room**, not a new kind of object:
+the same code, link, invites, grace period, limits, identity, looks and
+`RumbleHost` / `RumbleMatch` (one Havok world per room, reused with
+`restart()` and `switchArena()`). The lifecycle is pure state over the
+room's tick (`net/lifecycle.ts`), applied by the host.
+
+```
+LOBBY ──start──► COUNTDOWN ──deadline──► PLAYING ──match won──► RESULTS ──deadline──► LOBBY
+  ▲                 │ someone it started with left / below the minimum
+  └── cancelled ────┘
+```
+
+| Stage | The match | Ends |
+| --- | --- | --- |
+| **lobby** | Stands still (`match.idle`: tick and clock advance, nothing moves, no input taken). Warm-up play is L4. | A start (L1: as soon as the minimum is met; L2: ready / owner). |
+| **countdown** | Stands still; on its swap tick the match restarts on the room's arena, every fighter at its spawn. | Its deadline (play), or a cancel (back to the lobby). |
+| **playing** | The match as ever (bots, rounds, scores). | The match is decided. |
+| **results** | Settled, as a won match always was. Results: winner, reason, and per fighter who drove it at the end (bot, guest, proven pubkey) and its score. | Its deadline: the swap back (a rotating room moves to its next arena here, so the lobby shows it). |
+
+Times (`LIFECYCLE`): departure 2.3 s and arrival 2.6 s (the countdown,
+about 4.9 s), results 8 s. Nothing starts while the return to the lobby is
+still arriving. Ticks never go back: states stay in order through every
+swap.
+
+**Transitions are facts with deadlines, not pictures.** Every change of
+place is announced ahead as `{ kind: 'toArena' | 'toLobby', departAt,
+swapAt, arriveBy }` in ticks. The server swaps on `swapAt`; clients draw
+whatever they like over the window. This is where the teleport
+(nostr-pet's `present → departing → absent → arriving → present`, whose
+departure ~2.3 s and arrival ~2.6 s the times above follow) will plug in:
+departure until the swap, the swap hidden while absent, arrival after.
+A countdown cancelled before its swap has moved nothing, so a client can
+turn the departure back. A fade is an acceptable placeholder, but nothing
+may assume the transition is only a fade, and no gameplay fact depends on
+what is drawn.
+
+**Negotiated both ways** (the game is deployed; no client may misread a
+room):
+
+- A client that knows the lobby says `caps=lobby` in its socket URL; the
+  server lists `lobby` in the welcome's `features`.
+- `create=1&caps=lobby` makes a lobby room (`room.lifecycle: 'lobby'`; the
+  listing gives its stage as `phase`). `create=1` without it still makes a
+  continuous room, which such a client understands.
+- A client without `caps=lobby` is refused a lobby room with close code
+  **1008** and the reason `update required: reload the page to join this
+  room`. Pre-lobby pages show that as a refusal without retrying; current
+  pages say "This room needs a newer Blobbi Rumble".
+- The wire `protocol` number is unchanged (1): bumping it would mark every
+  deployed page incompatible with the OPEN room too.
+
+The server sends each connection of a lobby room a `lobby` message on
+every change (before the state of the tick it happened on): the stage, its
+start and deadline ticks, the transition, the connection's own seat
+(`you`, which may change between matches), the lineup, the settings, the
+minimum, and the last results.
+
 ---
 
 ## 11. Server identity and trust
@@ -1473,7 +1537,9 @@ immutable forever.
 - **The M8A identity flow** (NIP-07, connection-scoped proof over the game
   socket, Guest default).
 - **M8B rooms** (OPEN plus code-addressed private rooms, in memory, 120 s
-  grace, `/play/CODE`, `PUBLIC_URL` canonical).
+  grace, `/play/CODE`, `PUBLIC_URL` canonical). Amended 2026-10-11: a
+  private room may run the lobby lifecycle (§10a); the addressing is
+  unchanged and OPEN stays continuous.
 - **The M8C-A send protocol** (kind 14 in a seal and gift wrap, the
   10050-only inbox, the `b` marker, 30-minute expiry, no self-copy).
 - **The M8C-B receive behaviour** (explicit check, bounded newest-first
@@ -1540,7 +1606,7 @@ None of this is designed or decided.
 
 - Nostr as realtime gameplay transport or gameplay authority.
 - WebRTC / peer-to-peer play.
-- A public lobby or matchmaking before it is justified.
+- Public matchmaking before it is justified. (A room's own lobby, §10a, is not matchmaking: it keeps M8B addressing and lists nothing new.)
 - Sats or payments before their milestone.
 - Gameplay, physics or networking inside `blobbi-kit`.
 - Competitive advantage from Blobbi morphology.

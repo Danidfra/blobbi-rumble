@@ -30,6 +30,19 @@
  *                                                     M9C: and the form their fighter wears, if any
  *     { t: 'look', ok, reason? }                      M9C: the answer to a look
  *     { t: 'rooms', rooms }                           M10B: the public rooms, counts only (never who is in them)
+ *     { t: 'lobby', phase, since, deadline, transition, you, lineup, settings, canStart, need, results }
+ *                                                     L1: a lobby room's lifecycle (`lifecycle.ts`), on every change,
+ *                                                     to each connection (`you`: its seat now, which can change
+ *                                                     between matches)
+ *
+ * THE LOBBY (L1) is negotiated both ways, so no client misreads a room: a
+ * client that knows it says so in the socket URL (`caps=lobby`); a server
+ * that has it lists 'lobby' in `features`. A room made by a client that
+ * asked for it (`create=1&caps=lobby`) is a lobby room (`room.lifecycle`);
+ * any other room plays continuously, as before. A client that did not say
+ * `caps=lobby` is refused a lobby room with close code 1008 and the reason
+ * "update required" (which a pre-lobby page shows as a refusal, without
+ * retrying), never let in to misread it.
  *
  * VERSION (M10A): the welcome carries `protocol`, the number below. A client
  * plays with a server whose number it knows (older ones are missing some
@@ -125,6 +138,68 @@ export interface WelcomeMessage {
   /** M11A: the room's arena, and whether it rotates between matches (absent: a pre-M11 server, the classic island). */
   arena?: { id: string; rotate: boolean };
 }
+/** L1: what a client may announce it understands, in the socket URL's `caps` (comma-separated). */
+export const CLIENT_CAPS = Object.freeze(['lobby'] as const);
+export type ClientCap = (typeof CLIENT_CAPS)[number];
+/** The capabilities a socket URL's query announces (unknown ones ignored, bounded). */
+export function parseCaps(raw: string | null): Set<ClientCap> {
+  const caps = new Set<ClientCap>();
+  if (!raw || raw.length > 64) return caps;
+  for (const c of raw.split(',')) if ((CLIENT_CAPS as readonly string[]).includes(c)) caps.add(c as ClientCap);
+  return caps;
+}
+/** The close reason a pre-lobby client is refused a lobby room with (code 1008). */
+export const UPDATE_REQUIRED = 'update required: reload the page to join this room';
+
+/** L1: the stages of a lobby room (`lifecycle.ts`). */
+export type LifecyclePhase = 'lobby' | 'countdown' | 'playing' | 'results';
+/**
+ * L1: a change of place, announced ahead in ticks (the state messages'
+ * ticks): bodies leave from `departAt`, the server swaps them on `swapAt`
+ * (the match restarted, every fighter at its spawn), the arrival is over by
+ * `arriveBy`. What is drawn over it is the client's (a fade, a teleport).
+ */
+export interface Transition {
+  kind: 'toArena' | 'toLobby';
+  departAt: number;
+  swapAt: number;
+  arriveBy: number;
+}
+/** L1: a lobby room's settings, decided by the server. */
+export interface RoomSettings {
+  /** Bots fill the seats nobody holds. */
+  bots: boolean;
+  /** The arena the next match is played on. */
+  arena: string;
+  /** Move to another arena after each match. */
+  rotate: boolean;
+}
+/** L1: how a match ended, per fighter: who drove it at the end (a bot, a guest, a proven pubkey) and its score. */
+export interface MatchResults {
+  /** The winning fighter's id, or null (abandoned). */
+  winner: string | null;
+  /** 'won': first to the target; 'forfeit': everyone else left; 'abandoned': nobody was left. */
+  reason: 'won' | 'forfeit' | 'abandoned';
+  arena: string;
+  fighters: { id: string; who: SlotIdentity; score: number }[];
+}
+export interface LobbyMessage {
+  t: 'lobby';
+  phase: LifecyclePhase;
+  /** The tick the phase began on, and the tick it ends on by itself (null: it does not). */
+  since: number;
+  deadline: number | null;
+  transition: Transition | null;
+  /** This connection's seat now (null: watching until the next lobby has a seat for it). */
+  you: string | null;
+  /** The fighters of the match (the next one, in the lobby). */
+  lineup: string[];
+  settings: RoomSettings;
+  /** Whether the minimum to start is met, and the fewest seated people a start needs. */
+  canStart: boolean;
+  need: number;
+  results: MatchResults | null;
+}
 export interface RoomInfo {
   id: string;
   kind: 'open' | 'private';
@@ -136,6 +211,8 @@ export interface RoomInfo {
   /** M11A: the arena the room was made with (absent: the classic island). */
   arena?: string;
   rotate?: boolean;
+  /** L1: 'lobby' for a room with the lobby lifecycle (absent: it plays continuously). */
+  lifecycle?: 'lobby';
 }
 /** M10B: one public room as the listing shows it: counts, never who. */
 export interface RoomListing {
@@ -156,6 +233,8 @@ export interface RoomListing {
   age: number;
   /** M11A: the arena in play now. */
   arena: string;
+  /** L1: 'lobby' for a lobby room, whose `phase` is then its lifecycle's (lobby, countdown, playing, results). */
+  lifecycle?: 'lobby';
 }
 export interface RoomsMessage {
   t: 'rooms';
@@ -213,7 +292,7 @@ export interface RosterMessage {
   /** M8B: how many connections in the room are watching. */
   spectators?: number;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage;
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage | LobbyMessage;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);

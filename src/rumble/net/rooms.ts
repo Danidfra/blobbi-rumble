@@ -15,6 +15,10 @@
  *             a code is an address, not a secret, so this is privacy from
  *             browsing, not access control)
  *
+ * L1: a private room made by a client that speaks the lobby is a LOBBY
+ * room (`lifecycle: 'lobby'`): its host runs the lobby lifecycle
+ * (`lifecycle.ts`) instead of playing continuously. The open room never is.
+ *
  * Rooms are casual: whoever runs the process is trusted with the result.
  * `mode` is recorded so a future value-bearing mode cannot be confused
  * with it; nothing reads it yet.
@@ -46,6 +50,8 @@ export interface Room {
   /** M11A: the arena the room was made with; `host.arena` is the one in play (a rotation moves on). */
   readonly arena: ArenaDef;
   readonly rotate: boolean;
+  /** L1: 'lobby' (the lobby lifecycle) or 'continuous' (the open room, and rooms made by pre-lobby clients). */
+  readonly lifecycle: 'continuous' | 'lobby';
   readonly host: RumbleHost;
   /** The connections in it (players and spectators). */
   readonly connections: Set<ConnectionId>;
@@ -96,9 +102,9 @@ export class RoomManager {
   }
 
   /** A new code room, listed or not (default: unlisted, as before M10), or null when the server holds as many as it may. */
-  create(opts: { listed?: boolean; arena?: ArenaDef; rotate?: boolean } = {}): Room | null {
+  create(opts: { listed?: boolean; arena?: ArenaDef; rotate?: boolean; lifecycle?: 'continuous' | 'lobby' } = {}): Room | null {
     if (this.rooms.size >= this.maxRooms) return null;
-    return this.make(newRoomId((id) => this.rooms.has(id), this.config.random), 'private', opts.listed === true, opts.arena ?? CLASSIC, opts.rotate === true);
+    return this.make(newRoomId((id) => this.rooms.has(id), this.config.random), 'private', opts.listed === true, opts.arena ?? CLASSIC, opts.rotate === true, opts.lifecycle ?? 'continuous');
   }
 
   /**
@@ -114,7 +120,8 @@ export class RoomManager {
         const roster = r.host.roster().slots;
         const players = Object.values(roster).filter((s) => s.who !== 'bot').length;
         const snap = r.host.latest;
-        return { id: r.id, kind: r.kind, players, maxPlayers: Object.keys(roster).length, spectators: Math.max(0, r.connections.size - players), maxConnections: this.perRoom, phase: snap.phase, round: snap.round, joinable: this.hasRoom(r), age: Math.max(0, Math.floor((t - r.createdAt) / 1000)), arena: r.host.arena.id };
+        const life = r.host.lobby;
+        return { id: r.id, kind: r.kind, players, maxPlayers: Object.keys(roster).length, spectators: Math.max(0, r.connections.size - players), maxConnections: this.perRoom, phase: life ? life.phase : snap.phase, round: snap.round, joinable: this.hasRoom(r), age: Math.max(0, Math.floor((t - r.createdAt) / 1000)), arena: r.host.arena.id, ...(life ? { lifecycle: 'lobby' as const } : {}) };
       });
     rows.sort((a, b) => Number(b.kind === 'open') - Number(a.kind === 'open') || b.players - a.players || a.age - b.age);
     return rows.slice(0, PROTOCOL.maxListedRooms);
@@ -155,10 +162,10 @@ export class RoomManager {
     this.rooms.clear();
   }
 
-  private make(id: string, kind: RoomKind, listed = kind === 'open', arena: ArenaDef = CLASSIC, rotate = false): Room {
-    const host = new RumbleHost({ havok: this.config.havok, tickHz: this.config.tickHz, snapshotHz: this.config.snapshotHz, arena, rotate });
+  private make(id: string, kind: RoomKind, listed = kind === 'open', arena: ArenaDef = CLASSIC, rotate = false, lifecycle: 'continuous' | 'lobby' = 'continuous'): Room {
+    const host = new RumbleHost({ havok: this.config.havok, tickHz: this.config.tickHz, snapshotHz: this.config.snapshotHz, arena, rotate, lifecycle });
     // A new private room starts empty: its grace period runs until someone enters.
-    const room: Room = { id, kind, mode: 'casual', listed, arena, rotate, host, connections: new Set(), createdAt: this.now(), emptySince: kind === 'private' ? this.now() : null };
+    const room: Room = { id, kind, mode: 'casual', listed, arena, rotate, lifecycle, host, connections: new Set(), createdAt: this.now(), emptySince: kind === 'private' ? this.now() : null };
     this.rooms.set(id, room);
     return room;
   }

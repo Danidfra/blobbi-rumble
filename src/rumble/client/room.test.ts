@@ -26,10 +26,10 @@ describe('room intents from the page address', () => {
 });
 
 describe('links', () => {
-  it('the socket URL carries the room (and nothing else changes)', () => {
-    expect(socketUrl('wss://rumble.example/ws', { kind: 'join', id: 'A7F2' })).toBe('wss://rumble.example/ws?room=A7F2');
-    expect(socketUrl('ws://127.0.0.1:8787', { kind: 'create' })).toBe('ws://127.0.0.1:8787/?create=1');
-    expect(socketUrl('wss://rumble.example/ws?room=ZZZZ', { kind: 'open' })).toBe('wss://rumble.example/ws');
+  it('the socket URL carries the room (and nothing else changes), and says this page speaks the lobby (L1)', () => {
+    expect(socketUrl('wss://rumble.example/ws', { kind: 'join', id: 'A7F2' })).toBe('wss://rumble.example/ws?room=A7F2&caps=lobby');
+    expect(socketUrl('ws://127.0.0.1:8787', { kind: 'create' })).toBe('ws://127.0.0.1:8787/?create=1&caps=lobby');
+    expect(socketUrl('wss://rumble.example/ws?room=ZZZZ', { kind: 'open' })).toBe('wss://rumble.example/ws?caps=lobby');
   });
 
   it('the page address after a switch keeps the flags that matter', () => {
@@ -66,13 +66,13 @@ describe('public rooms and server-aware links (M10)', () => {
   it('?create=1&public=1 asks for a listed room; the socket URL carries it; a plain create stays unlisted', () => {
     expect(roomIntent({ pathname: '/rumble.html', search: '?network=1&create=1&public=1' })).toEqual({ kind: 'create', listed: true });
     expect(roomIntent({ pathname: '/rumble.html', search: '?create=1' })).toEqual({ kind: 'create', listed: false });
-    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1');
-    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1');
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true })).toBe('wss://s.example/ws?create=1&public=1&caps=lobby');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'create' })).toBe('wss://s.example/ws?create=1&caps=lobby');
     // M11A: the arena and rotation ride the same address, and never leak into a join or the open room.
     expect(roomIntent({ pathname: '/rumble.html', search: '?create=1&arena=blobbi-factory&rotate=1' })).toEqual({ kind: 'create', listed: false, arena: 'blobbi-factory', rotate: true });
-    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true, arena: 'frozen-lake', rotate: true })).toBe('wss://s.example/ws?create=1&public=1&arena=frozen-lake&rotate=1');
-    expect(socketUrl('wss://s.example/ws?arena=frozen-lake&rotate=1', { kind: 'join', id: 'ABCDE' })).toBe('wss://s.example/ws?room=ABCDE');
-    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2');
+    expect(socketUrl('wss://s.example/ws', { kind: 'create', listed: true, arena: 'frozen-lake', rotate: true })).toBe('wss://s.example/ws?create=1&public=1&arena=frozen-lake&rotate=1&caps=lobby');
+    expect(socketUrl('wss://s.example/ws?arena=frozen-lake&rotate=1', { kind: 'join', id: 'ABCDE' })).toBe('wss://s.example/ws?room=ABCDE&caps=lobby');
+    expect(socketUrl('wss://s.example/ws?public=1', { kind: 'join', id: 'A7F2' })).toBe('wss://s.example/ws?room=A7F2&caps=lobby');
   });
   it('a share link names the server when the page is not served by it (and has no public address); the server’s own address needs nothing', () => {
     expect(shareLink('A7F2', 'https://site.example', undefined, 'wss://site.example/ws')).toBe('https://site.example/play/A7F2');
