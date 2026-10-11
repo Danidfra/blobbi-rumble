@@ -47,9 +47,11 @@ with the reason.
   server ends every private room** (players see "Room … isn't here" and
   can go to the open room or host a new game).
 - **Limits**: 16 rooms, 8 connections per room (4 play, 4 watch), 64
-  connections in all, 5 new rooms per address per minute. Refusals:
-  `1013 room full` / `server full` (the page retries), `4004 no such
-  room`, `4003` (no new room now).
+  connections in all, 5 new rooms per address per minute, 3 private rooms
+  open per address at once, 10 wrong room codes per address per minute
+  (then joining by code waits for the minute). Refusals: `1013 room full`
+  / `server full` / `network full` (the page retries), `4004 no such
+  room`, `4003` (no new room now, or too many codes tried).
 - **Isolation**: rooms share only the process. Inputs, states, scores,
   rounds, bots, restarts and Nostr identities stay in their room.
 - **Identity**: a Nostr identity belongs to a connection (and so to its
@@ -197,7 +199,7 @@ Environment (`npm run serve` and the container read the same):
 | `PUBLIC_URL` | unset | the one address people open (`https://rumble.example`); identity proofs must name it, share links and the well-known document use it. Set it when hosting publicly. |
 | `SERVER_NAME`, `OPERATOR_PUBKEY` | unset | the server's claims (name; npub or hex) |
 | `ALLOWED_ORIGINS` | unset (any) | browser origins that may connect, comma-separated; a browser from another origin is refused (4005); non-browser clients (no Origin) are let in. Usually equal to `PUBLIC_URL`. |
-| `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (new rooms per minute) and the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. |
+| `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (connections, rooms, room codes) and the refusal lines of the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. |
 | `RUMBLE_HOST_PORT`, `RUMBLE_TAG` | 8080, latest | compose only: the host port, published on **127.0.0.1** only, and the image tag to run (rollbacks) |
 | `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once |
 | `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
@@ -387,8 +389,10 @@ operating system their share.
 - Fresh-challenge Nostr identity on every connection; nothing weakened for
   convenience; guests always play.
 - Origin validation (`ALLOWED_ORIGINS`), payload (4 KB) and message limits,
-  per-connection rate limit, room-creation limit per address, heartbeat
-  cleanup, bounded rooms and connections, strict parsing of every message.
+  per-connection rate limit, per-address limits on connections, open rooms,
+  room creation and wrong room codes, idle and heartbeat cleanup, bounded
+  rooms and connections, strict parsing of every message, a CSP on pages,
+  no address beside an identity in the logs (see Server limits).
 - The server holds no keys: identity stays in the player's extension.
 - Not provided: session recovery across a disconnect (a reconnect is a new
   connection with whatever slot is free), server-side proof that a
@@ -402,6 +406,27 @@ operating system their share.
   session panel in dev builds.
 
 ## Server limits
+
+Per address (an IPv4 address, or an IPv6 /64; loopback is never limited,
+so behind a tunnel set `CLIENT_IP_HEADER` or every player counts as the
+tunnel): at most 8 connections server-wide and 4 in one room (a household
+can still put four fighters in a room; nobody fills a room or the
+server), 3 private rooms open, 5 new rooms per minute, 10 wrong room codes
+per minute. A connection that sends nothing for 2 minutes is closed
+(`4008 idle`; a real page pings every second, so standing still never
+counts) and the page reconnects. A connection's look is applied at most
+once a second (the latest wins). These came out of the October 2026
+security audit (H1, M1-M3).
+
+Logs: connection, room and identity lines show a network tag (a salted
+hash of the address group, new on each restart), never the address beside
+a Nostr key; only refusals, which carry no identity, name the address.
+
+HTTP: every response has `nosniff` and a referrer policy; pages add a
+Content-Security-Policy (scripts from this origin and WebAssembly only;
+relays, https lookups and remote profile pictures allowed; no framing),
+`X-Frame-Options: DENY` and a permissions policy. HSTS is left to the
+proxy (Cloudflare's dashboard), not set here.
 
 Besides the room limits: 4 KB per message · 120 messages/s per connection
 (extra dropped; over 600 dropped in a second disconnects with 1008) ·
