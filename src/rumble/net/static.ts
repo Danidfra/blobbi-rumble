@@ -31,6 +31,37 @@ const TYPES: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
+/**
+ * Security audit L1: the page's Content Security Policy. What it allows and why:
+ *   script-src   only this origin's own bundles, plus 'wasm-unsafe-eval' to compile the Havok physics WebAssembly
+ *                (never 'unsafe-eval', never inline scripts: the built page has none)
+ *   style-src    'unsafe-inline': the page, Babylon and the HUD set styles inline (no script runs from a style)
+ *   img-src      any http(s) image: Nostr profile pictures live anywhere; data: and blob: for drawn textures
+ *   connect-src  this server's socket, Nostr relays (wss:) and https lookups; ws: / http: for a LAN server's page
+ *                (a Nostr client cannot name its relays in advance, so this is not an exfiltration barrier)
+ *   worker-src   blob: for Babylon's workers
+ *   frame-ancestors 'none'  no other site may frame the game (clickjacking around "Connect Nostr")
+ */
+export const PAGE_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https: http:",
+  "font-src 'self' data:",
+  "connect-src 'self' ws: wss: http: https:",
+  "media-src 'self' data: blob:",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/** On every response; and, on pages, the policy above with the older frame and feature headers. */
+const COMMON_HEADERS = { 'x-content-type-options': 'nosniff', 'referrer-policy': 'strict-origin-when-cross-origin' } as const;
+const PAGE_HEADERS = { 'content-security-policy': PAGE_CSP, 'x-frame-options': 'DENY', 'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()' } as const;
+
 /** Where `/` sends a visitor: the game, in network mode. */
 export const LANDING = '/rumble.html?network=1';
 
@@ -58,23 +89,23 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
   return (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? '/';
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(405, { allow: 'GET, HEAD' }).end();
+      res.writeHead(405, { ...COMMON_HEADERS, allow: 'GET, HEAD' }).end();
       return;
     }
     const path = url.split('?')[0];
     if (path === '/' || path === '') {
       // Keep the query (?room=A7F2, ?server=…): the page reads it.
       const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
-      res.writeHead(302, { location: query ? `${LANDING}&${query}` : LANDING }).end();
+      res.writeHead(302, { ...COMMON_HEADERS, location: query ? `${LANDING}&${query}` : LANDING }).end();
       return;
     }
     if (path === '/.well-known/rumble.json' && opts.wellKnown) {
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-cache', 'access-control-allow-origin': '*', 'x-content-type-options': 'nosniff' }).end(JSON.stringify(opts.wellKnown()));
+      res.writeHead(200, { ...COMMON_HEADERS, 'content-type': 'application/json', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' }).end(JSON.stringify(opts.wellKnown()));
       return;
     }
     if (path === '/healthz') {
       // Readable from any origin: a page on another site may show whether a server is up (M10A), nothing more is in it.
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' }).end(JSON.stringify(health()));
+      res.writeHead(200, { ...COMMON_HEADERS, 'content-type': 'application/json', 'cache-control': 'no-store', 'access-control-allow-origin': '*' }).end(JSON.stringify(health()));
       return;
     }
     const file = resolveStatic(root, isPlayPath(path) ? GAME_PAGE : url);
@@ -88,16 +119,17 @@ export function staticHandler(root: string, health: () => object = () => ({ ok: 
       size = -1;
     }
     if (!file || size < 0) {
-      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
+      res.writeHead(404, { ...COMMON_HEADERS, 'content-type': 'text/plain; charset=utf-8' }).end('not found');
       return;
     }
     const type = TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
     const immutable = path.startsWith('/assets/') && !isPlayPath(path);
     res.writeHead(200, {
+      ...COMMON_HEADERS,
+      ...(type.startsWith('text/html') ? PAGE_HEADERS : {}),
       'content-type': type,
       'content-length': size,
       'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
-      'x-content-type-options': 'nosniff',
     });
     if (req.method === 'HEAD') {
       res.end();

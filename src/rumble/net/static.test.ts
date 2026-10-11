@@ -64,3 +64,32 @@ describe('aborted downloads (H2)', () => {
     expect((await whole.arrayBuffer()).byteLength).toBe(4 * 1024 * 1024);
   });
 });
+
+describe('security headers (L1)', () => {
+  it('pages carry the CSP, no framing and the feature policy; every response says nosniff and a referrer policy', async () => {
+    const port = await serve();
+    const base = `http://127.0.0.1:${port}`;
+    const page = await fetch(`${base}/rumble.html?network=1`);
+    const csp = page.headers.get('content-security-policy') ?? '';
+    const directive = (name: string) => csp.split(';').map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? '';
+    // Scripts: this origin only, WebAssembly compilation allowed, never eval or inline script.
+    expect(directive('script-src')).toBe("script-src 'self' 'wasm-unsafe-eval'");
+    expect(csp).not.toMatch(/'unsafe-eval'/);
+    expect(directive('frame-ancestors')).toBe("frame-ancestors 'none'");
+    expect(directive('object-src')).toBe("object-src 'none'");
+    expect(directive('base-uri')).toBe("base-uri 'none'");
+    // What the game needs: Nostr relays and profile pictures from anywhere, drawn textures, Babylon's workers.
+    expect(directive('connect-src')).toMatch(/wss:/);
+    expect(directive('img-src')).toMatch(/https:.*|data:/);
+    expect(directive('worker-src')).toMatch(/blob:/);
+    expect(page.headers.get('x-frame-options')).toBe('DENY');
+    expect(page.headers.get('permissions-policy')).toMatch(/camera=\(\)/);
+    for (const path of ['/rumble.html', '/assets/big-abc.wasm', '/healthz', '/nope', '/']) {
+      const r = await fetch(`${base}${path}`, { redirect: 'manual' });
+      expect(r.headers.get('x-content-type-options'), path).toBe('nosniff');
+      expect(r.headers.get('referrer-policy'), path).toBe('strict-origin-when-cross-origin');
+    }
+    // Files that are not pages carry no page policy (the wasm is fetched, not framed).
+    expect((await fetch(`${base}/assets/big-abc.wasm`)).headers.get('content-security-policy')).toBeNull();
+  });
+});
