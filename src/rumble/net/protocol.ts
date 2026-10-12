@@ -5,8 +5,12 @@
  * scores or hits anything: the server's match decides all of that.
  *
  *   client → server
- *     { t: 'input', seq, intent: { x, z, run, jump, punch, grab } }
- *         movement state and the one-shot requests made since the last input
+ *     { t: 'input', seq, intent: { x, z, run, jump, punch, grab }, presses? }
+ *         movement state and the one-shot requests made since the last input;
+ *         L4.4A: presses, [jump, punch, grab], counts every press of each
+ *         since the connection opened, so a press in an input the server
+ *         dropped (rate limit) still arrives with the next one; the server
+ *         acts on a count that went up, once per message (`PressCounter`)
  *     { t: 'ping', id, ct }                           ct: the client's clock, echoed back
  *     { t: 'challenge' }                              M8A: ask for a Nostr auth challenge
  *     { t: 'auth', event }                            M8A: a signed kind-22242 answer to it
@@ -93,10 +97,14 @@ export const PROTOCOL = Object.freeze({
 /** Who drives a fighter: a person, a bot, or (L3: a lobby room without bots, its person gone) nobody. */
 export type Control = 'human' | 'bot' | 'none';
 
+/** L4.4A: per action, how many times it was pressed since the connection opened: jump, punch, grab. */
+export type Presses = readonly [number, number, number];
+
 export interface InputMessage {
   t: 'input';
   seq: number;
   intent: PlayerIntent;
+  presses?: Presses;
 }
 /** M11F: a player out of the round throws a banana peel at a point on the floor; the server judges it. */
 export interface ThrowMessage {
@@ -386,7 +394,11 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   if (v.t === 'input') {
     if (!Number.isSafeInteger(v.seq) || (v.seq as number) < 0 || (v.seq as number) > PROTOCOL.maxSeq) return null;
     const intent = parseIntent(v.intent);
-    return intent ? { t: 'input', seq: v.seq as number, intent } : null;
+    if (!intent) return null;
+    if (v.presses === undefined) return { t: 'input', seq: v.seq as number, intent };
+    const p = v.presses;
+    if (!Array.isArray(p) || p.length !== 3 || !p.every((n) => Number.isSafeInteger(n) && n >= 0)) return null;
+    return { t: 'input', seq: v.seq as number, intent, presses: [p[0], p[1], p[2]] };
   }
   if (v.t === 'ping') {
     if (!finite(v.id) || !finite(v.ct)) return null;
@@ -419,10 +431,31 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
  * The one message a client sends about play: its intent, numbered. Built
  * from the movement held and the one-shot requests made since the last
  * message, and nothing else: no position, prediction or outcome can ride
- * along.
+ * along. L4.4A: and the press counts, when given.
  */
-export function inputMessage(seq: number, move: { x: number; z: number; run: boolean }, actions: { jump: boolean; punch: boolean; grab: boolean }): InputMessage {
-  return { t: 'input', seq, intent: { x: move.x, z: move.z, run: move.run, jump: actions.jump, punch: actions.punch, grab: actions.grab } };
+export function inputMessage(seq: number, move: { x: number; z: number; run: boolean }, actions: { jump: boolean; punch: boolean; grab: boolean }, presses?: Presses): InputMessage {
+  const m: InputMessage = { t: 'input', seq, intent: { x: move.x, z: move.z, run: move.run, jump: actions.jump, punch: actions.punch, grab: actions.grab } };
+  if (presses) m.presses = [presses[0], presses[1], presses[2]];
+  return m;
+}
+
+/**
+ * L4.4A: the server's side of the press counts, per connection. The first
+ * counts a connection sends are its baseline (its flags speak for that
+ * message); after that, a count that went up is a press, acted on once
+ * whatever it went up by, so a dropped message loses no press and a
+ * repeated or replayed one makes none. Counts never go back down.
+ */
+export class PressCounter {
+  private seen: [number, number, number] | null = null;
+  /** The presses this message brings that the flags may not carry: which counts went up. */
+  take(p: Presses | undefined): { jump: boolean; punch: boolean; grab: boolean } {
+    if (!p) return { jump: false, punch: false, grab: false };
+    const s = this.seen;
+    this.seen = s ? [Math.max(s[0], p[0]), Math.max(s[1], p[1]), Math.max(s[2], p[2])] : [p[0], p[1], p[2]];
+    if (!s) return { jump: false, punch: false, grab: false };
+    return { jump: p[0] > s[0], punch: p[1] > s[1], grab: p[2] > s[2] };
+  }
 }
 
 /** Whether a received state is newer than the newest one already shown (by tick): older or repeated states are dropped. */

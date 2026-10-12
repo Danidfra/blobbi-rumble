@@ -111,6 +111,26 @@ export const STRUGGLE = Object.freeze({
   regrabImmunity: 1.2,
 });
 
+/**
+ * L4.4A: how forgiving the action buttons are, seconds. A press the
+ * fighter cannot act on yet is kept for a short window and acted on the
+ * first step it can (the rules decide, as always); the windows are for
+ * timing, never a faster rate or a longer reach. At the 60 Hz tick: the
+ * jump buffer is 6 steps, coyote time 5, the punch and grab windows 6.
+ */
+export const INPUT_WINDOWS = Object.freeze({
+  /** A jump pressed this long before the feet are down jumps on landing. */
+  jumpBuffer: 0.1,
+  /** A body that walked or was carried off the ground (not one that jumped) may still jump this long after. */
+  coyote: 5 / 60,
+  /** After a jump, the ground under the rising feet does not count for this long (no second jump off the same floor). */
+  jumpLockout: 0.15,
+  /** A punch pressed this long or less before its cooldown ends starts when it ends; earlier, the press is refused. */
+  punchBuffer: 0.1,
+  /** A grab with nobody to take (or hands not yet free) keeps trying this long: a target coming into reach or arc is taken. */
+  grabWindow: 0.1,
+});
+
 export const ROUND = Object.freeze({
   /** First to this many rounds (last Blobbi standing) wins the match. */
   target: 3,

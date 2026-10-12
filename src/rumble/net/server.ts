@@ -238,12 +238,12 @@ function delayer(lagMs: number, jitterMs: number, max: number) {
   };
 }
 
-/** A token bucket: `take()` is true while the rate is respected. */
-function bucket(perSecond: number) {
+/** A token bucket: `take()` is true while the rate is respected. `clock` (ms) is for tests (L4.4A). */
+export function bucket(perSecond: number, clock: () => number = () => performance.now()) {
   let tokens = perSecond;
-  let at = performance.now();
+  let at = clock();
   return () => {
-    const now = performance.now();
+    const now = clock();
     tokens = Math.min(perSecond, tokens + ((now - at) / 1000) * perSecond);
     at = now;
     if (tokens < 1) return false;

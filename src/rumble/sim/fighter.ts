@@ -14,13 +14,13 @@
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Scene } from '@babylonjs/core/scene';
 import { facingYaw } from '../control/facing';
-import { carrierGait, carrierIntent, steer, type Contest } from '../control/mover';
+import { carrierGait, carrierIntent, freshJumpState, gateJump, steer, type Contest, type JumpState } from '../control/mover';
 import { createGameplayBody, type GameplayBody } from '../physics/body';
 import { RUMBLE_BODY, type RumbleBody } from '../profile';
 import { powerMultiplier, pushAuthority, speedMultiplier } from '../pickups/power';
 import type { FighterSnapshot } from './snapshot';
 import { FALL_RULES, initialFallState, updateFall, type FallRules, type FallState } from '../respawn';
-import { COMBAT, LEDGE } from '../tuning';
+import { COMBAT, INPUT_WINDOWS, LEDGE } from '../tuning';
 import { catchLedge, climbPoint, climbTarget, createLedgeState, dropLedge, hangAnchor, onLedge, resetLedgeState, restLedge, tickLedge, type LedgeOutcome, type LedgeState } from './ledge';
 import type { Ledge } from '../arena/geometry';
 import {
@@ -35,7 +35,6 @@ import {
   resetCombat,
   startTumble,
   stepHold,
-  tryPunch,
   type CombatState,
   type Planar,
   type Point,
@@ -100,6 +99,15 @@ export class FighterSim {
   afterClimb = 0;
   /** M11.1: how hard the body it carries struggles (0..1), set by the match: it slows the carrier. */
   carryDrag = 0;
+  /** L4.4A: the jump's buffer and coyote time (`gateJump`). */
+  jumpGate: JumpState = freshJumpState();
+  /**
+   * L4.4A: a punch or a grab press still waiting to be acted on: seconds
+   * since it was pressed, or -1. The match keeps and judges them
+   * (`INPUT_WINDOWS`); at most one of each, never a queue.
+   */
+  punchWait = -1;
+  grabWait = -1;
   spawn: Vector3;
   spawnYaw: number;
 
@@ -173,9 +181,11 @@ export class FighterSim {
    * then pushes as a bounded spring, with this fighter's push authority.
    */
   update(dt: number, intent: PlayerIntent, contest?: Contest): StepResult {
-    if (this.afterClimb > 0) {
+    // Settling after a climb: the keys do not move it, and it may not jump yet (a press near the end waits for it).
+    const settling = this.afterClimb > 0;
+    if (settling) {
       this.afterClimb = Math.max(0, this.afterClimb - dt);
-      intent = { ...intent, x: 0, z: 0, run: false, jump: false };
+      intent = { ...intent, x: 0, z: 0, run: false };
     }
     const control = controlFactor(this.combat);
     const carrying = isHolding(this.combat);
@@ -201,17 +211,19 @@ export class FighterSim {
     if (this.grip < 1 && grounded) p = { ...p, acceleration: p.acceleration * this.grip, braking: p.braking * this.grip * 0.1 };
     // M11.1: a carrier walks, never runs, slower still as its load struggles.
     p = carrierGait(p, carrying, COMBAT.carrySpeed * (1 - COMBAT.struggleDrag * this.carryDrag));
-    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...carrierIntent(intent, carrying), jump: intent.jump && control >= 1 && !carrying }, grounded, dt, p, contest);
+    // L4.4A: whether it jumps is the jump gate's (a press just before landing, or just after stepping off, still counts).
+    const gate = gateJump(this.jumpGate, intent.jump, grounded, control >= 1 && !carrying && !settling, dt, INPUT_WINDOWS);
+    this.jumpGate = gate.state;
+    const s = steer(v.x - this.carry.x, v.z - this.carry.z, { ...carrierIntent(intent, carrying), jump: false }, grounded, dt, p, contest);
     const b = this.body.body;
     if (s.dvx !== 0 || s.dvz !== 0) b.applyImpulse(new Vector3(s.dvx * this.profile.mass, 0, s.dvz * this.profile.mass), this.body.position());
     let jumped = false;
-    if (s.jumpTo !== null) {
-      b.setLinearVelocity(new Vector3(v.x + s.dvx, s.jumpTo, v.z + s.dvz));
+    if (gate.jump) {
+      b.setLinearVelocity(new Vector3(v.x + s.dvx, p.jumpSpeed, v.z + s.dvz));
       jumped = true;
       this.leapt = true;
       this.jumps += 1;
     }
-    if (intent.punch) tryPunch(this.combat);
     this.grounded = grounded;
     // Landed (on the ground and no longer rising): the leap is over. Just after the jump the probe still finds the floor.
     if (grounded && !jumped && v.y < 0.5) this.leapt = false;
@@ -226,6 +238,7 @@ export class FighterSim {
   /** M11C: catch a ledge: weightless, stopped, facing in. */
   catchLedge(l: Ledge) {
     catchLedge(this.ledge, l);
+    this.clearPresses();
     this.body.setGravityFactor(0);
     this.body.body.setLinearVelocity(Vector3.Zero());
     this.yaw = Math.atan2(l.inX, l.inZ);
@@ -387,6 +400,7 @@ export class FighterSim {
   /** Out of the round: the body leaves play, parked under the arena where it touches nothing. */
   eliminate(parking: Vector3) {
     this.eliminated = true;
+    this.clearPresses();
     this.body.park(parking);
   }
 
@@ -407,8 +421,16 @@ export class FighterSim {
     this.carry.x = this.carry.z = 0;
     this.afterClimb = 0;
     this.carryDrag = 0;
+    this.clearPresses();
     resetLedgeState(this.ledge);
     this.body.setFriction(this.profile.friction);
+  }
+
+  /** L4.4A: forget every waiting press and the jump's timing (out of play, a reset, hands on a ledge). */
+  clearPresses() {
+    this.jumpGate = freshJumpState();
+    this.punchWait = -1;
+    this.grabWait = -1;
   }
 
   dispose() {

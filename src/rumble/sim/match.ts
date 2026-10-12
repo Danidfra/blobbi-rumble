@@ -25,7 +25,7 @@ import { CLASSIC, arenaSpawns, type ArenaDef } from '../arena/arenas';
 import { inPlatform, platformUnder } from '../arena/geometry';
 import { createPieces, drop as pieceDrop, pieceImpact, pieceSolid, resetPieces, tickPiece, type PieceState } from '../arena/pieces';
 import { createSweeper, resetSweeper, sweeperHit, tickSweeper, type SweeperState } from '../arena/sweeper';
-import { anchorVelocity, endGrab, holdBreaks, holdPull, isDown, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, type Reaction } from '../combat/combat';
+import { anchorVelocity, endGrab, holdBreaks, holdPull, isDown, isHolding, isTumbling, landPunch, punchActive, release, tickCombat, tryGrab, tryPunch, type Reaction } from '../combat/combat';
 import { freeHolds, grabTarget, holdsConsistent, punchTarget, settleHolds, type Combatant, type Hold } from '../combat/melee';
 import { createThrowers, judgeThrow, resetThrowers, slips, tickBananas, type Banana, type Thrower, type ThrowRefusal } from '../pickups/bananas';
 import { collectOrbs, createOrbs, resetOrbs, tickOrbs } from '../pickups/orbs';
@@ -33,7 +33,7 @@ import { nearestContacts } from '../physics/contact';
 import { RUMBLE_BODY } from '../profile';
 import { aliveCount, createMatch, matchWinner, restartMatch, ringOut, tickMatch, type MatchState } from '../rounds';
 import { stepStruggle } from '../combat/struggle';
-import { BANANAS, COMBAT, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
+import { BANANAS, COMBAT, INPUT_WINDOWS, ORBS, PUSH, ROUND, STRUGGLE } from '../tuning';
 import { reactionKind } from '../combat/impact';
 import { createArenaBody, type ArenaBody } from './arenaBody';
 import { FighterSim, fighterSnapshot, type PlayerId, type StepResult } from './fighter';
@@ -211,7 +211,9 @@ export class RumbleMatch {
    * request waits for the next step, which takes it once (two intents
    * before one step never lose a press). Requests are taken even while the
    * player may not act (between rounds, eliminated), and dropped: none
-   * queue up.
+   * queue up. L4.4A: a press the fighter cannot act on at that step may
+   * wait a short window in the fighter (`INPUT_WINDOWS`), at most one of
+   * each kind, and never out of play.
    */
   setInput(id: PlayerId, intent: Partial<PlayerIntent>) {
     const i = this.indexOf(id);
@@ -325,12 +327,17 @@ export class RumbleMatch {
         }
       }
     });
-    // This step's intents: the held movement plus the waiting requests, which are taken now whether or not they may act.
+    // This step's intents: the held movement plus the waiting requests, which are taken now whether or not they may act
+    // (L4.4A: a press the fighter cannot act on yet waits a short window in the fighter, never longer, never out of play).
+    const hanging = fighters.map((f) => f.onLedge);
     const intents = fighters.map((f, i) => {
       const p = this.pending[i];
       const intent = { ...this.intents[i], ...p };
       p.jump = p.punch = p.grab = false;
-      if (!playing || f.eliminated) return { ...IDLE_INTENT };
+      if (!playing || f.eliminated) {
+        f.punchWait = f.grabWait = -1;
+        return { ...IDLE_INTENT };
+      }
       // M11C: hanging, the hands are full: the keys steer the hold (jump climbs, grab lets go), never a punch or a grab.
       return f.onLedge ? { ...intent, punch: false } : intent;
     });
@@ -401,7 +408,7 @@ export class RumbleMatch {
       const list = this.combatants();
       for (let k = 0; k < n; k++) {
         const i = (k + this.tickCount) % n;
-        this.interact(list, i, intents[i], dt);
+        this.interact(list, i, intents[i], dt, hanging[i]);
       }
     }
     // The held struggle, after every attack of the step: a throw (or a blow that frees the body) this step wins over an escape.
@@ -630,10 +637,53 @@ export class RumbleMatch {
     this.emit({ kind: 'escape', who: victim.id, on: holder.id });
   }
 
-  /** One fighter's attack and hold this step, against whichever fighter the match decides it takes. */
-  private interact(list: Combatant[], i: number, intent: PlayerIntent, dt: number) {
+  /**
+   * One fighter's attack and hold this step, against whichever fighter the
+   * match decides it takes. L4.4A: the grab (or throw) is judged before a
+   * punch is started, so both pressed together keep the grab; a grab with
+   * nobody to take keeps trying for `grabWindow`, and a punch pressed at
+   * most `punchBuffer` before its cooldown ends starts when it ends. A
+   * press made while hanging was the ledge's (let go): it grabs nothing.
+   */
+  private interact(list: Combatant[], i: number, intent: PlayerIntent, dt: number, hanging: boolean) {
     const me = this.fighters[i];
     if (me.eliminated) return;
+    const w = INPUT_WINDOWS;
+    const v0 = me.combat.victim;
+    if (intent.grab && isHolding(me.combat) && v0 >= 0) {
+      const victim = this.fighters[v0];
+      const thrown = release(me.combat, victim.combat, me.holdDir(), me.velocity(), me.power);
+      me.letGo(victim);
+      me.carryDrag = 0;
+      victim.react(thrown, COMBAT.throwSpin);
+      // M11.1: a thrown body lands, rights itself and has a moment before anyone may grab it again (no throw chains).
+      victim.combat.grabImmune = Math.max(victim.combat.grabImmune, COMBAT.throwImmunity);
+      this.emit({ kind: 'throw', who: me.id, on: victim.id, reaction: thrown.kind, impact: thrown.impact });
+      me.grabWait = -1;
+    } else {
+      // A grab press starts a window (never while held or off its feet: mashing to break free is not a grab).
+      const fresh = intent.grab && !hanging && !me.combat.held && !isDown(me.combat);
+      me.grabWait = pressAge(me.grabWait, fresh, dt, w.grabWindow);
+      if (me.grabWait >= 0 && !isHolding(me.combat)) {
+        const j = grabTarget(list, i);
+        if (j >= 0 && !this.fighters[j].onLedge && tryGrab(me.combat, me.at(), me.facing(), this.fighters[j].combat, this.fighters[j].at(), COMBAT, { grabber: i, victim: j })) {
+          me.hold(this.fighters[j]);
+          me.grabWait = -1;
+          this.emit({ kind: 'grab', who: me.id, on: this.ids[j] });
+        }
+      }
+    }
+    if (hanging) me.punchWait = -1;
+    else if (intent.punch && tryPunch(me.combat)) me.punchWait = -1;
+    else if (intent.punch && me.punchWait < 0) {
+      // Refused now: kept only when the cooldown is all that stands in the way and it ends within the buffer; earlier is refused.
+      const cd = me.combat.punchCooldown;
+      if (cd > 0 && cd <= w.punchBuffer + 1e-6) me.punchWait = 0;
+    } else if (me.punchWait >= 0) {
+      // One press waiting, never two: a press while one waits adds nothing. A step's slack: the cooldown's last step can round late.
+      me.punchWait = pressAge(me.punchWait, false, dt, w.punchBuffer + dt);
+      if (me.punchWait >= 0 && tryPunch(me.combat)) me.punchWait = -1;
+    }
     // A punch in its active window lands on one fighter: the nearest in reach and arc.
     if (punchActive(me.combat)) {
       const j = punchTarget(list, i);
@@ -643,25 +693,6 @@ export class RumbleMatch {
         if (reaction) {
           this.emit({ kind: 'punch', who: me.id, on: other.id, reaction: reaction.kind, impact: reaction.impact, note: other.combat.held ? 'on a held body' : isHolding(other.combat) ? 'on a carrier' : undefined });
           this.strike(list, j, reaction, i);
-        }
-      }
-    }
-    if (intent.grab) {
-      const v = me.combat.victim;
-      if (isHolding(me.combat) && v >= 0) {
-        const victim = this.fighters[v];
-        const thrown = release(me.combat, victim.combat, me.holdDir(), me.velocity(), me.power);
-        me.letGo(victim);
-        me.carryDrag = 0;
-        victim.react(thrown, COMBAT.throwSpin);
-        // M11.1: a thrown body lands, rights itself and has a moment before anyone may grab it again (no throw chains).
-        victim.combat.grabImmune = Math.max(victim.combat.grabImmune, COMBAT.throwImmunity);
-        this.emit({ kind: 'throw', who: me.id, on: victim.id, reaction: thrown.kind, impact: thrown.impact });
-      } else {
-        const j = grabTarget(list, i);
-        if (j >= 0 && !this.fighters[j].onLedge && tryGrab(me.combat, me.at(), me.facing(), this.fighters[j].combat, this.fighters[j].at(), COMBAT, { grabber: i, victim: j })) {
-          me.hold(this.fighters[j]);
-          this.emit({ kind: 'grab', who: me.id, on: this.ids[j] });
         }
       }
     }
@@ -689,6 +720,15 @@ export class RumbleMatch {
       }
     }
   }
+}
+
+/**
+ * L4.4A: a waiting press's age this step, seconds: a fresh press is 0, a
+ * waiting one a step older, and one past `limit` is gone (-1).
+ */
+export function pressAge(age: number, pressed: boolean, dt: number, limit: number): number {
+  const a = pressed ? 0 : age >= 0 ? age + dt : -1;
+  return a > limit + 1e-6 ? -1 : a;
 }
 
 /** Create a match. The Havok instance comes from `physics/world.ts` in a browser, `sim/havokNode.ts` in Node. */

@@ -99,3 +99,47 @@ export function steer(vx: number, vz: number, intent: SteerIntent, grounded: boo
   }
   return { dvx, dvz, jumpTo: intent.jump && grounded ? p.jumpSpeed : null };
 }
+
+/**
+ * L4.4A: a jump's timing, as plain data so the server's fighter and the
+ * client's prediction run the same rule. `press`: seconds since a jump
+ * press that has not jumped yet (-1: none waiting); `air`: seconds since
+ * the feet last counted as down (Infinity after a jump, so a jump never
+ * earns coyote time); `since`: seconds since the last jump.
+ */
+export interface JumpState {
+  press: number;
+  air: number;
+  since: number;
+}
+
+export const freshJumpState = (): JumpState => ({ press: -1, air: Infinity, since: Infinity });
+
+/** The jump's windows, seconds (`INPUT_WINDOWS` in `tuning.ts`). */
+export interface JumpWindows {
+  jumpBuffer: number;
+  coyote: number;
+  jumpLockout: number;
+}
+
+const EPS = 1e-9;
+
+/**
+ * L4.4A: whether this step jumps, and the state after it. A press waits
+ * up to `jumpBuffer` for footing (pressed just before landing, it jumps on
+ * landing); footing is the ground, or up to `coyote` after leaving it
+ * without a jump (stepped or carried off an edge). After a jump the floor
+ * the feet are still near does not count for `jumpLockout`, so one press
+ * is one jump and a buffered press is never a double jump. `able`: the
+ * body may jump at all (full control, not carrying, settled after a
+ * climb); while it may not, a press still waits out its window. Pure.
+ */
+export function gateJump(s: JumpState, pressed: boolean, grounded: boolean, able: boolean, dt: number, w: JumpWindows): { jump: boolean; state: JumpState } {
+  const since = s.since + dt;
+  const air = grounded && since > w.jumpLockout ? 0 : s.air + dt;
+  // The press's age at this step: a fresh one is 0, a waiting one older by a step, and gone once past the buffer.
+  let press = pressed ? 0 : s.press >= 0 ? s.press + dt : -1;
+  if (press > w.jumpBuffer + EPS) press = -1;
+  if (press >= 0 && able && air <= w.coyote + EPS) return { jump: true, state: { press: -1, air: Infinity, since: 0 } };
+  return { jump: false, state: { press, air, since } };
+}

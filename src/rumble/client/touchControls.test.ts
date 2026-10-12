@@ -147,6 +147,39 @@ describe('the touch controls on a page', () => {
     expect(c.pad.fingers).toBe(0);
   });
 
+  it('L4.4A: a tap shorter than a frame, a tap cancelled at once, two buttons at once, a rapid series: each press counts exactly once', async () => {
+    const { c, zone, jump, punch, grab } = await make();
+    c.update({ visible: true, context: 'fight' });
+    // Down and up (or down and cancelled) before the next frame reads: still one press, never two.
+    jump.fire('pointerdown', { pointerId: 2 });
+    jump.fire('pointerup', { pointerId: 2 });
+    punch.fire('pointerdown', { pointerId: 3 });
+    punch.fire('pointercancel', { pointerId: 3 });
+    punch.fire('lostpointercapture', { pointerId: 3 });
+    expect(c.pad.take('jump')).toBe(true);
+    expect(c.pad.take('punch')).toBe(true);
+    expect(c.pad.take('jump') || c.pad.take('punch')).toBe(false);
+    // A thumb on the stick, a finger on the arena turning the camera, and two action fingers at once.
+    zone.fire('pointerdown', { pointerId: 1, clientX: 100, clientY: 300 });
+    zone.fire('pointermove', { pointerId: 1, clientX: 100 + c.pad.radius, clientY: 300 });
+    jump.fire('pointerdown', { pointerId: 4 });
+    grab.fire('pointerdown', { pointerId: 5 });
+    expect(c.pad.take('jump') && c.pad.take('grab')).toBe(true);
+    expect(c.pad.movement().x).toBe(1);
+    jump.fire('pointerup', { pointerId: 4 });
+    grab.fire('pointerup', { pointerId: 5 });
+    // Rapid taps between two reads: the frame sees one press of each kind (the page then counts it once per read).
+    for (let k = 0; k < 5; k++) {
+      punch.fire('pointerdown', { pointerId: 10 + k });
+      punch.fire('pointerup', { pointerId: 10 + k });
+    }
+    expect(c.pad.take('punch')).toBe(true);
+    expect(c.pad.take('punch')).toBe(false);
+    // Nothing held is left behind, and the stick is still the stick.
+    expect(c.pad.fingers).toBe(1);
+    expect(c.pad.movement().x).toBe(1);
+  });
+
   it('hidden (a panel opened, a spectator): everything is let go at once, unread presses too', async () => {
     const { c, zone, jump } = await make();
     c.update({ visible: true, context: 'fight' });

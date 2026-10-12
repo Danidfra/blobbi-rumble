@@ -48,6 +48,7 @@ import { PLAZA_TERRAIN, isSocialSpace } from '../arena/lobbySpace';
 import { CLASSIC_TERRAIN } from './predict';
 import { arenaById } from '../arena/arenas';
 import { isUiKey } from './dom';
+import { InputPacer, quantizeMove } from './inputPacer';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
@@ -99,8 +100,6 @@ const MOBILE_NO_SIGNER = 'This browser has no Nostr signer (NIP-07). On a phone 
 let startups = 0;
 
 const CONTROLS = ['F3 colliders & reach · F4 network numbers · H help', 'the next match starts by itself'];
-/** Movement is resent at least this often, ms, so the server knows the keys are still held (it lets go after a second of silence). */
-const KEEPALIVE_MS = 200;
 const PUNCH_TIME = COMBAT.punchActive + COMBAT.punchRecovery;
 
 /** Running statistics of a stream of numbers over a sliding window. */
@@ -377,11 +376,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   let newest: number | null = null;
   let presenter: RumblePresenter | null = null;
   let showNet = false;
-  // Input: the movement last sent, and the one-shot requests not yet sent; every message has a higher seq than the last.
+  // Input: every message has a higher seq than the last; L4.4A: when one is sent, the presses it carries and their counts (`inputPacer.ts`).
   let seq = 0;
-  let sentMove = '';
-  let sentAt = 0;
-  const actions = { jump: false, punch: false, grab: false };
+  const pacer = new InputPacer();
   // The cosmetic punch: when it started (client seconds), and whether the server's own punch display is being held back for it.
   let cosmeticPunch = -1;
   let suppressAuthPunch = false;
@@ -663,11 +660,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     return lookFromSlotForm(r.form)?.name ?? null;
   };
   const sendInput = (move: Pick<MoveIntent, 'x' | 'z' | 'run'>) => {
+    // A message that could not go keeps its presses for the next one (and its seq is never reused).
+    if (!send(inputMessage(seq + 1, move, pacer.pending, pacer.presses))) return;
     seq += 1;
-    send(inputMessage(seq, move, actions));
-    actions.jump = actions.punch = actions.grab = false;
-    sentMove = JSON.stringify(move);
-    sentAt = performance.now();
+    pacer.sent(performance.now(), move);
   };
 
   /**
@@ -705,6 +701,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     you = null;
     newest = null;
     seq = 0;
+    pacer.reset();
     predictor.reset();
     let socket: WebSocket;
     try {
@@ -928,14 +925,15 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (wantsThrow(intent, me!.bananas)) send({ t: 'throw', x: +aim.x.toFixed(2), z: +aim.z.toFixed(2) });
     } else {
       aim = null;
-      actions.jump ||= intent.jump;
-      actions.punch ||= intent.punch;
-      actions.grab ||= intent.grab;
+      // L4.4A: presses are kept for a message only while this page plays a fighter (none latched while watching or connecting fire later).
+      if (you && conn.phase === 'playing') pacer.press(intent);
+      else pacer.drop();
     }
     // Hotfix: while carrying (the server's newest word), Shift or the stick's rim asks for no run: the sent intent, the prediction
     // and so the local animation all walk, as the server and everyone else see it; the run is back the moment the hold ends.
     const carrying = !!me?.holding;
-    const move = out ? { x: 0, z: 0, run: false } : carrierIntent({ x: intent.x, z: intent.z, run: intent.run }, carrying);
+    // L4.4A: quantized, so the camera's floating-point noise is no change (the prediction runs on what is sent).
+    const move = quantizeMove(out ? { x: 0, z: 0, run: false } : carrierIntent({ x: intent.x, z: intent.z, run: intent.run }, carrying));
     // The cosmetic punch starts only when the server's last word says a punch could start.
     // L4: none on the plaza (the server drops punches there).
     if (intent.punch && meIndex >= 0 && !isSocialSpace(latestSnap!.arena)) {
@@ -1006,9 +1004,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         peel: me ? { left: me.bananas.left, cooldown: me.bananas.cooldown, allowed: alive >= BANANAS.minAlive } : undefined,
       });
     }
-    if (you && conn.phase === 'playing' && (JSON.stringify(move) !== sentMove || actions.jump || actions.punch || actions.grab || nowMs - sentAt > KEEPALIVE_MS)) sendInput(move);
-    // The frame of input this ran under, for prediction and its replay.
-    if (you) predictor.frame(dt, seq, { ...move, jump: intent.jump, punch: false, grab: false });
+    // L4.4A: at most one message per `minIntervalMs` whatever the display rate; what is not sent yet goes with the next.
+    if (you && conn.phase === 'playing' && pacer.due(nowMs, move, ws?.bufferedAmount ?? 0)) sendInput(move);
+    // The frame of input this ran under, for prediction and its replay: what is not sent yet will arrive with the next message.
+    if (you) predictor.frame(dt, pacer.unsent(move) ? seq + 1 : seq, { ...move, jump: intent.jump, punch: false, grab: false });
 
     if (nowMs - stats.windowStart >= 1000) {
       const span = (nowMs - stats.windowStart) / 1000;

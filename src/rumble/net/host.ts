@@ -72,7 +72,7 @@ import type { HavokInstance } from '../sim/physics';
 import type { MatchSnapshot } from '../sim/snapshot';
 import { bindLook, sameForm, type LookDeclaration, type SlotForm } from './looks';
 import { CLASSIC, arenaById, nextArena, type ArenaDef, type ArenaId } from '../arena/arenas';
-import { parseClientMessage, type Control, type LobbyCommand, type LobbyMessage, type LookReason, type MatchResults, type PongMessage, type RoomSettings, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
+import { parseClientMessage, PressCounter, type Control, type LobbyCommand, type LobbyMessage, type LookReason, type MatchResults, type PongMessage, type RoomSettings, type RosterMessage, type SlotIdentity, type StateMessage, type WelcomeMessage } from './protocol';
 import { Lifecycle, minHumans, type LifecycleView, type LobbyRefusal } from './lifecycle';
 
 export const NET = Object.freeze({
@@ -139,6 +139,8 @@ export class RumbleHost {
   private ambientPending: number | null = null;
   /** Per slot: the last input sequence applied, the tick it arrived on, and what the latest step had applied. */
   private readonly lastSeq = new Map<string, number>();
+  /** L4.4A: per connection, the press counts it has sent (`PressCounter`). */
+  private readonly presses = new Map<ConnectionId, PressCounter>();
   private readonly lastInputTick = new Map<string, number>();
   private readonly acked = new Map<string, number>();
   /** Per slot: the step on which the acknowledged input was first applied. */
@@ -274,6 +276,7 @@ export class RumbleHost {
     this.slotOf.delete(conn);
     this.identity.delete(conn);
     this.looks.delete(conn);
+    this.presses.delete(conn);
     if (slot && this.holder.get(slot) === conn) {
       this.holder.set(slot, null);
       this.lastSeq.delete(slot);
@@ -324,10 +327,15 @@ export class RumbleHost {
       if (this.current && !this.social) this.current.throwBanana(slot, msg.x, msg.z);
       return null;
     }
+    // A repeated or older message is refused before its press counts are read (L4.4A): it makes no action and raises no count.
     if (msg.seq <= (this.lastSeq.get(slot) ?? -1)) return null;
+    let counter = this.presses.get(conn);
+    if (!counter) this.presses.set(conn, (counter = new PressCounter()));
+    const up = counter.take(msg.presses);
     this.lastSeq.set(slot, msg.seq);
     this.lastInputTick.set(slot, space.tick);
-    space.setInput(slot, msg.intent);
+    const i = msg.intent;
+    space.setInput(slot, { ...i, jump: i.jump || up.jump, punch: i.punch || up.punch, grab: i.grab || up.grab });
     return null;
   }
 

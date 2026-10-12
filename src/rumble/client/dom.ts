@@ -3,9 +3,10 @@
  * text (`textContent`), never markup. A click or a tap never leaves a
  * button focused, so Space and Enter keep meaning jump; L4.2: the keyboard
  * can still reach every button (Tab), and while one has the focus the
- * game leaves its keys alone (`isUiKey`).
+ * game leaves the keys it acts on alone (`isUiKey`).
  */
 import { fallbackAvatar } from '../../social/avatar';
+import { interfaceKeeps } from '../control/input';
 
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -73,8 +74,22 @@ export const isTyping = (e: Event) => {
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
 };
 
-/** L4.2: whether a key event belongs to the interface: typing, or a control the keyboard reached (Space presses the button, it does not jump). */
-export const isUiKey = (e: Event) => {
-  const t = e.target as HTMLElement | null;
-  return isTyping(e) || (!!t && (t.tagName === 'BUTTON' || t.tagName === 'SUMMARY' || t.getAttribute?.('role') === 'button' || t.getAttribute?.('role') === 'tab'));
-};
+/**
+ * L4.2: whether a key event belongs to the interface: typing, or a key a
+ * control the keyboard reached acts on (Space presses the button, it does
+ * not jump). L4.4A: only those keys; the rest of the game's keys still play.
+ */
+export const isUiKey = (e: KeyboardEvent) => interfaceKeeps(e.target, e.code);
+
+/**
+ * L4.4A: where the keyboard goes when a sheet closes. A sheet used from the
+ * keyboard (opened with it, or Tabbed into) hands it back to the button
+ * that opened it, as a keyboard user expects; one closed with a pointer
+ * (its ✕, a press outside) gives it back to the game: whatever interface
+ * element holds the focus lets it go, so the game's keys play at once,
+ * with no click on the arena first.
+ */
+export function focusAfterClose(o: { keyboardLast: boolean; openedByKeyboard: boolean; focusInside: boolean; insideByKeyboard: boolean; onTrigger: boolean }): 'trigger' | 'release' | 'keep' {
+  if (o.keyboardLast && (o.openedByKeyboard || (o.focusInside && o.insideByKeyboard))) return 'trigger';
+  return o.focusInside || o.onTrigger ? 'release' : 'keep';
+}

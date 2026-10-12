@@ -239,7 +239,10 @@ eliminations, rounds, scores and the winner.
   determinism: the server is authoritative, and there is no lockstep.
 - **Input model.** `PlayerIntent` = a ground-plane direction (cut to unit
   length), run, and one-shot jump / punch / grab requests. One-shot
-  requests wait in the match until a step takes them.
+  requests wait in the match until a step takes them. L4.4A: a press the
+  fighter cannot act on at that step waits a short window in the fighter
+  (jump buffer and coyote time, a punch buffer before the cooldown ends, a
+  grab window; `INPUT_WINDOWS`), at most one of each, never out of play.
 - **The client MUST NOT authoritatively decide:** positions, collisions,
   hits or targets, holds or escapes, throws, pickups, power, hazard hits,
   eliminations, round or match results, slot assignment, or another
@@ -257,7 +260,11 @@ browser (intent) ──WebSocket──► Node server ──► Room ──► R
 
 - **Transport.** JSON over one WebSocket per client (`ws`).
   - The client sends `input` (numbered intents) and `ping`; for identity
-    also `challenge`, `auth` and `logout`.
+    also `challenge`, `auth` and `logout`. L4.4A: at most one input every
+    12 ms whatever the display rate, its direction quantized to 1/1000;
+    each input carries `presses`, per action the count of presses since
+    the connection opened, so an input lost to the rate limit loses no
+    press (the server acts on a count that went up, once per message).
   - The server sends `welcome`, `state`, `pong`, `challenge`, `auth` and
     `roster`. The wire protocol is `net/protocol.ts`.
 - **`RumbleHost`** (`net/host.ts`) owns one match and its four slots.
@@ -469,8 +476,21 @@ panel described above (their functions are all kept).
 | **Connection words** | Where a connection is headed (Heading to Blobbi Plaza…, Finding a Quick Match…, Joining room A7F2…), never the server's address; plain titles and an icon for every refusal; every refusal offers ⌂ Main menu. "A bot plays your Blobbi" only where the room hands a held seat to a bot (Quick Match, a private room with bots on); never on the plaza, with bots off, or for a watcher (`onClose`'s `takeover`, decided by the page from the room's rules; the server is unchanged). |
 | **Look** | `client/uiTheme.ts`: tokens (ink, pastels, radii, soft shadows, rounded type), buttons (plain, main, soft, warn, on, icon), frosted chips over the world, pills, tabs, two-way switches, sections. Dark ink on pale fills (no white text on pastel). Motion only for presses, the spinner and the rotate hint, none with reduced motion. |
 | **Phones** | Landscape first (checked at 844×390, 812×375, 667×375): one slim top row clear of the stick (lower left 48 % × 72 %) and the buttons (lower right); sheets fit the height and scroll inside; 38–40 px targets; the touch controls step aside while a sheet, the results, the menu or the banner is up. |
-| **Input** | A click never leaves a button focused (Space and Enter stay jump); Tab reaches every control, with a visible focus ring; while a field, a list, a button or a folding heading has the keyboard the game takes no key (`control/input.ts`, `isUiKey`). Escape lets a field go, else closes the help or the sheet (focus back to its button), else lets go of a focused control. The page uses no history entries for sheets, so Back still leaves the page as before. |
+| **Input** | A click never leaves a button focused (Space and Enter stay jump); Tab reaches every control, with a visible focus ring; while a field or a list has the keyboard the game takes no key, and (L4.4A) while a button or a folding heading has it only Space and Enter are the control's, every other game key still plays (`control/input.ts` `interfaceKeeps`, `isUiKey`). Escape lets a field go, else closes the help or the sheet, else lets go of a focused control. A sheet used from the keyboard gives the focus back to its button; one closed with a pointer gives the keyboard back to the game (L4.4A, `focusAfterClose`). The page uses no history entries for sheets, so Back still leaves the page as before. |
 | **Room for L5** | A sheet tab (chat), the free lower middle (an emote bar or picker on a phone, clear of the stick and buttons), and the roster rows (inspecting a Blobbi) are the intended places; nothing of L5 is built. |
+
+#### Combat input reliability (L4.4A)
+
+**Status: L4.4A implemented; browser-validated locally (desktop and
+phone-sized emulation); awaiting manual gameplay validation and a real
+device.** The L4.3 audit's lost-input findings, fixed without making the
+client authoritative.
+
+| | |
+| --- | --- |
+| **High refresh rates** | The page sent one input per rendered frame while moving (the camera's yaw carries float noise, so every frame looked changed) and the server keeps 120 a second: at 144–240 Hz inputs, presses and all, were dropped. Now `client/inputPacer.ts` quantizes the direction, sends at most one input every 12 ms, latches presses until sent, and counts them; the server's `PressCounter` acts on a count that went up. The rate limit is unchanged. |
+| **Keyboard focus** | Closing a sheet left its button focused and every game key dead. A focused control now keeps only Space / Enter (and arrows for arrow widgets); a sheet closed with a pointer releases the focus; a keyboard user is returned to the button. |
+| **Windows** | `INPUT_WINDOWS` (`tuning.ts`): jump buffer 100 ms (6 steps), coyote time 83 ms (5 steps, only after leaving the ground without a jump), a 150 ms lockout after a jump (one press is one jump), punch buffer 100 ms before the cooldown ends (at most one, earlier presses refused), grab window 100 ms (reach and arc unchanged). The jump gate (`control/mover.ts` `gateJump`) is shared by the server's fighter and the client's prediction. A grab pressed with a punch in the same step is judged first; a grab press used to let go of a ledge, or mashed while held, grabs nothing. |
 
 #### Plaza first: the menu and the public plaza (L4.1)
 
@@ -1640,6 +1660,7 @@ Normal gameplay stays minimal (`client/shell.ts`):
 | M11.1 | Gameplay polish and balance: geometry, scale, grab, ledges | Automated tests (geometry rules, walkable transitions, the grab exchange, escapes, immunities, ledges), headless matches on all arenas with escapes happening, bench, Chrome screenshots of the flat bridges and the cue. **M11.1 IMPLEMENTED — AWAITING MANUAL GAMEPLAY VALIDATION** (§15g). |
 | M12 | Mobile support: touch controls, responsive HUD, landscape, graphics quality | Automated tests (stick, touch pad, roles, struggle parity and cap, ledge, peels, cleanup, a stand-in DOM, through the authoritative host, quality and field of view); typecheck, build, headless matches on all four arenas, bench; Chrome screenshots of phone- and tablet-sized viewports with forced touch mode; render cost measured on a desktop GPU only. **M12 IMPLEMENTED — AWAITING REAL DEVICE VALIDATION** (§15h). |
 | M12.1 | Physics and mobile polish: no launches, holds, throws parity, ledges, Safari gestures, touch camera, settings, sharpness, home-screen app | Root causes measured with temporary probes (bot-match censuses, replayed steps, seam sweeps, throw statistics, ledge censuses); automated tests (junctions, carry, parity, ledges, look, fullscreen, touch DOM, quality); headless on all four arenas; bench; Chrome screenshots at 667 × 375, 844 × 390 and 932 × 430 with forced touch. **M12.1 IMPLEMENTED — AWAITING MANUAL VALIDATION** (§15i); nothing tried on a real iPhone yet. |
+| L4.4A | Combat input reliability: pacing and press counts, keyboard focus, jump buffer / coyote, punch buffer, grab window | Automated tests (pacer, a virtual-clock page → rate limit → host → match run at 30–240 FPS with keys and the stick, lossy links, the gate, the windows, replays, focus); local headless Chrome before / after on loopback servers (desktop at native, 144 and 240 Hz; phone-sized emulation with touch). **Awaiting manual gameplay validation; no real iPhone yet.** |
 | M9B.1 | Nostr session restoration | Automated tests. A first real run found two bugs: a restore could sit at "Restoring Nostr…" for the 60 s prompt timeout, and an unanswered discovery erased the saved Blobbi choice. Both fixed (bounded restore; discovery reports whether relays answered; the choice is never removed by a query). **Awaiting renewed real validation** (§13, §15b). |
 
 ---

@@ -37,12 +37,12 @@
  */
 import { onFloor } from '../arena/layout';
 import { facingYaw } from '../control/facing';
-import { carrierGait, carrierIntent, steer } from '../control/mover';
+import { carrierGait, carrierIntent, freshJumpState, gateJump, steer, type JumpState } from '../control/mover';
 import { speedMultiplier } from '../pickups/power';
 import { RUMBLE_BODY } from '../profile';
 import type { PlayerIntent } from '../sim/intent';
 import type { FighterSnapshot } from '../sim/snapshot';
-import { COMBAT } from '../tuning';
+import { COMBAT, INPUT_WINDOWS } from '../tuning';
 
 export const PREDICT = Object.freeze({
   /** A disagreement under this, metres, is left alone. */
@@ -68,6 +68,8 @@ export interface Body {
   vy: number;
   vz: number;
   yaw: number;
+  /** L4.4A: the jump's buffer and coyote time, as the server's fighter keeps them (absent: none yet). */
+  jump?: JumpState;
 }
 
 /** L4: where the model stands: what counts as floor, and where walls stop a body (if anywhere). */
@@ -107,12 +109,14 @@ export function stepBody(b: Body, intent: PlayerIntent, dt: number, allow: Allow
   const p = carrierGait({ ...p0, walkSpeed: p0.walkSpeed * k, runSpeed: p0.runSpeed * k }, allow.carrying, COMBAT.carrySpeed);
   const terrain = allow.terrain ?? CLASSIC_TERRAIN;
   const grounded = supported(b, PREDICT, terrain);
-  const s = steer(b.vx, b.vz, { ...carrierIntent(intent, allow.carrying), jump: intent.jump && !allow.carrying }, grounded, dt, p);
+  // L4.4A: the server's jump gate (a press just before landing, or just after stepping off, still jumps).
+  const gate = gateJump(b.jump ?? freshJumpState(), intent.jump, grounded, !allow.carrying, dt, INPUT_WINDOWS);
+  const s = steer(b.vx, b.vz, { ...carrierIntent(intent, allow.carrying), jump: false }, grounded, dt, p);
   let vx = b.vx + s.dvx;
   let vz = b.vz + s.dvz;
-  let vy = s.jumpTo ?? b.vy;
+  let vy = gate.jump ? p.jumpSpeed : b.vy;
   vy -= p.gravity * dt;
-  if (grounded && s.jumpTo === null) {
+  if (grounded && !gate.jump) {
     const h = Math.hypot(vx, vz);
     const cut = Math.min(h, p.friction * p.gravity * dt);
     if (h > 0) {
@@ -143,7 +147,7 @@ export function stepBody(b: Body, intent: PlayerIntent, dt: number, allow: Allow
   // The facing follows the velocity while it steers (a carrier only by its own steering), as on the server.
   const steering = intent.x !== 0 || intent.z !== 0;
   const yaw = !allow.carrying || steering ? facingYaw(vx, vz, b.yaw, dt) : b.yaw;
-  return { body: { x, y, z, vx, vy, vz, yaw }, jumped: s.jumpTo !== null };
+  return { body: { x, y, z, vx, vy, vz, yaw, jump: gate.state }, jumped: gate.jump };
 }
 
 /** Advance a body by `dt` in model steps no longer than the server's tick. */

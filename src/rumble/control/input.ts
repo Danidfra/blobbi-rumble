@@ -72,6 +72,40 @@ export interface Actions {
 
 const any = (keys: ReadonlySet<string>, codes: readonly string[]) => codes.some((c) => keys.has(c));
 
+/** Keys a focused control acts on itself: Space and Enter press a button, open a folding heading, follow a link. */
+const ACTIVATION = new Set(['Space', 'Enter', 'NumpadEnter']);
+const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']);
+/** Widgets that move their own selection with the arrows. */
+const ARROW_ROLES = new Set(['tab', 'radio', 'slider', 'menuitem', 'menuitemradio', 'menuitemcheckbox', 'option', 'spinbutton', 'scrollbar', 'combobox', 'listbox', 'tablist', 'radiogroup', 'menu', 'menubar', 'tree', 'treeitem', 'grid', 'gridcell']);
+
+interface KeyTarget {
+  tagName?: string;
+  isContentEditable?: boolean;
+  getAttribute?: (name: string) => string | null;
+}
+
+/**
+ * Whether the focused element keeps key `code` (the game must leave it
+ * alone). A field, a list or editable text keeps every key (typing never
+ * plays). A control the keyboard reached (a button, a folding heading, a
+ * link, L4.2) keeps only what it acts on: Space and Enter, and the arrows
+ * for a widget that moves with them. L4.4A: every other game key (moving,
+ * punch, grab, run) still plays, so a button left focused (a closed sheet
+ * hands the keyboard back to the button that opened it) never silences
+ * the game.
+ */
+export function interfaceKeeps(target: EventTarget | null, code: string): boolean {
+  const t = target as KeyTarget | null;
+  if (!t) return false;
+  const tag = t.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || t.isContentEditable) return true;
+  const role = t.getAttribute?.('role') ?? null;
+  const arrowWidget = !!role && ARROW_ROLES.has(role);
+  const control = tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'A' || role === 'button' || role === 'link' || role === 'checkbox' || role === 'switch' || arrowWidget;
+  if (!control) return false;
+  return ACTIVATION.has(code) || (arrowWidget && ARROWS.has(code));
+}
+
 /** A screen-relative direction (right, away from the camera) turned into the world's ground plane under a camera of yaw `cameraYaw`. */
 export function cameraRelative(right: number, forward: number, cameraYaw: number): { x: number; z: number } {
   const c = Math.cos(cameraYaw);
@@ -115,10 +149,8 @@ export class Keyboard {
   constructor(bindings: KeyBindings[], target: Window = window) {
     this.swallow = new Set(bindings.flatMap((b) => [...b.jump, ...b.punch, ...b.grab, ...b.forward, ...b.back, ...b.left, ...b.right]));
     target.addEventListener('keydown', (e) => {
-      // A field, or an interface control the keyboard reached (L4.2), keeps its keys: Space presses a button, it does not jump.
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'SUMMARY' || t?.isContentEditable) return;
+      // A field keeps its keys, and a control the keyboard reached its own (L4.2, L4.4A): Space presses a button, it does not jump.
+      if (interfaceKeeps(e.target, e.code)) return;
       if (!e.repeat) this.pressed.add(e.code);
       this.held.add(e.code);
       if (this.swallow.has(e.code)) e.preventDefault();

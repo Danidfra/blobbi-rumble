@@ -34,7 +34,7 @@ import { npubOf, shortNpub } from '../../social/keys';
 import { clip, displayName, type Profile } from '../../social/profile';
 import { describe, type BannerAction, type ConnectionState } from './connection';
 import { canCopy, copyShortcut, copyText } from './clipboard';
-import { avatar, button, el, isTyping } from './dom';
+import { avatar, button, el, focusAfterClose, isTyping } from './dom';
 import type { IdentityState } from './identity';
 import type { InviteStatus } from './inviteSender';
 import type { InboxState } from './inviteInbox';
@@ -478,6 +478,14 @@ export function createShell(actions: ShellActions) {
   let helpOpen = false;
   /** L4.2: which sheet is open (one at a time), and the part of the place sheet shown. */
   let sheetKind: SheetKind | null = null;
+  /** L4.4A: whether the interface was last used from the keyboard (a key) or a pointer (a press), and how the open sheet was opened. */
+  let keyboardLast = false;
+  let sheetByKeyboard = false;
+  /** L4.4A: whether the focus inside the sheet got there by the keyboard (Tab), not by a press on a field or a heading. */
+  let sheetFocusByKeyboard = false;
+  window.addEventListener('pointerdown', () => (keyboardLast = false), true);
+  window.addEventListener('keydown', () => (keyboardLast = true), true);
+  sheet.addEventListener('focusin', () => (sheetFocusByKeyboard = keyboardLast));
   let roomTab: RoomTab = 'players';
   let lastSheet = '';
   const triggers: Record<SheetKind, HTMLElement> = { place, profile: me, settings: gear };
@@ -487,6 +495,7 @@ export function createShell(actions: ShellActions) {
     if (open) closeSheet();
   };
   const openSheet = (kind: SheetKind, tab?: RoomTab) => {
+    if (sheetKind !== kind) sheetByKeyboard = keyboardLast;
     sheetKind = kind;
     if (tab) roomTab = tab;
     sheet.className = `rs-card rs-ui rs-sheet ${kind === 'place' ? 'left' : 'right'}`;
@@ -502,8 +511,14 @@ export function createShell(actions: ShellActions) {
     sheetKind = null;
     sheet.style.display = 'none';
     for (const t of Object.values(triggers)) t.setAttribute('aria-expanded', 'false');
-    // The keyboard was inside: it goes back to the button that opened the sheet.
-    if (sheet.contains(document.activeElement)) triggers[was].focus();
+    // L4.4A: a sheet used from the keyboard (opened with it, or Tabbed into) hands the keyboard back to the button that opened
+    // it; one closed with a pointer gives it back to the game: nothing in the interface keeps the focus, so the keys play at once.
+    const focused = document.activeElement as HTMLElement | null;
+    const inside = !!focused && sheet.contains(focused);
+    const next = focusAfterClose({ keyboardLast, openedByKeyboard: sheetByKeyboard, focusInside: inside, insideByKeyboard: sheetFocusByKeyboard, onTrigger: !!focused && Object.values(triggers).includes(focused) });
+    if (next === 'trigger') triggers[was].focus();
+    else if (next === 'release') focused?.blur();
+    sheetByKeyboard = false;
   };
   const toggleSheet = (kind: SheetKind, tab?: RoomTab) => (sheetKind === kind && (!tab || tab === roomTab) ? closeSheet() : openSheet(kind, tab));
   place.addEventListener('click', (e) => {
