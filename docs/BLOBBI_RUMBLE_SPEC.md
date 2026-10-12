@@ -346,7 +346,7 @@ one `RumbleHost`; nothing is shared but the process and the Havok wasm.
 
 ### 10a. Lobby rooms and the match lifecycle (L1)
 
-**Status: L1 (lifecycle core), L2 (room controls), L3 (lobby and results interface), L4 (the social lobby, Blobbi Plaza) and L4.1 (plaza first: the menu and the public plaza) implemented, awaiting manual validation.** Approved 2026-10-11 after
+**Status: L1 (lifecycle core), L2 (room controls), L3 (lobby and results interface), L4 (the social lobby, Blobbi Plaza), L4.1 (plaza first: the menu and the public plaza) and L4.2 (the interface overhaul) implemented, awaiting manual validation.** Approved 2026-10-11 after
 the lobby architecture audit. The **OPEN room keeps continuous drop-in
 play**; private rooms made by current clients get a lobby.
 
@@ -450,6 +450,27 @@ message and roster; `client/lobbyUi.ts`: the DOM), not a separate app.
 
 A lobby room's creation no longer opens the session panel (the card has
 the code, link and invitations); an older continuous room's still does.
+
+#### The interface overhaul (L4.2)
+
+**Status: L4.2 implemented, awaiting manual validation.** The page's
+interface redrawn around where the player is and what they do, with the
+3D world as the main attraction; no gameplay, lifecycle or protocol
+change. It replaces the L3 lobby card, the L4.1 plaza card and the session
+panel described above (their functions are all kept).
+
+| | |
+| --- | --- |
+| **Contexts** | `client/hud.ts` reads the page into one of: menu, public plaza, private room between matches (lobby, countdown, results), combat (a private room's match, Quick Match), away (connecting, lost, refused). Each shows only what it needs. |
+| **Top bar** | Left: the **place pill** (🌸 Blobbi Plaza 3/8; 🔑 A7F2 2/4 · 1/2 ready; ⚡ Quick Match), then in a room between matches the **room bar**: Ready / Not ready (the main action, R on a keyboard), the owner's Start, ✉ Invite. Middle: the scoreboard, in a match only. Right: **you** (your fighter's picture, your name, invitations waiting) and ⚙. |
+| **Sheets** | One expandable panel at a time, closed by ✕, Escape, a press outside it, or going somewhere else. The **place sheet** (the pill): the plaza's menu (Quick Match, Create room, Join room; public rooms and hosting options folded; Main menu), or a room's tabs Players / Settings (the owner's; others read them) / Invite (code, Copy code, Copy link, the Nostr invitations) / Leave, or Quick Match's Players / Leave. The **profile sheet**: name (never a key), the Blobbi worn, Nostr, the Blobbi picker, the invite inbox. The **settings sheet**: graphics, FPS counter, camera (touch), full screen, How to play, the server and game servers. One of each feature: the invite sender, Blobbi picker and server list exist once. |
+| **Menu** | The game's front door: three Blobbis and the name, Enter Plaza (primary), Quick Match, Create room, Join room (an inline code field), who you play as and Connect Nostr. Side by side on a phone on its side, stacked on a narrow upright screen. Still connects to nothing until a choice; direct links unchanged. |
+| **Results** | The winner's Blobbi and "… wins!", every fighter with its picture, Human / Bot / Left and its rounds as dots, "Back to the plaza in N s" with a bar. Timing and scoring are the server's, unchanged. |
+| **Connection words** | Where a connection is headed (Heading to Blobbi Plaza…, Finding a Quick Match…, Joining room A7F2…), never the server's address; plain titles and an icon for every refusal; every refusal offers ⌂ Main menu. "A bot plays your Blobbi" only where the room hands a held seat to a bot (Quick Match, a private room with bots on); never on the plaza, with bots off, or for a watcher (`onClose`'s `takeover`, decided by the page from the room's rules; the server is unchanged). |
+| **Look** | `client/uiTheme.ts`: tokens (ink, pastels, radii, soft shadows, rounded type), buttons (plain, main, soft, warn, on, icon), frosted chips over the world, pills, tabs, two-way switches, sections. Dark ink on pale fills (no white text on pastel). Motion only for presses, the spinner and the rotate hint, none with reduced motion. |
+| **Phones** | Landscape first (checked at 844×390, 812×375, 667×375): one slim top row clear of the stick (lower left 48 % × 72 %) and the buttons (lower right); sheets fit the height and scroll inside; 38–40 px targets; the touch controls step aside while a sheet, the results, the menu or the banner is up. |
+| **Input** | A click never leaves a button focused (Space and Enter stay jump); Tab reaches every control, with a visible focus ring; while a field, a list, a button or a folding heading has the keyboard the game takes no key (`control/input.ts`, `isUiKey`). Escape lets a field go, else closes the help or the sheet (focus back to its button), else lets go of a focused control. The page uses no history entries for sheets, so Back still leaves the page as before. |
+| **Room for L5** | A sheet tab (chat), the free lower middle (an emote bar or picker on a phone, clear of the stick and buttons), and the roster rows (inspecting a Blobbi) are the intended places; nothing of L5 is built. |
 
 #### Plaza first: the menu and the public plaza (L4.1)
 

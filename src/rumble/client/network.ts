@@ -47,7 +47,7 @@ import { movementLive, refusalWords, tagMarks, visibleLineup } from './lobby';
 import { PLAZA_TERRAIN, isSocialSpace } from '../arena/lobbySpace';
 import { CLASSIC_TERRAIN } from './predict';
 import { arenaById } from '../arena/arenas';
-import { isTyping } from './dom';
+import { isUiKey } from './dom';
 import { createShell, type InviteMode } from './shell';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
@@ -303,8 +303,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
               const pks = inbox?.state.invites.map((i) => i.from) ?? [];
               if (pks.length) profiles().ask(pks);
             },
-            onLiveInvite: (i) => shell.toast(`${clip(displayName(profileOf(i.from), i.from), 20)} invited you to room ${i.room} (open the session panel)`, 6000),
-            onPaused: () => shell.toast('Automatic invites paused: your extension did not allow decrypting (session panel → Invites)', 6000),
+            onLiveInvite: (i) => shell.toast(`${clip(displayName(profileOf(i.from), i.from), 20)} invited you to room ${i.room} (see your profile)`, 6000),
+            onPaused: () => shell.toast('Automatic invites paused: your extension did not allow decrypting (profile → Invites)', 6000),
           })
         : null;
   };
@@ -750,8 +750,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
         history.replaceState(null, '', pageAddress(room.kind === 'private' ? room.id : room.kind === 'plaza' ? PLAZA_ROOM : OPEN_ROOM, location.search));
         if (created) {
           shell.toast(`Room ${room.id} is ready: share the link or the code`, 6000);
-          // L3: a lobby room's card has the code, the link and the invitations at hand; an older room opens the session panel.
-          if (room.lifecycle !== 'lobby') shell.openSession();
+          // L3: a lobby room's card has the code, the link and the invitations at hand; an older room opens its invitations (L4.2).
+          if (room.lifecycle !== 'lobby') shell.openSession('invite');
         } else if (room.kind === 'private' && !conn.note) shell.toast(`Joined room ${room.id}`);
         serverFeatures = m.features ?? [];
         declared = null;
@@ -839,7 +839,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       if (ws !== socket) return;
       ws = null;
       // Offline: nothing is predicted from a state that will not be answered, nothing is sent, nothing held.
-      conn = onClose(conn, e.code, e.reason, performance.now() / 1000);
+      // L4.2: a bot plays the fighter meanwhile only where the room has bots for empty seats (never on the plaza, nor with bots off).
+      const takeover = room?.kind === 'open' || (room?.kind === 'private' && (lobby ? lobby.settings.bots : true));
+      conn = onClose(conn, e.code, e.reason, performance.now() / 1000, takeover);
       status = conn.phase;
       you = null;
       predictor.reset();
@@ -871,7 +873,7 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       e.preventDefault();
     }
     // L2: until the lobby's interface (L3), R says this seated person is (not) ready.
-    if (e.code === 'KeyR' && !e.repeat && !isTyping(e) && lobby && you && (lobby.phase === 'lobby' || lobby.phase === 'countdown')) send({ t: 'ready', ready: !lobby.ready.includes(you) });
+    if (e.code === 'KeyR' && !e.repeat && !isUiKey(e) && lobby && you && (lobby.phase === 'lobby' || lobby.phase === 'countdown')) send({ t: 'ready', ready: !lobby.ready.includes(you) });
   });
 
   /** Your fighter as drawn: predicted (or handed over from the interpolated authority), with the newest server word on everything discrete. */

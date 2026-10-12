@@ -1,24 +1,25 @@
 /**
- * THE MENU AND THE PLAZA CARD (L4.1). Part of the game's shell, drawn from
- * small pure models (tested on their own) with the shell's own DOM rules:
- * text only, buttons that never take focus (Space and Enter stay jump), a
- * code field that owns the keyboard only while it is focused.
+ * THE MENU AND THE WAYS ON (L4.1, redrawn in L4.2). Part of the game's
+ * shell, drawn with its parts (`uiTheme.ts`) and DOM rules: text only, a
+ * click never leaves a button focused (Space and Enter stay jump), a code
+ * field that owns the keyboard only while it is focused.
  *
- *   the menu         a plain visit's first screen, before anything
- *                    connects: Enter Plaza (the primary way in), Quick Match
- *                    (straight into the open combat room), Create room, Join
- *                    room by its code; and who you play as
- *   the plaza card   in the public plaza: who you are (a display name, never
- *                    a key), the Blobbi you wear, Create room, Join room,
- *                    Quick Match, back to the menu. No ready, start, owner,
- *                    bots or rotation: those are a private room's. Folded on
- *                    a touch screen to its header (Quick Match kept in it)
+ *   the menu   a plain visit's first screen, before anything connects: the
+ *              game's front door. Three Blobbis and the name; Enter Plaza
+ *              (the one big way in), Quick Match, Create room, Join room by
+ *              its code; who you play as, and Connect Nostr. On a phone on
+ *              its side the two halves sit side by side.
+ *   the ways   the same ways on, as one block the shell's sheets reuse: from
+ *              the plaza (Quick Match, Create, Join), or from a room or a
+ *              match (to the plaza as well). Join opens its code field in
+ *              place; a bad code says why.
  *
- * Invitations, the Blobbi picker and identity stay in the session panel;
- * "Choose…" opens it.
+ * The plaza's own indicator (its name and how many are there) is the
+ * shell's place pill (`hud.ts`); its menu is the shell's place sheet.
  */
 import { normalizeRoomId } from '../net/roomId';
-import { button, el } from './dom';
+import { avatar, button, el } from './dom';
+import type { RumbleLook } from './rumbleForm';
 
 export interface PlazaUiActions {
   enterPlaza(): void;
@@ -26,18 +27,19 @@ export interface PlazaUiActions {
   createRoom(): void;
   joinRoom(code: string): void;
   toMenu(): void;
-  /** Open the session panel (the Blobbi picker, identity, invitations). */
-  openSession(): void;
   connectNostr(): void;
   /** A field took the keyboard: let go of every game key. */
   releaseKeys(): void;
 }
 
-/** Who the player is, as the menu and the card say it: a display name (never a key), or a guest. */
+/** Who the player is, as the menu and the sheets say it: a display name (never a key), or a guest. */
 export interface Who {
   name: string | null;
   /** Connecting or proving now. */
   busy: boolean;
+  /** A proven identity's key and picture, for its avatar only (never shown as text). */
+  pubkey?: string | null;
+  picture?: string;
 }
 
 export interface MenuView {
@@ -54,7 +56,7 @@ export interface PlazaView {
   touch: boolean;
 }
 
-/** L4.1: what the plaza card says about who you are and what you wear. Pure. */
+/** L4.1: what the plaza says about who you are and what you wear. Pure. */
 export function plazaLines(v: PlazaView): { who: string; blobbi: string; here: string } {
   return {
     who: v.who.name ? `You: ${v.who.name}` : v.who.busy ? 'You: connecting Nostr…' : 'You: Guest',
@@ -63,50 +65,73 @@ export function plazaLines(v: PlazaView): { who: string; blobbi: string; here: s
   };
 }
 
+export interface PlazaUiDeps {
+  /** A picture of a look (null: none can be drawn). */
+  preview: (look: RumbleLook) => Promise<string | null>;
+  /** The menu's three Blobbis. */
+  mascots: RumbleLook[];
+}
+
 export const PLAZA_CSS = `
-  .rs-menu { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(380px, calc(100vw - 24px)); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px); overflow: auto; overscroll-behavior: contain; padding: 18px 20px; text-align: center; display: none; }
-  .rs-menu h2 { margin: 0 0 2px; font-size: 22px; letter-spacing: 0.06em; }
-  .rs-menu .tag { margin: 0 0 14px; color: #6b7082; font-size: 13px; }
-  .rs-menu .big { display: block; width: 100%; margin: 6px 0; padding: 12px 14px; font-size: 16px; border-radius: 12px; text-align: left; }
-  .rs-menu .big small { display: block; font-weight: 500; font-size: 12px; opacity: 0.8; }
-  .rs-menu .more { display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
-  .rs-menu .who { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eef1f6; font-size: 12px; color: #555a6e; }
-  .rs-plaza { right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); width: min(290px, calc(100vw - 20px)); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 64px); overflow: auto; overscroll-behavior: contain; padding: 10px 12px; display: none; }
-  .rs-plaza .hd { display: flex; align-items: center; gap: 6px; }
-  .rs-plaza .hd .ttl { font: 700 14px ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.04em; }
-  .rs-plaza .hd .fold { margin-left: auto; }
-  .rs-plaza.folded .body { display: none; }
-  .rs-plaza.folded { width: auto; }
-  .rs-plaza .line { margin: 4px 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rs-plaza .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
-  .rs-plaza .acts .rs-btn { padding: 8px 8px; }
-  @media (pointer: coarse) {
-    .rs-menu .rs-btn, .rs-plaza .rs-btn { min-height: 40px; }
+  .rs-menu { position: fixed; inset: 0; z-index: 5; display: none; align-items: center; justify-content: center; padding: calc(var(--rs-safe-t) + 56px) calc(var(--rs-safe-r) + 16px) calc(var(--rs-safe-b) + 16px) calc(var(--rs-safe-l) + 16px); overflow: auto; overscroll-behavior: contain; background: radial-gradient(circle at 18% 22%, rgba(255,159,191,0.30), transparent 34%), radial-gradient(circle at 82% 30%, rgba(143,124,240,0.24), transparent 36%), radial-gradient(circle at 60% 88%, rgba(143,224,176,0.30), transparent 38%), rgba(236,240,252,0.92); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+  .rs-menu .box { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; align-items: center; width: min(760px, 100%); padding: 26px 28px 20px; border-radius: 28px; background: var(--rs-card); box-shadow: var(--rs-shadow); }
+  .rs-menu .hero { text-align: center; }
+  .rs-menu .mascots { display: flex; justify-content: center; align-items: flex-end; height: 104px; margin-bottom: 8px; }
+  .rs-menu .mascots .pic { width: 84px; height: 84px; margin: 0 -6px; display: flex; align-items: center; justify-content: center; }
+  .rs-menu .mascots .pic:nth-child(2) { width: 104px; height: 104px; z-index: 1; }
+  .rs-menu .mascots img { width: 100%; height: 100%; object-fit: contain; display: block; filter: drop-shadow(0 6px 10px rgba(52,46,98,0.18)); }
+  .rs-menu h1 { margin: 0; font: 900 34px/1.05 var(--rs-font); letter-spacing: 0.01em; color: var(--rs-ink); }
+  .rs-menu h1 span { color: #e0608e; }
+  .rs-menu .tag { margin: 6px 0 0; color: var(--rs-sub); font-size: 14px; }
+  .rs-menu .acts { display: flex; flex-direction: column; gap: 8px; }
+  .rs-menu .big { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; min-height: 62px; padding: 10px 16px; border-radius: 18px; text-align: left; font-size: 17px; white-space: normal; }
+  .rs-menu .big .ic { font-size: 24px; }
+  .rs-menu .big small { display: block; margin-top: 2px; font: 600 12px var(--rs-font); opacity: 0.8; }
+  .rs-menu .big.go { min-height: 72px; font-size: 19px; }
+  .rs-menu .who { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; padding-top: 14px; border-top: 1.5px solid var(--rs-line); color: var(--rs-sub); font-size: 13px; }
+  .rs-menu .who b { color: var(--rs-ink); }
+  .rs-join { display: none; gap: 6px; align-items: center; margin-top: 2px; }
+  .rs-join.on { display: flex; }
+  .rs-join .rs-input { flex: 1; min-width: 0; }
+  .rs-input { width: 100px; min-height: 36px; font: 800 16px ui-monospace, Menlo, monospace; letter-spacing: 0.14em; text-transform: uppercase; padding: 4px 10px; border: 1.5px solid var(--rs-line); border-radius: var(--rs-r-md); background: #fff; color: var(--rs-ink); }
+  .rs-input:focus { border-color: var(--rs-lilac); outline: none; box-shadow: 0 0 0 3px var(--rs-lilac-soft); }
+  .rs-ways { display: flex; flex-direction: column; gap: 6px; }
+  .rs-ways .rs-btn.go { min-height: 44px; font-size: 15px; }
+  @media (max-width: 640px) and (min-height: 521px) {
+    .rs-menu .box { grid-template-columns: 1fr; gap: 16px; padding: 20px 18px 16px; }
+    .rs-menu .mascots { height: 84px; }
+    .rs-menu .mascots .pic { width: 66px; height: 66px; }
+    .rs-menu .mascots .pic:nth-child(2) { width: 84px; height: 84px; }
+    .rs-menu h1 { font-size: 28px; }
   }
-  @media (max-width: 860px) {
-    .rs-plaza { top: 108px; max-height: calc(100dvh - 120px); }
-  }
+  /* A phone on its side: the two halves side by side, everything in the short height without scrolling. */
   @media (max-height: 520px) {
-    .rs-menu { padding: 10px 14px; }
-    .rs-menu h2 { font-size: 18px; }
-    .rs-menu .tag { margin-bottom: 6px; }
-    .rs-menu .big { padding: 8px 12px; margin: 4px 0; font-size: 15px; }
-    .rs-plaza { top: calc(env(safe-area-inset-top, 0px) + 44px); width: min(270px, 42vw); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 52px); padding: 8px 10px; }
+    .rs-menu { padding: calc(var(--rs-safe-t) + 50px) calc(var(--rs-safe-r) + 12px) calc(var(--rs-safe-b) + 8px) calc(var(--rs-safe-l) + 12px); }
+    .rs-menu .box { gap: 18px; padding: 14px 18px 10px; border-radius: 22px; width: min(720px, 100%); }
+    .rs-menu .mascots { height: 70px; margin-bottom: 4px; }
+    .rs-menu .mascots .pic { width: 56px; height: 56px; }
+    .rs-menu .mascots .pic:nth-child(2) { width: 70px; height: 70px; }
+    .rs-menu h1 { font-size: 24px; }
+    .rs-menu .tag { font-size: 12px; }
+    .rs-menu .acts { gap: 6px; }
+    .rs-menu .big { min-height: 46px; padding: 6px 12px; font-size: 15px; }
+    .rs-menu .big.go { min-height: 54px; font-size: 16px; }
+    .rs-menu .big .ic { font-size: 20px; }
+    .rs-menu .who { padding-top: 8px; font-size: 12px; }
   }
 `;
 
-export function createPlazaUi(a: PlazaUiActions) {
-  const menu = el('div', 'rs-card rs-menu');
-  const card = el('div', 'rs-card rs-plaza');
-  menu.style.display = card.style.display = 'none';
+export function createPlazaUi(a: PlazaUiActions, deps: PlazaUiDeps) {
+  const menu = el('div', 'rs-ui rs-menu');
+  menu.setAttribute('role', 'dialog');
+  menu.setAttribute('aria-label', 'Blobbi Rumble');
+  menu.style.display = 'none';
   let lastMenu = '';
-  let lastCard = '';
-  let folded: boolean | null = null;
-  let joining = false;
+  const pictures: (string | null)[] = deps.mascots.map(() => null);
 
-  /** A room-code field and its Join, with what is wrong with the code. */
+  /** A room-code field and its Join, hidden until asked for, with what is wrong with the code. */
   const joinRow = () => {
-    const row = el('div', 'more');
+    const row = el('div', 'rs-join');
     const input = el('input', 'rs-input');
     input.maxLength = 6;
     input.placeholder = 'CODE';
@@ -114,8 +139,10 @@ export function createPlazaUi(a: PlazaUiActions) {
     input.spellcheck = false;
     input.autocapitalize = 'characters';
     input.setAttribute('autocorrect', 'off');
+    input.setAttribute('aria-label', 'Room code');
     input.enterKeyHint = 'go';
     const err = el('div', 'rs-err');
+    err.setAttribute('role', 'alert');
     const go = () => {
       const id = normalizeRoomId(input.value);
       if (!id) {
@@ -123,6 +150,7 @@ export function createPlazaUi(a: PlazaUiActions) {
         return;
       }
       err.textContent = '';
+      input.blur?.();
       a.joinRoom(id);
     };
     input.addEventListener('focus', () => a.releaseKeys());
@@ -132,86 +160,101 @@ export function createPlazaUi(a: PlazaUiActions) {
       if (e.key === 'Escape') input.blur();
     });
     row.append(input, button('Join', go, 'rs-btn go'));
-    return [row, err];
+    /** The button that opens it: shows the field (and gives it the keyboard), or hides it again. */
+    const toggle = button('# Join room', () => {
+      const on = !row.className.includes(' on');
+      row.className = `rs-join${on ? ' on' : ''}`;
+      toggle.setAttribute('aria-expanded', String(on));
+      if (on) input.focus?.();
+      else err.textContent = '';
+    });
+    toggle.setAttribute('aria-expanded', 'false');
+    return { toggle, row, err };
+  };
+
+  const big = (icon: string, label: string, sub: string, onClick: () => void, primary = false) => {
+    const b = button('', onClick, `rs-btn big${primary ? ' go' : ''}`);
+    const words = el('span');
+    words.append(document.createTextNode(label), el('small', undefined, sub));
+    b.append(el('span', 'ic', icon), words);
+    b.setAttribute('aria-label', `${label}: ${sub}`);
+    return b;
   };
 
   const renderMenu = (v: MenuView) => {
-    const enter = button('', a.enterPlaza, 'rs-btn go big');
-    enter.append(document.createTextNode('Enter Plaza'), el('small', undefined, 'Walk around, meet other Blobbis, get ready'));
-    const quick = button('', a.quickMatch, 'rs-btn big');
-    quick.append(document.createTextNode('Quick Match'), el('small', undefined, 'Jump straight into a match'));
-    const more = el('div', 'more');
-    more.append(button('Create room', a.createRoom), button(joining ? 'Hide' : 'Join room', () => {
-      joining = !joining;
-      lastMenu = '';
-    }));
-    const who = el('div', 'who');
-    if (v.who.name) who.append(document.createTextNode(`Playing as ${v.who.name}`));
-    else if (v.who.busy) who.append(document.createTextNode('Connecting Nostr…'));
-    else who.append(document.createTextNode('Playing as a guest · '), button('Connect Nostr', a.connectNostr));
-    menu.replaceChildren(el('h2', undefined, 'BLOBBI RUMBLE'), el('div', 'tag', 'A party brawler for Blobbis'), enter, quick, more, ...(joining ? joinRow() : []), who);
-  };
-
-  const renderCard = (v: PlazaView) => {
-    const lines = plazaLines(v);
-    const hd = el('div', 'hd');
-    hd.append(el('span', 'ttl', 'Blobbi Plaza'), el('span', 'rs-sub', lines.here));
-    if (folded) hd.append(button('Quick Match', a.quickMatch, 'rs-btn go'));
-    hd.append(button(folded ? '▸' : '▾', () => {
-      folded = !folded;
-      lastCard = '';
-    }, 'rs-btn fold'));
-    const body = el('div', 'body');
-    const blobbi = el('div', 'line');
-    blobbi.append(document.createTextNode(`${lines.blobbi} `), button('Choose…', a.openSession));
-    body.append(el('div', 'line', lines.who), blobbi);
+    const hero = el('div', 'hero');
+    const mascots = el('div', 'mascots');
+    deps.mascots.forEach((look, i) => {
+      const box = el('span', 'pic');
+      const put = (src: string | null) => {
+        if (!src) return;
+        const img = el('img');
+        img.alt = '';
+        img.src = src;
+        box.replaceChildren(img);
+      };
+      if (pictures[i]) put(pictures[i]);
+      else
+        void deps.preview(look).then((src) => {
+          pictures[i] = src;
+          put(src);
+        });
+      mascots.append(box);
+    });
+    const title = el('h1');
+    title.append(document.createTextNode('Blobbi '), el('span', undefined, 'Rumble'));
+    hero.append(mascots, title, el('p', 'tag', 'Meet other Blobbis, then bounce them off the islands.'));
     const acts = el('div', 'acts');
-    acts.append(button('Create room', a.createRoom), button(joining ? 'Hide' : 'Join room', () => {
-      joining = !joining;
-      lastCard = '';
-    }), button('Quick Match', a.quickMatch, 'rs-btn go'), button('Menu', a.toMenu));
-    body.append(acts, ...(joining ? joinRow() : []), el('div', 'rs-sub', 'Everyone here sees your name and your Blobbi.'));
-    card.className = `rs-card rs-plaza${folded ? ' folded' : ''}`;
-    card.replaceChildren(hd, body);
+    const join = joinRow();
+    const more = el('div', 'rs-grid2');
+    more.append(button('＋ Create room', a.createRoom), join.toggle);
+    acts.append(big('🌸', 'Enter Plaza', 'Walk around and meet other Blobbis', a.enterPlaza, true), big('⚡', 'Quick Match', 'Jump straight into a match', a.quickMatch), more, join.row, join.err);
+    const who = el('div', 'who');
+    if (v.who.name) who.append(avatar(v.who.pubkey ?? null, v.who.picture, 22), document.createTextNode('Playing as '), el('b', undefined, v.who.name));
+    else if (v.who.busy) who.append(document.createTextNode('Connecting Nostr…'));
+    else who.append(document.createTextNode('Playing as a guest'), button('Connect Nostr', a.connectNostr, 'rs-btn soft'));
+    const box = el('div', 'box');
+    box.append(hero, acts, who);
+    menu.replaceChildren(box);
   };
 
-  /** Whether a field of these cards has the keyboard (never rebuilt under someone typing). */
+  /** Whether a field of the menu has the keyboard (never rebuilt under someone typing). */
   const typing = () => {
     const active = (globalThis.document as Document | undefined)?.activeElement ?? null;
-    return !!active && (menu.contains?.(active) || card.contains?.(active));
+    return !!active && !!menu.contains?.(active);
   };
 
   return {
-    nodes: [menu, card] as const,
+    nodes: [menu] as const,
     get menuOpen() {
-      return menu.style.display === 'block';
-    },
-    get cardOpen() {
-      return card.style.display === 'block' && !folded;
+      return menu.style.display === 'flex';
     },
     /** The menu (null: hidden). */
     showMenu(v: MenuView | null) {
-      const key = v ? JSON.stringify([v, joining]) : '';
+      const key = v ? JSON.stringify(v) : '';
       if (key !== lastMenu && !typing()) {
         lastMenu = key;
         if (v) renderMenu(v);
       }
-      const d = v ? 'block' : 'none';
-      if (menu.style.display !== d) {
-        menu.style.display = d;
-        if (!v) joining = false;
-      }
+      const d = v ? 'flex' : 'none';
+      if (menu.style.display !== d) menu.style.display = d;
     },
-    /** The plaza card (null: hidden: not on the plaza, or another card is up). */
-    showPlaza(v: PlazaView | null) {
-      if (v && folded === null) folded = v.touch;
-      const key = v ? JSON.stringify([v, folded, joining]) : '';
-      if (key !== lastCard && !typing()) {
-        lastCard = key;
-        if (v) renderCard(v);
+    /**
+     * The ways on, for a sheet: from the plaza (Quick Match first), or from a room or a match (the plaza
+     * first). The main menu is the sheet's own footer.
+     */
+    ways(from: 'plaza' | 'elsewhere'): HTMLElement {
+      const box = el('div', 'rs-ways');
+      const join = joinRow();
+      const grid = el('div', 'rs-grid2');
+      grid.append(button('＋ Create room', a.createRoom), join.toggle);
+      if (from === 'plaza') box.append(button('⚡ Quick Match', a.quickMatch, 'rs-btn go wide'), grid, join.row, join.err);
+      else {
+        const top = el('div', 'rs-grid2');
+        top.append(button('🌸 Plaza', a.enterPlaza, 'rs-btn go'), button('⚡ Quick Match', a.quickMatch));
+        box.append(top, grid, join.row, join.err);
       }
-      const d = v ? 'block' : 'none';
-      if (card.style.display !== d) card.style.display = d;
+      return box;
     },
   };
 }

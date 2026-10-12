@@ -19,7 +19,7 @@ describe('the connection', () => {
     let s = initialConnection('ws://x');
     s = onClose(s, 1006, '', 10);
     expect(s.phase).toBe('failed');
-    expect(words(s, 10)).toMatchObject({ title: 'Unable to connect to the Rumble server', retry: true });
+    expect(words(s, 10)).toMatchObject({ title: 'Can’t reach the game server', retry: true, actions: ['retry', 'menu'] });
     expect(s.retryAt).toBe(10 + CONNECTION.retryBase);
     s = onClose(onRetry(s), 1006, '', 20);
     expect(s.retryAt).toBe(20 + 2 * CONNECTION.retryBase);
@@ -29,10 +29,11 @@ describe('the connection', () => {
 
   it('a loss during play says so, frees the slot, and the reconnect is a new connection with whatever slot is free', () => {
     let s = onWelcome(initialConnection('x'), 'P1', 0);
-    s = onClose(s, 1006, '', 5);
+    s = onClose(s, 1006, '', 5, true);
     expect(s.phase).toBe('lost');
     expect(s.you).toBeNull();
-    expect(words(s, 5)?.detail).toMatch(/bot/);
+    expect(words(s, 5)?.detail).toMatch(/A bot plays your Blobbi until you’re back/);
+    expect(words(s, 5)?.actions).toEqual(['retry', 'menu']);
     expect(statusLine(s, 10)).toBe('○ offline');
     s = onWelcome(onRetry(s), 'P3', 8);
     expect(s.phase).toBe('playing');
@@ -40,6 +41,35 @@ describe('the connection', () => {
     expect(s.note).toMatch(/Reconnected as P3/);
     expect(s.note).toMatch(/P1 went to a bot/);
     expect(s.noteUntil).toBeGreaterThan(8);
+  });
+
+  it('L4.2: a bot is promised only where one takes over (the room says so): never on the plaza or with bots off, never for a watcher', () => {
+    const playing = onWelcome(initialConnection('x'), 'P1', 0);
+    const plaza = onClose(playing, 1006, '', 5, false);
+    expect(plaza.takeover).toBe(false);
+    expect(words(plaza, 5)?.detail).toBe('Reconnecting in 1 s.');
+    expect(words(plaza, 5)?.detail).not.toMatch(/bot/i);
+    // Back with another seat: the old one was let go, not given to a bot.
+    expect(onWelcome(onRetry(plaza), 'P2', 8).note).toBe('Reconnected as P2 (a new slot: your P1 was let go)');
+    // A watcher held no fighter: nothing is taken over whatever the room does.
+    const watcher = onClose(onWelcome(initialConnection('x'), null, 0), 1006, '', 5, true);
+    expect(watcher.takeover).toBe(false);
+    expect(words(watcher, 5)?.detail).not.toMatch(/bot/i);
+  });
+
+  it('L4.2: connecting says where to (the plaza, Quick Match, a room), never the server’s address; a long wait offers the menu', () => {
+    expect(words(initialConnection('wss://host.example/ws?room=PLAZA', 'PLAZA'), 0)).toMatchObject({ icon: 'wait', title: 'Heading to Blobbi Plaza…', actions: [] });
+    expect(words(initialConnection('x', 'OPEN'), 0)?.title).toBe('Finding a Quick Match…');
+    expect(words(initialConnection('x', 'A7F2'), 0)?.title).toBe('Joining room A7F2…');
+    expect(words(initialConnection('x'), 0)?.title).toBe('Connecting…');
+    expect(JSON.stringify(words(initialConnection('wss://host.example/ws', 'PLAZA'), 0))).not.toContain('host.example');
+    const again = onRetry(onClose(initialConnection('x', 'PLAZA'), 1006, '', 0));
+    expect(words(again, 0)?.actions).toEqual(['menu']);
+  });
+
+  it('L4.2: every refusal offers the way back to the menu', () => {
+    const cases = [onClose(initialConnection('x'), 1013, 'server full', 0), onClose(initialConnection('x', 'A7F2'), 4004, 'no such room', 0), onClose(initialConnection('x'), 4003, 'room limit reached', 0), onClose(initialConnection('x'), 4005, 'origin not allowed', 0), onProtocol(initialConnection('x'), 9, 1), onClose(initialConnection('x'), 1013, 'plaza full', 0)];
+    for (const c of cases) expect(words(c, 0)?.actions).toContain('menu');
   });
 
   it('a full server is told apart and tried again slowly', () => {

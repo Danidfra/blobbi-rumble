@@ -29,8 +29,8 @@ export interface SeatRow {
   pubkey: string | null;
   you: boolean;
   owner: boolean;
-  /** A person ready or not; a bot always is; an empty seat waits for someone. */
-  ready: 'ready' | 'not-ready' | 'bot' | 'open';
+  /** A person ready or not; a bot always is; an empty seat waits for someone; L4.2: 'none' where readiness means nothing (Quick Match). */
+  ready: 'ready' | 'not-ready' | 'bot' | 'open' | 'none';
   /** The Blobbi this person's fighter wears (its name), if any. */
   blobbi: string | null;
   /** What the fighter looks like (its form's look; null: the seat's default fighter, by `seat`). */
@@ -171,6 +171,18 @@ export function lobbyView(input: LobbyViewInput): LobbyView {
     last: lobbyish && l.results ? lastLine(l.results, personName) : null,
     results: l.phase === 'results' && l.results ? resultsView(l.results, l.you, secondsUntil(l.deadline ?? tick, tick, tickHz), personName) : null,
   };
+}
+
+/**
+ * L4.2: the seats of a room without a lobby (Quick Match, a continuous room), for the room sheet's
+ * roster: who drives each fighter, a person or a bot, and the Blobbi a person wears. No readiness.
+ */
+export function rosterSeats(roster: Record<string, SlotIdentity> | null, you: string | null, personName: (pubkey: string) => string, blobbiNameOf: (seat: string) => string | null): SeatRow[] {
+  return Object.entries(roster ?? {}).map(([seat, who]) => {
+    const kind = seatKind(who, true);
+    const form = who.who === 'nostr' && who.form ? lookFromSlotForm(who.form) : null;
+    return { seat, kind, name: kind === 'empty' ? 'Open seat' : whoName(who, personName), pubkey: who.who === 'nostr' ? who.pubkey : null, you: seat === you, owner: false, ready: kind === 'bot' ? 'bot' : kind === 'empty' ? 'open' : 'none', blobbi: kind === 'person' ? blobbiNameOf(seat) : null, look: form?.look ?? null, plays: true };
+  });
 }
 
 /** A fighter's name in the results: who drove it at the end. */

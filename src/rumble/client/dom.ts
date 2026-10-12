@@ -1,7 +1,9 @@
 /**
  * Small DOM helpers for the game's interface. Text only ever goes in as
- * text (`textContent`), never markup; buttons never take keyboard focus,
- * so Space and Enter keep meaning jump.
+ * text (`textContent`), never markup. A click or a tap never leaves a
+ * button focused, so Space and Enter keep meaning jump; L4.2: the keyboard
+ * can still reach every button (Tab), and while one has the focus the
+ * game leaves its keys alone (`isUiKey`).
  */
 import { fallbackAvatar } from '../../social/avatar';
 
@@ -17,8 +19,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, 
 export function button(text: string, onClick: () => void, cls = 'rs-btn'): HTMLButtonElement {
   const b = el('button', cls, text);
   b.type = 'button';
-  b.tabIndex = -1;
-  // Never take focus: Space / Enter must keep meaning jump.
+  // A pointer never focuses it (Space / Enter must keep meaning jump); Tab still reaches it.
   b.addEventListener('mousedown', (e) => e.preventDefault());
   b.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -69,5 +70,11 @@ export function avatar(pubkey: string | null, picture: string | undefined, size 
 /** Whether a key event is someone typing in a field (game keys must leave it alone). */
 export const isTyping = (e: Event) => {
   const t = e.target as HTMLElement | null;
-  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+};
+
+/** L4.2: whether a key event belongs to the interface: typing, or a control the keyboard reached (Space presses the button, it does not jump). */
+export const isUiKey = (e: Event) => {
+  const t = e.target as HTMLElement | null;
+  return isTyping(e) || (!!t && (t.tagName === 'BUTTON' || t.tagName === 'SUMMARY' || t.getAttribute?.('role') === 'button' || t.getAttribute?.('role') === 'tab'));
 };

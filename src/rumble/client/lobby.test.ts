@@ -91,7 +91,7 @@ describe('the page’s reading of a lobby room', () => {
     expect(s.retryAt).toBe(Infinity);
     const d = describeConn(s, 10)!;
     expect(d.title).toBe('Blobbi Plaza is full.');
-    expect(d.actions).toEqual(['retry', 'private', 'quick']);
+    expect(d.actions).toEqual(['retry', 'private', 'quick', 'menu']);
     expect(d.retry).toBe(false);
     // An ordinary full room still retries slowly, as before.
     expect(onClose(initialConnection('ws://x', null), 1013, 'room full', 10).phase).toBe('full');

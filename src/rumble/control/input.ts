@@ -115,8 +115,10 @@ export class Keyboard {
   constructor(bindings: KeyBindings[], target: Window = window) {
     this.swallow = new Set(bindings.flatMap((b) => [...b.jump, ...b.punch, ...b.grab, ...b.forward, ...b.back, ...b.left, ...b.right]));
     target.addEventListener('keydown', (e) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'SELECT') return;
+      // A field, or an interface control the keyboard reached (L4.2), keeps its keys: Space presses a button, it does not jump.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'SUMMARY' || t?.isContentEditable) return;
       if (!e.repeat) this.pressed.add(e.code);
       this.held.add(e.code);
       if (this.swallow.has(e.code)) e.preventDefault();

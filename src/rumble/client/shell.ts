@@ -1,28 +1,32 @@
 /**
- * THE GAME'S INTERFACE in network mode: the arena first, the rest quiet
- * until it matters.
+ * THE GAME'S INTERFACE in network mode: the world first, the rest small and
+ * contextual (L4.2).
  *
- *   ┌ session chip ─────┐      ┌ scoreboard ┐          ┌ identity chip ┐
- *   ● A7F2 · Local server     round · P1 ●●○ …       Guest · Connect Nostr
+ *   ┌ place pill ─┬ room bar ──────┐   ┌ scoreboard ┐   ┌ you ──┬ ⚙ ┐
+ *   🔑 A7F2 2/4 1/2 ready  [Ready] ✉     (a match on)     (Blobbi) Ada
  *
- *                       contextual message (round, match)
- *                       struggle bar (when you are held)
- *   H Help
+ *                      contextual message (round, match)
+ *                      struggle bar (when you are held)
  *
- *   on demand:  session panel (room + share link, host / join, players,
- *               identity, server), help panel (H), L4.1: the menu (a plain
- *               visit, before anything connects) and the plaza card,
- *               the automatic-invites question (once, a corner card)
+ *   where you are (`hud.ts`) decides what shows: the menu; the public plaza
+ *   (its name, how many are there); a room between matches (its counts,
+ *   Ready, the owner's Start, Invite); a match (the scoreboard); away (the
+ *   banner, with the way out).
+ *
+ *   on demand, one SHEET at a time (Escape, ✕ or a press outside closes it):
+ *     the place pill   the plaza's menu, or a room's players / settings /
+ *                      invite / leave, or Quick Match's players / leave
+ *     you              your name, your Blobbi (the picker), Nostr, invites
+ *     ⚙                graphics, counter, camera, full screen, help, servers
  *   loud:       the centred banner when play is impossible (offline, a
- *               missing room, …), with what to do about it
+ *               missing room, a full plaza, …), with what to do about it
  *   debug:      F3 / F4 (the text HUD), unchanged, off by default
  *
- * Everything from Nostr or a server is text set with textContent. Buttons
- * never take focus; the only field (the room code) owns the keyboard while
- * focused, and the game's keys are released when it takes it.
+ * Everything from Nostr or a server is text set with textContent. A click
+ * never leaves a button focused; the keyboard reaches every control (Tab),
+ * and fields own the keyboard while focused (the game's keys are released).
  */
 import { ROUND } from '../tuning';
-import { normalizeRoomId } from '../net/roomId';
 import type { RoomInfo, ServerInfo, SlotIdentity } from '../net/protocol';
 import type { ServerTrust } from '../net/serverTrust';
 import type { MatchSnapshot } from '../sim/snapshot';
@@ -42,7 +46,6 @@ import type { PickerState } from './blobbis';
 import type { RumbleForm } from './rumbleForm';
 import type { SetupState } from './inboxSetup';
 import type { ReceivedInvite } from './invites';
-import { isLocalHost } from '../net/serverTrust';
 import { QUALITY_CHOICES, type QualityChoice } from '../view/quality';
 import { fullscreenNote, fullscreenState, isStandalone, toggleFullscreen } from './fullscreen';
 import type { LobbyMessage } from '../net/protocol';
@@ -50,6 +53,14 @@ import { lobbyView } from './lobbyView';
 import { LOBBY_CSS, createLobbyUi } from './lobbyUi';
 import { lookPreview } from './blobbiPreview';
 import { PLAZA_CSS, createPlazaUi } from './plazaUi';
+import { THEME_CSS } from './uiTheme';
+import { hudView, type HudView } from './hud';
+import { rosterSeats, type LobbyView } from './lobbyView';
+import type { RoomTab } from './lobbyUi';
+import type { RumbleLook } from './rumbleForm';
+
+/** L4.2: the sheets, one open at a time. */
+type SheetKind = 'place' | 'profile' | 'settings';
 import { isSocialSpace } from '../arena/lobbySpace';
 import { seedFromLabel } from '../../playground/seeds';
 import { ROSTER } from '../roster';
@@ -175,149 +186,149 @@ export interface ShellView {
 }
 
 const CSS = `
-  .rs-top { position: fixed; top: calc(env(safe-area-inset-top, 0px) + 10px); left: calc(env(safe-area-inset-left, 0px) + 10px); right: calc(env(safe-area-inset-right, 0px) + 10px); display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; z-index: 5; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
+  .rs-top { position: fixed; top: calc(var(--rs-safe-t) + 10px); left: calc(var(--rs-safe-l) + 10px); right: calc(var(--rs-safe-r) + 10px); display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; z-index: 7; font-size: 13px; }
   .rs-top > * { pointer-events: auto; }
-  .rs-chip { display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-radius: 999px; background: rgba(255,255,255,0.82); box-shadow: 0 3px 12px rgba(40,50,80,0.13); cursor: pointer; white-space: nowrap; max-width: 46vw; overflow: hidden; }
-  .rs-chip:hover { background: rgba(255,255,255,0.95); }
-  .rs-chip .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #6fc38f; }
-  .rs-chip .dot.wait { background: #e6b450; }
-  .rs-chip .dot.off { background: #d0605c; }
-  .rs-chip b { font-weight: 700; letter-spacing: 0.04em; }
-  .rs-chip .dim { color: #6b7082; overflow: hidden; text-overflow: ellipsis; }
-  .rs-board { display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: rgba(255,255,255,0.7); box-shadow: 0 3px 12px rgba(40,50,80,0.12); }
-  .rs-board .round { align-self: center; padding: 0 6px; font: 600 11px ui-sans-serif, system-ui, sans-serif; color: #6b7082; white-space: nowrap; }
-  .rs-pl { display: flex; flex-direction: column; align-items: center; min-width: 64px; max-width: 118px; padding: 3px 8px; border-radius: 10px; background: rgba(255,255,255,0.75); }
-  .rs-pl.me { box-shadow: inset 0 0 0 2px #6fc38f; }
+  .rs-left, .rs-right { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .rs-right { flex: none; }
+  .rs-left:empty { display: none; }
+  .rs-place { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px 0 12px; border: none; border-radius: 999px; cursor: pointer; font: 700 13px var(--rs-font); color: var(--rs-ink); white-space: nowrap; min-width: 0; max-width: 46vw; }
+  .rs-place .ic { font-size: 16px; line-height: 1; }
+  .rs-place b { font-weight: 800; letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; }
+  .rs-place .cnt { padding: 2px 8px; border-radius: 999px; background: var(--rs-wash); color: var(--rs-sub); font-size: 12px; }
+  .rs-place .cnt.ok { background: var(--rs-mint-soft); color: var(--rs-mint-ink); }
+  .rs-place .car { color: var(--rs-faint); font-size: 11px; }
+  .rs-place[aria-expanded="true"] { box-shadow: 0 0 0 2.5px var(--rs-lilac), var(--rs-shadow-sm); }
+  .rs-place .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--rs-sun); }
+  .rs-me { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px 0 4px; border: none; border-radius: 999px; cursor: pointer; font: 700 13px var(--rs-font); color: var(--rs-ink); max-width: 30vw; }
+  .rs-me .pic { flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--rs-lilac-soft); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .rs-me .pic img { width: 120%; height: 120%; object-fit: contain; }
+  .rs-me .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-me[aria-expanded="true"], .rs-gear[aria-expanded="true"] { box-shadow: 0 0 0 2.5px var(--rs-lilac), var(--rs-shadow-sm); }
+  .rs-gear { width: 38px; min-width: 38px; height: 38px; min-height: 38px; border: none; font-size: 17px; }
+  .rs-badge { display: inline-block; min-width: 18px; padding: 1px 6px; border-radius: 999px; background: #e0608e; color: #fff; font: 800 11px var(--rs-font); text-align: center; }
+  .rs-board { display: flex; gap: 4px; padding: 4px; border-radius: 16px; min-width: 0; }
+  .rs-board .round { align-self: center; padding: 0 6px; font: 800 11px var(--rs-font); color: var(--rs-sub); white-space: nowrap; }
+  .rs-pl { display: flex; flex-direction: column; align-items: center; min-width: 64px; max-width: 118px; padding: 3px 8px; border-radius: 12px; background: rgba(255,255,255,0.8); }
+  .rs-pl.me { box-shadow: inset 0 0 0 2px var(--rs-lilac); }
   .rs-pl.out { opacity: 0.45; }
-  .rs-pl .nm { font-weight: 600; font-size: 12px; max-width: 102px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rs-pl .sc { font-size: 10px; letter-spacing: 2px; color: #3d8f5e; }
-  .rs-pl .pw { font-size: 10px; color: #b07a12; }
-  .rs-msg { position: fixed; left: 50%; top: 22vh; transform: translateX(-50%); max-width: 80vw; padding: 8px 18px; border-radius: 14px; background: rgba(43,43,58,0.72); color: #fff; font: 700 20px ui-sans-serif, system-ui, sans-serif; letter-spacing: 0.02em; text-align: center; pointer-events: none; display: none; z-index: 4; }
-  .rs-struggle { position: fixed; left: 50%; bottom: 14vh; transform: translateX(-50%); padding: 8px 14px; border-radius: 14px; background: rgba(176,65,62,0.88); color: #fff; font: 700 14px ui-sans-serif, system-ui, sans-serif; text-align: center; pointer-events: none; display: none; z-index: 4; }
+  .rs-pl .nm { font-weight: 700; font-size: 12px; max-width: 102px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-pl .sc { font-size: 10px; letter-spacing: 2px; color: #d4709a; }
+  .rs-pl .pw { font-size: 10px; color: var(--rs-sun-ink); }
+  .rs-msg { position: fixed; left: 50%; top: 22vh; transform: translateX(-50%); max-width: 80vw; padding: 8px 18px; border-radius: 16px; background: rgba(42,41,68,0.74); color: #fff; font: 800 20px var(--rs-font); letter-spacing: 0.02em; text-align: center; pointer-events: none; display: none; z-index: 4; }
+  .rs-struggle { position: fixed; left: 50%; bottom: 14vh; transform: translateX(-50%); padding: 8px 14px; border-radius: 16px; background: rgba(160,52,72,0.9); color: #fff; font: 800 14px var(--rs-font); text-align: center; pointer-events: none; display: none; z-index: 4; }
   .rs-struggle .bar { margin-top: 6px; height: 8px; width: 220px; border-radius: 4px; background: rgba(255,255,255,0.3); overflow: hidden; }
   .rs-struggle .bar > i { display: block; height: 100%; background: #fff; }
-  .rs-corner { position: fixed; left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); display: flex; gap: 6px; align-items: center; z-index: 5; }
-  .rs-hint { padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 12px ui-sans-serif, system-ui, sans-serif; color: #555a6e; cursor: pointer; }
-  .rs-gear { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 26px; padding: 0 8px; border-radius: 999px; background: rgba(255,255,255,0.7); font: 15px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; cursor: pointer; }
-  .rs-settings { left: calc(env(safe-area-inset-left, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); width: min(330px, calc(100vw - 20px)); max-height: calc(100dvh - 70px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 12px 14px; display: none; }
-  .rs-settings h4 { margin: 10px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
-  .rs-settings h4:first-of-type { margin-top: 0; }
-  .rs-settings .x { position: absolute; right: 10px; top: 8px; }
-  .rs-fps { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 4px); transform: translateX(-50%); padding: 1px 8px; border-radius: 8px; background: rgba(43,43,58,0.55); color: #fff; font: 11px ui-monospace, Menlo, monospace; pointer-events: none; z-index: 5; display: none; }
-  .rs-hint kbd, .rs-help kbd { display: inline-block; padding: 0 5px; border-radius: 4px; background: #eef1f6; border: 1px solid #d6dbe6; font: 11px ui-monospace, Menlo, monospace; color: #2b2b3a; }
-  .rs-card { position: fixed; z-index: 6; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.22); font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
-  .rs-panel { left: calc(env(safe-area-inset-left, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); width: min(320px, calc(100vw - 20px)); max-height: calc(100vh - 70px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 70px); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: 12px 14px; display: none; }
-  .rs-panel h4 { margin: 10px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7082; }
-  .rs-panel h4:first-child { margin-top: 0; }
-  .rs-code { font: 700 26px ui-monospace, Menlo, monospace; letter-spacing: 0.12em; }
-  .rs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
-  .rs-link { flex: 1; min-width: 0; font: 12px ui-monospace, Menlo, monospace; padding: 4px 6px; border: 1px solid #d6dbe6; border-radius: 8px; background: #f7f8fb; color: #2b2b3a; }
-  .rs-input { width: 90px; font: 700 15px ui-monospace, Menlo, monospace; letter-spacing: 0.1em; text-transform: uppercase; padding: 4px 8px; border: 1px solid #d6dbe6; border-radius: 8px; }
-  .rs-err { color: #b0413e; font-size: 12px; }
-  .rs-ok { color: #2f7d4f; font-size: 12px; }
-  .rs-warn { color: #9a6200; font-size: 12px; }
-  .rs-invite { margin: 6px 0; padding: 8px 10px; border-radius: 12px; background: #f4f7f2; border: 1px solid #e1e8dc; }
-  .rs-person { display: flex; align-items: center; gap: 8px; width: 100%; margin: 2px 0; padding: 4px 6px; border: 1px solid transparent; border-radius: 10px; background: none; text-align: left; font: 13px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; cursor: pointer; }
-  .rs-person:hover { background: #f1f3f8; }
-  .rs-person.sel { border-color: #d6dbe6; background: #f4f7f2; cursor: default; }
+  .rs-corner { position: fixed; left: calc(var(--rs-safe-l) + 10px); bottom: calc(var(--rs-safe-b) + 10px); z-index: 5; }
+  .rs-hint { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 10px; border: none; border-radius: 999px; font: 600 12px var(--rs-font); color: var(--rs-sub); cursor: pointer; }
+  body.rs-touch .rs-corner { display: none; }
+  .rs-fps { position: fixed; left: 50%; bottom: calc(var(--rs-safe-b) + 4px); transform: translateX(-50%); padding: 1px 8px; border-radius: 8px; background: rgba(42,41,68,0.6); color: #fff; font: 11px ui-monospace, Menlo, monospace; pointer-events: none; z-index: 5; display: none; }
+  .rs-hint kbd, .rs-help kbd { display: inline-block; padding: 0 6px; border-radius: 6px; background: var(--rs-wash); border: 1px solid var(--rs-line); font: 11px ui-monospace, Menlo, monospace; color: var(--rs-ink); }
+  .rs-sheet.rs-card { z-index: 8; }
+  .rs-sheet .x { flex: none; }
+  .rs-code { font: 800 30px ui-monospace, Menlo, monospace; letter-spacing: 0.16em; text-align: center; padding: 8px 0 4px; }
+  .rs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  .rs-link { flex: 1; min-width: 0; min-height: 34px; font: 12px ui-monospace, Menlo, monospace; padding: 4px 8px; border: 1.5px solid var(--rs-line); border-radius: var(--rs-r-sm); background: var(--rs-wash); color: var(--rs-ink); }
+  .rs-link:focus { border-color: var(--rs-lilac); outline: none; }
+  select.rs-link { font: 600 13px var(--rs-font); }
+  .rs-err { color: var(--rs-red-ink); font-size: 12px; }
+  .rs-err:empty { display: none; }
+  .rs-ok { color: var(--rs-mint-ink); font-size: 12px; font-weight: 700; }
+  .rs-warn { color: var(--rs-sun-ink); font-size: 12px; }
+  .rs-sub { color: var(--rs-sub); font-size: 12px; }
+  .rs-invite { margin: 6px 0; padding: 8px 10px; border-radius: var(--rs-r-md); background: var(--rs-mint-soft); }
+  .rs-person { display: flex; align-items: center; gap: 8px; width: 100%; margin: 2px 0; padding: 5px 8px; border: 1.5px solid transparent; border-radius: var(--rs-r-md); background: none; text-align: left; font: 13px var(--rs-font); color: var(--rs-ink); cursor: pointer; }
+  .rs-person:hover { background: var(--rs-wash); }
+  .rs-person.sel { border-color: var(--rs-line); background: var(--rs-mint-soft); cursor: default; }
   .rs-person .who { display: flex; flex-direction: column; min-width: 0; }
   .rs-person .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rs-person .tag { margin-left: auto; flex: none; font-size: 11px; color: #6b7082; }
-  .rs-people h5 { margin: 8px 0 2px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7082; }
-  .rs-blobbi { display: flex; align-items: center; gap: 8px; margin: 3px 0; padding: 4px 6px; border: 1px solid transparent; border-radius: 10px; }
-  .rs-blobbi.sel { border-color: #d6dbe6; background: #f4f7f2; }
-  .rs-blobbi .pic { flex: none; width: 34px; height: 34px; border-radius: 8px; background: #eef1f6; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .rs-person .tag { margin-left: auto; flex: none; font-size: 11px; color: var(--rs-sub); }
+  .rs-people h5 { margin: 10px 0 2px; font: 800 11px var(--rs-font); letter-spacing: 0.06em; text-transform: uppercase; color: var(--rs-faint); }
+  .rs-blobbi { display: flex; align-items: center; gap: 8px; margin: 3px 0; padding: 5px 8px; border: 1.5px solid transparent; border-radius: var(--rs-r-md); }
+  .rs-blobbi.sel { border-color: var(--rs-mint-edge); background: var(--rs-mint-soft); }
+  .rs-blobbi .pic { flex: none; width: 38px; height: 38px; border-radius: 12px; background: var(--rs-wash); display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .rs-blobbi .pic img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .rs-blobbi .pic span { width: 18px; height: 18px; border-radius: 50%; }
   .rs-blobbi .who { display: flex; flex-direction: column; min-width: 0; }
   .rs-blobbi .who b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rs-blobbi .rs-btn { margin-left: auto; flex: none; }
-  .rs-badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 999px; background: #e0794f; color: #fff; font: 700 11px ui-sans-serif, system-ui, sans-serif; text-align: center; }
-  .rs-sub { color: #6b7082; font-size: 12px; }
-  .rs-btn { font: 600 12px ui-sans-serif, system-ui, sans-serif; padding: 5px 11px; border: 1px solid #d6dbe6; border-radius: 9px; background: #fff; color: #2b2b3a; cursor: pointer; }
-  .rs-btn.go { border-color: #6fc38f; background: #6fc38f; color: #fff; }
-  .rs-players { display: grid; grid-template-columns: auto auto 1fr auto; gap: 4px 8px; align-items: center; }
-  .rs-players .slot { font: 600 11px ui-monospace, Menlo, monospace; color: #6b7082; }
-  .rs-players .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rs-avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; background: #eef1f6; }
+  .rs-avatar { display: inline-flex; flex: none; border-radius: 50%; overflow: hidden; background: var(--rs-wash); }
   .rs-avatar img, .rs-avatar svg { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .rs-help { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(400px, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 16px 20px; display: none; line-height: 1.8; }
-  .rs-help h3, .rs-start h3 { margin: 0 0 6px; font-size: 16px; letter-spacing: 0.05em; }
-  .rs-help .x { position: absolute; right: 10px; top: 8px; }
-  .rs-start { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(360px, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; padding: 18px 20px; text-align: center; display: none; }
-  .rs-start p { margin: 0 0 12px; color: #555a6e; }
-  .rs-start .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
-  .rs-start .id { margin-top: 12px; padding-top: 10px; border-top: 1px solid #eef1f6; font-size: 12px; color: #555a6e; }
-  .rs-consent { right: calc(env(safe-area-inset-right, 0px) + 10px); bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); width: min(340px, calc(100vw - 20px)); padding: 12px 14px; display: none; }
-  .rs-toasts { position: fixed; left: 50%; top: 80px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 7; }
-  .rs-toast { padding: 5px 12px; border-radius: 10px; background: rgba(43,43,58,0.85); color: #fff; font: 12px ui-sans-serif, system-ui, sans-serif; }
-  .rs-banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(210,225,245,0.55); backdrop-filter: blur(2px); z-index: 8; }
-  .rs-banner > div { max-width: 460px; margin: 16px; padding: 18px 22px; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 10px 40px rgba(40,50,80,0.25); font: 14px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; text-align: center; }
-  .rs-banner h2 { margin: 0 0 6px; font-size: 18px; }
-  .rs-banner p { margin: 0 0 12px; color: #555a6e; word-break: break-word; }
-  .rs-banner .rs-btn { margin: 3px; padding: 7px 14px; font-size: 13px; }
-  #hud { top: 52px !important; max-height: calc(100vh - 70px); overflow: auto; }
-  .rs-rotate { position: fixed; inset: 0; z-index: 9; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(210,225,245,0.92); backdrop-filter: blur(4px); text-align: center; font: 15px ui-sans-serif, system-ui, sans-serif; color: #2b2b3a; }
-  .rs-rotate .ph { width: 44px; height: 72px; margin: 0 auto 14px; border: 4px solid #2b2b3a; border-radius: 10px; animation: rs-turn 2.2s ease-in-out infinite; }
-  .rs-rotate h2 { margin: 0 0 6px; font-size: 20px; }
-  .rs-rotate p { margin: 0 0 14px; color: #555a6e; }
+  .rs-idcard { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: var(--rs-r-md); background: var(--rs-wash); }
+  .rs-idcard .pic { flex: none; width: 52px; height: 52px; border-radius: 16px; background: var(--rs-lilac-soft); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .rs-idcard .pic img { width: 100%; height: 100%; object-fit: contain; }
+  .rs-idcard .who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .rs-idcard .who b { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rs-help { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; overscroll-behavior: contain; touch-action: pan-y; padding: 16px 20px; display: none; line-height: 1.8; z-index: 9; }
+  .rs-help h3 { margin: 0 0 6px; font: 800 17px var(--rs-font); }
+  .rs-help .x { position: absolute; right: 10px; top: 10px; }
+  .rs-consent { right: calc(var(--rs-safe-r) + 10px); bottom: calc(var(--rs-safe-b) + 10px); width: min(340px, calc(100vw - 20px)); padding: 12px 14px; display: none; }
+  .rs-toasts { position: fixed; left: 50%; top: calc(var(--rs-safe-t) + 60px); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; z-index: 11; }
+  .rs-toast { padding: 6px 14px; border-radius: 999px; background: rgba(42,41,68,0.86); color: #fff; font: 600 12px var(--rs-font); box-shadow: var(--rs-shadow-sm); }
+  .rs-banner { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(226,232,250,0.6); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); z-index: 9; }
+  .rs-banner > div { width: min(440px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 20px 22px 18px; border-radius: var(--rs-r); background: var(--rs-card); box-shadow: var(--rs-shadow); font-size: 14px; text-align: center; }
+  .rs-banner .ic { font-size: 34px; line-height: 1; margin-bottom: 6px; }
+  .rs-banner .spin { width: 34px; height: 34px; margin: 0 auto 10px; border-radius: 50%; border: 4px solid var(--rs-lilac-soft); border-top-color: var(--rs-lilac); animation: rs-spin 0.9s linear infinite; }
+  @keyframes rs-spin { to { transform: rotate(360deg); } }
+  .rs-banner h2 { margin: 0 0 6px; font: 800 19px var(--rs-font); }
+  .rs-banner p { margin: 0 0 14px; color: var(--rs-sub); word-break: break-word; }
+  .rs-banner .acts { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .rs-banner.quiet { background: rgba(226,232,250,0.35); }
+  #hud { top: 60px !important; max-height: calc(100vh - 70px); overflow: auto; }
+  .rs-rotate { position: fixed; inset: 0; z-index: 12; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(226,232,250,0.94); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); text-align: center; font: 15px var(--rs-font); color: var(--rs-ink); }
+  .rs-rotate .ph { width: 44px; height: 72px; margin: 0 auto 14px; border: 4px solid var(--rs-ink); border-radius: 10px; animation: rs-turn 2.2s ease-in-out infinite; }
+  .rs-rotate h2 { margin: 0 0 6px; font: 800 20px var(--rs-font); }
+  .rs-rotate p { margin: 0 0 14px; color: var(--rs-sub); }
   @keyframes rs-turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
-  .rs-quality { display: inline-flex; gap: 0; border: 1px solid #d6dbe6; border-radius: 9px; overflow: hidden; }
-  .rs-quality .rs-btn { border: none; border-radius: 0; }
-  .rs-quality .rs-btn.go { background: #2b2b3a; color: #fff; }
-  @media (max-width: 860px) {
-    .rs-board { order: 3; flex-basis: 100%; justify-content: center; flex-wrap: wrap; background: none; box-shadow: none; padding: 0; }
+  @media (prefers-reduced-motion: reduce) { .rs-rotate .ph, .rs-banner .spin { animation: none; } }
+  .rs-quality { display: inline-flex; padding: 3px; gap: 2px; border-radius: var(--rs-r-md); background: var(--rs-wash); }
+  .rs-quality .rs-btn { border: none; background: none; min-height: 30px; padding: 4px 11px; color: var(--rs-sub); }
+  .rs-quality .rs-btn.go { background: #fff; color: var(--rs-ink); box-shadow: var(--rs-shadow-sm); }
+  /* Narrower screens: the scoreboard takes its own row under the corners. */
+  @media (max-width: 860px) and (min-height: 521px) {
+    .rs-top { flex-wrap: wrap; }
+    .rs-board { order: 3; flex-basis: 100%; justify-content: center; flex-wrap: wrap; background: none !important; box-shadow: none !important; padding: 0; -webkit-backdrop-filter: none; backdrop-filter: none; }
     .rs-pl { min-width: 54px; }
-    .rs-chip { max-width: 48vw; }
-    .rs-toasts { top: auto; bottom: 46px; }
-    .rs-panel { top: 108px; max-height: calc(100vh - 128px); }
-    #hud { top: 108px !important; }
   }
-  /* M12: a finger. Bigger targets, no iOS zoom on focus (16px fields), no browser gestures on the game. */
   @media (pointer: coarse) {
-    .rs-btn { padding: 8px 14px; font-size: 13px; min-height: 36px; }
     .rs-card input, .rs-card select, .rs-card textarea { font-size: 16px !important; }
-    .rs-chip { height: 36px; }
-    .rs-person, .rs-blobbi { min-height: 40px; }
+    .rs-person, .rs-blobbi { min-height: 44px; }
+    .rs-place, .rs-me, .rs-gear { height: 40px; min-height: 40px; }
+    .rs-gear { width: 40px; min-width: 40px; }
   }
-  /* Touch play: no pull-to-refresh or rubber-banding of the page; the gesture limits sit on the game's surfaces (the canvas, the controls), not here, so cards scroll and zoom as any page. */
+  /* Touch play: no pull-to-refresh or rubber-banding of the page; cards scroll and zoom as any page. */
   body.rs-touch { overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
-  body.rs-touch .rs-card, body.rs-touch .rs-card * { -webkit-user-select: text; user-select: text; }
-  body.rs-touch .rs-corner { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 52px); }
-  body.rs-touch .rs-gear { min-width: 36px; height: 32px; font-size: 18px; }
-  body.rs-touch .rs-hint { padding: 7px 12px; }
-  body.rs-touch .rs-settings { left: auto; bottom: auto; right: calc(env(safe-area-inset-right, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 92px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 102px); }
-  body.rs-touch .rs-fps { left: calc(env(safe-area-inset-left, 0px) + 10px); top: calc(env(safe-area-inset-top, 0px) + 50px); bottom: auto; transform: none; }
+  body.rs-touch .rs-card input, body.rs-touch .rs-card textarea, body.rs-touch .rs-link, body.rs-touch .rs-code { -webkit-user-select: text; user-select: text; }
+  body.rs-touch .rs-fps { left: calc(var(--rs-safe-l) + 10px); top: calc(var(--rs-safe-t) + 56px); bottom: auto; transform: none; }
   body.rs-touch .rs-struggle { display: none !important; }
-  body.rs-touch .rs-toasts { top: calc(env(safe-area-inset-top, 0px) + 54px); bottom: auto; }
-  body.rs-touch .rs-consent { right: auto; bottom: auto; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 54px); transform: translateX(-50%); }
-  /* A phone on its side: one slim top row; the board shrinks into it; cards fit the short height. */
+  body.rs-touch .rs-consent { right: auto; bottom: auto; left: 50%; top: calc(var(--rs-safe-t) + 56px); transform: translateX(-50%); }
+  /* A phone on its side: one slim top row; the board shrinks into it; everything clear of the stick and the buttons below. */
   @media (max-height: 520px) {
-    .rs-top { flex-wrap: nowrap; gap: 6px; font-size: 12px; }
-    .rs-board { order: 0; flex-basis: auto; flex-wrap: nowrap; padding: 2px; gap: 2px; background: rgba(255,255,255,0.6); box-shadow: none; min-width: 0; overflow: hidden; }
+    .rs-top { top: calc(var(--rs-safe-t) + 6px); gap: 6px; }
+    .rs-place, .rs-me { height: 38px; min-height: 38px; padding: 0 10px; gap: 6px; font-size: 12px; }
+    .rs-me { padding-left: 4px; }
+    .rs-gear { height: 38px; min-height: 38px; width: 38px; min-width: 38px; }
+    .rs-place { max-width: 34vw; }
+    .rs-board { flex-wrap: nowrap; padding: 2px; gap: 2px; overflow: hidden; flex-shrink: 1; }
     .rs-board .round { padding: 0 4px; font-size: 10px; }
-    .rs-pl { min-width: 0; max-width: 84px; padding: 1px 6px; flex-direction: row; gap: 4px; }
-    .rs-pl { flex-shrink: 0; }
+    .rs-pl { min-width: 0; max-width: 84px; padding: 1px 6px; flex-direction: row; gap: 4px; flex-shrink: 0; }
     .rs-pl .nm { font-size: 11px; max-width: 54px; flex-shrink: 0; }
-    .rs-top > .rs-chip { flex-shrink: 1; min-width: 0; }
-    .rs-board { flex-shrink: 0; }
     .rs-pl .sc { letter-spacing: 0; }
-    .rs-chip { height: 30px; padding: 0 10px; max-width: 30vw; }
-    .rs-msg { top: 18vh; font-size: 16px; padding: 6px 14px; }
-    .rs-panel { top: calc(env(safe-area-inset-top, 0px) + 46px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 56px); }
-    .rs-help, .rs-start { line-height: 1.5; padding: 12px 16px; }
-    #hud { top: 46px !important; }
-    body.rs-touch .rs-corner { top: calc(env(safe-area-inset-top, 0px) + 46px); }
-    body.rs-touch .rs-settings { top: calc(env(safe-area-inset-top, 0px) + 84px); max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 92px); }
-    body.rs-touch .rs-fps { top: calc(env(safe-area-inset-top, 0px) + 44px); }
-    body.rs-touch .rs-toasts, body.rs-touch .rs-consent { top: calc(env(safe-area-inset-top, 0px) + 46px); }
-    .rs-cue { bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important; font-size: 12px !important; max-width: 46vw; }
+    .rs-msg { top: 20vh; font-size: 16px; padding: 6px 14px; }
+    .rs-help { line-height: 1.5; padding: 12px 16px; }
+    .rs-toasts { top: calc(var(--rs-safe-t) + 52px); }
+    .rs-banner > div { padding: 14px 18px 12px; }
+    .rs-banner .ic { font-size: 26px; margin-bottom: 2px; }
+    .rs-banner p { margin-bottom: 10px; }
+    #hud { top: 52px !important; }
+    body.rs-touch .rs-fps { top: calc(var(--rs-safe-t) + 50px); }
+    body.rs-touch .rs-consent { top: calc(var(--rs-safe-t) + 52px); }
+    .rs-cue { bottom: calc(var(--rs-safe-b) + 8px) !important; font-size: 12px !important; max-width: 46vw; }
     .rs-cue > div { padding: 5px 10px !important; }
   }
-  /* A small phone on its side: the chips keep only what matters (the room, the Nostr button), the board keeps the names. */
+  /* A small phone on its side: the pill keeps the place, the profile only its picture, the board only the names. */
   @media (max-height: 520px) and (max-width: 760px) {
-    .rs-chip .dim { display: none; }
-    .rs-board .round { display: none; }
+    .rs-me .nm, .rs-board .round, .rs-place .car { display: none; }
+    .rs-me { padding-right: 4px; }
   }
   body.rs-touch .rs-cue { max-width: 46vw; text-align: center; }
 `;
@@ -346,76 +357,103 @@ const TOUCH_HELP: [string, string][] = [
   ['out of the round', 'the stick aims a banana peel, Throw throws it (3 a round, while 3+ still play)'],
 ];
 
-export function createShell(a: ShellActions) {
-  const style = el('style');
-  style.textContent = CSS + LOBBY_CSS + PLAZA_CSS;
-  document.head.appendChild(style);
+/** L4.2: the actions that take the player somewhere else: the open sheet closes first (it belonged to the place left). */
+const MOVES = ['enterPlaza', 'quickMatch', 'hostGame', 'joinGame', 'toMenu', 'openRoom', 'joinInvite', 'useServer'] as const;
 
-  // Top bar.
+export function createShell(actions: ShellActions) {
+  const a: ShellActions = { ...actions };
+  for (const k of MOVES) {
+    const f = actions[k] as (...x: unknown[]) => void;
+    (a as unknown as Record<string, (...x: unknown[]) => void>)[k] = (...x) => {
+      closeSheet();
+      f(...x);
+    };
+  }
+  const style = el('style');
+  style.textContent = THEME_CSS + CSS + LOBBY_CSS + PLAZA_CSS;
+  document.head.appendChild(style);
+  const defaultLook = (seat: string): RumbleLook => ({ seed: seedFromLabel(ROSTER.find((e) => e.label === seat)?.identity ?? seat), algorithm: 1 });
+
+  // Top bar: where you are (left), the scoreboard (middle, in a match), you and the settings (right).
   const top = el('div', 'rs-top');
-  const sessionChip = el('div', 'rs-chip');
-  const board = el('div', 'rs-board');
-  const idChip = el('div', 'rs-chip');
-  top.append(sessionChip, board, idChip);
+  const left = el('div', 'rs-left');
+  const place = el('button', 'rs-place rs-glass');
+  place.type = 'button';
+  place.setAttribute('aria-haspopup', 'dialog');
+  place.setAttribute('aria-expanded', 'false');
+  place.addEventListener('mousedown', (e) => e.preventDefault());
+  const board = el('div', 'rs-board rs-glass');
+  board.setAttribute('aria-label', 'Scoreboard');
+  const right = el('div', 'rs-right');
+  const me = el('button', 'rs-me rs-glass');
+  me.type = 'button';
+  me.setAttribute('aria-haspopup', 'dialog');
+  me.setAttribute('aria-expanded', 'false');
+  me.addEventListener('mousedown', (e) => e.preventDefault());
+  // M12.1: settings, always one tap away (graphics, FPS, camera, full screen; L4.2: the help and the servers too).
+  const gear = button('⚙', () => toggleSheet('settings'), 'rs-btn icon rs-gear rs-glass');
+  gear.title = 'Settings';
+  gear.setAttribute('aria-label', 'Settings');
+  gear.setAttribute('aria-haspopup', 'dialog');
+  gear.setAttribute('aria-expanded', 'false');
+  right.append(me, gear);
+  top.append(left, board, right);
   // Middle.
   const msg = el('div', 'rs-msg');
+  msg.setAttribute('role', 'status');
   const struggle = el('div', 'rs-struggle');
-  // Corners and cards.
+  // A desktop's quiet reminder of the help (a touch screen has it in the settings).
   const corner = el('div', 'rs-corner');
-  const hint = el('div', 'rs-hint');
-  // M12.1: settings, always one tap away (graphics, FPS, camera, full screen).
-  const gear = el('div', 'rs-gear', '⚙');
-  gear.title = 'Settings';
-  gear.setAttribute('role', 'button');
-  gear.setAttribute('aria-label', 'Settings');
-  const settings = el('div', 'rs-card rs-settings');
+  const hint = button('', () => toggleHelp(), 'rs-hint rs-glass');
+  hint.append(el('kbd', undefined, 'H'), document.createTextNode('Help'));
+  corner.append(hint);
   const fpsBox = el('div', 'rs-fps');
-  hint.append(el('kbd', undefined, 'H'), document.createTextNode(' Help'));
-  const panel = el('div', 'rs-card rs-panel');
-  const help = el('div', 'rs-card rs-help');
+  // L4.2: the one expandable panel at a time: the place (plaza menu, room, match), your profile, the settings.
+  const sheet = el('div', 'rs-card rs-ui rs-sheet left');
+  sheet.setAttribute('role', 'dialog');
+  const help = el('div', 'rs-card rs-ui rs-help');
+  help.setAttribute('role', 'dialog');
+  help.setAttribute('aria-label', 'How to play');
   // M8C-B.2: the one-time question about automatic invites (small, a corner, only until answered).
-  const consent = el('div', 'rs-card rs-consent');
+  const consent = el('div', 'rs-card rs-ui rs-consent');
   const toasts = el('div', 'rs-toasts');
+  toasts.setAttribute('role', 'status');
+  toasts.setAttribute('aria-live', 'polite');
   const banner = el('div', 'rs-banner');
   const bannerBox = el('div');
+  bannerBox.setAttribute('role', 'alertdialog');
+  bannerBox.setAttribute('aria-live', 'assertive');
   banner.appendChild(bannerBox);
   // M12: the friendly ask to turn a phone held upright (the match goes on behind it).
   const rotate = el('div', 'rs-rotate');
   const rotateBox = el('div');
   rotateBox.append(el('div', 'ph'), el('h2', undefined, 'Rotate your phone'), el('p', undefined, 'Blobbi Rumble is made for landscape: the whole arena, and room for both thumbs. Your match keeps going meanwhile.'), button('Play in portrait anyway', () => a.dismissRotate()));
   rotate.appendChild(rotateBox);
-  corner.append(gear, hint);
-  // L3: the lobby's card, countdown, results and waiting chip (drawn from the server's lobby message).
-  let shareNow: string | null = null;
+  // L3: the lobby's room bar, countdown, results and waiting chip (drawn from the server's lobby message).
   const lobbyUi = createLobbyUi(
     {
       ready: (on) => a.lobbyReady(on),
       start: () => a.lobbyStart(),
       settings: (change) => a.lobbySettings(change),
-      openSession: () => togglePanel(true),
-      copyLink: async () => {
-        if (!shareNow) return;
-        if ((await copyText(shareNow)) === 'copied') toast('Link copied');
-        else {
-          toast(`Copy the link from the room panel (${copyShortcut()})`);
-          togglePanel(true);
-        }
-      },
+      openRoom: (tab) => openSheet('place', tab),
     },
-    { preview: lookPreview, defaultLook: (seat) => ({ seed: seedFromLabel(ROSTER.find((e) => e.label === seat)?.identity ?? seat), algorithm: 1 }) },
+    { preview: lookPreview, defaultLook },
   );
-  // L4.1: the menu and the plaza card.
-  const plazaUi = createPlazaUi({
-    enterPlaza: () => a.enterPlaza(),
-    quickMatch: () => a.quickMatch(),
-    createRoom: () => a.hostGame(false),
-    joinRoom: (code) => a.joinGame(code),
-    toMenu: () => a.toMenu(),
-    openSession: () => togglePanel(true),
-    connectNostr: () => a.connectNostr(),
-    releaseKeys: () => a.releaseKeys(),
-  });
-  document.body.append(top, msg, struggle, corner, panel, help, consent, toasts, banner, rotate, settings, fpsBox, ...lobbyUi.nodes, ...plazaUi.nodes);
+  // L4.1: the menu, and the ways on that the sheets reuse.
+  const plazaUi = createPlazaUi(
+    {
+      enterPlaza: () => a.enterPlaza(),
+      quickMatch: () => a.quickMatch(),
+      createRoom: () => a.hostGame(false),
+      joinRoom: (code) => a.joinGame(code),
+      toMenu: () => a.toMenu(),
+      connectNostr: () => a.connectNostr(),
+      releaseKeys: () => a.releaseKeys(),
+    },
+    { preview: lookPreview, mascots: ['P2', 'P1', 'P3'].map(defaultLook) },
+  );
+  left.append(place, lobbyUi.bar);
+  document.body.append(top, msg, struggle, corner, sheet, help, consent, toasts, banner, rotate, fpsBox, ...lobbyUi.nodes, ...plazaUi.nodes);
 
   // The help card: built for keys, rebuilt for touch (M12).
   let touch = false;
@@ -428,7 +466,7 @@ export function createShell(a: ShellActions) {
     }
     help.append(el('div', 'rs-sub', 'Knock the others off the island: the last Blobbi standing wins the round; first to 3 rounds wins the match.'));
     if (touch) {
-      help.append(el('div', 'rs-sub', 'Keyboard works too (WASD, Space, F, G). Graphics and full screen: the session panel (tap the room chip).'));
+      help.append(el('div', 'rs-sub', 'Keyboard works too (WASD, Space, F, G). Graphics, camera and full screen: ⚙ Settings.'));
       return;
     }
     const dbg = el('div', 'rs-sub');
@@ -438,84 +476,63 @@ export function createShell(a: ShellActions) {
   buildHelp();
 
   let helpOpen = false;
-  let panelOpen = false;
-  let settingsOpen = false;
-  let lastSettings = '';
+  /** L4.2: which sheet is open (one at a time), and the part of the place sheet shown. */
+  let sheetKind: SheetKind | null = null;
+  let roomTab: RoomTab = 'players';
+  let lastSheet = '';
+  const triggers: Record<SheetKind, HTMLElement> = { place, profile: me, settings: gear };
   const toggleHelp = (open = !helpOpen) => {
     helpOpen = open;
     help.style.display = open ? 'block' : 'none';
-    if (open) toggleSettings(false);
+    if (open) closeSheet();
   };
-  const togglePanel = (open = !panelOpen) => {
-    panelOpen = open;
-    panel.style.display = open ? 'block' : 'none';
-    lastPanel = '';
-    if (open) toggleSettings(false);
+  const openSheet = (kind: SheetKind, tab?: RoomTab) => {
+    sheetKind = kind;
+    if (tab) roomTab = tab;
+    sheet.className = `rs-card rs-ui rs-sheet ${kind === 'place' ? 'left' : 'right'}`;
+    sheet.setAttribute('aria-label', kind === 'place' ? 'Room' : kind === 'profile' ? 'Your profile' : 'Settings');
+    sheet.style.display = 'block';
+    for (const [k, t] of Object.entries(triggers)) t.setAttribute('aria-expanded', String(k === kind));
+    lastSheet = '';
+    toggleHelp(false);
   };
-  const toggleSettings = (open = !settingsOpen) => {
-    settingsOpen = open;
-    settings.style.display = open ? 'block' : 'none';
-    lastSettings = '';
-    if (open) {
-      // One card at a time: settings over the arena, nothing else.
-      helpOpen = false;
-      help.style.display = 'none';
-      panelOpen = false;
-      panel.style.display = 'none';
-    }
+  const closeSheet = () => {
+    if (!sheetKind) return;
+    const was = sheetKind;
+    sheetKind = null;
+    sheet.style.display = 'none';
+    for (const t of Object.values(triggers)) t.setAttribute('aria-expanded', 'false');
+    // The keyboard was inside: it goes back to the button that opened the sheet.
+    if (sheet.contains(document.activeElement)) triggers[was].focus();
   };
-  hint.addEventListener('click', () => toggleHelp());
-  gear.addEventListener('click', (e) => {
+  const toggleSheet = (kind: SheetKind, tab?: RoomTab) => (sheetKind === kind && (!tab || tab === roomTab) ? closeSheet() : openSheet(kind, tab));
+  place.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleSettings();
+    toggleSheet('place');
   });
-  sessionChip.addEventListener('click', () => togglePanel());
-  idChip.addEventListener('click', () => togglePanel(true));
+  me.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSheet('profile');
+  });
+  // A press anywhere outside the open sheet (the arena, mostly) closes it; the top bar, cards and the banner keep it.
+  document.addEventListener('pointerdown', (e) => {
+    if (!sheetKind) return;
+    const t = e.target as Node | null;
+    if (t && (sheet.contains(t) || top.contains(t) || banner.contains(t) || help.contains(t) || consent.contains(t))) return;
+    closeSheet();
+  });
   window.addEventListener('keydown', (e) => {
-    if (isTyping(e)) return;
-    if (e.code === 'KeyH') toggleHelp();
     if (e.code === 'Escape') {
-      toggleHelp(false);
-      togglePanel(false);
-      toggleSettings(false);
+      // A field keeps its Escape (it lets go of the keyboard); otherwise the topmost card goes, and the keyboard with it.
+      if (isTyping(e)) return;
+      if (helpOpen) toggleHelp(false);
+      else if (sheetKind) closeSheet();
+      else if ((document.activeElement as HTMLElement | null)?.closest?.('.rs-top, .rs-card, .rs-menu, .rs-banner')) (document.activeElement as HTMLElement).blur();
+      return;
     }
+    if (isTyping(e)) return;
+    if (e.code === 'KeyH' && !e.repeat) toggleHelp();
   });
-
-  // A room-code field: owns the keyboard while focused, Enter joins, Escape leaves it.
-  const codeField = (onJoin: () => void) => {
-    const input = el('input', 'rs-input');
-    input.maxLength = 6;
-    input.placeholder = 'CODE';
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    // Phones: capitals, no autocorrect, and a Go key.
-    input.autocapitalize = 'characters';
-    input.setAttribute('autocorrect', 'off');
-    input.enterKeyHint = 'go';
-    input.addEventListener('focus', () => a.releaseKeys());
-    input.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') onJoin();
-      if (e.key === 'Escape') input.blur();
-    });
-    return input;
-  };
-  const joinRow = (err: HTMLElement) => {
-    const row = el('div', 'rs-row');
-    const input = codeField(() => join());
-    const join = () => {
-      const id = normalizeRoomId(input.value);
-      if (!id) {
-        err.textContent = 'Room codes look like A7F2 (4 letters and numbers).';
-        return;
-      }
-      err.textContent = '';
-      input.blur();
-      a.joinGame(id);
-    };
-    row.append(input, button('Join', join, 'rs-btn go'));
-    return row;
-  };
 
   let toastCount = 0;
   const toast = (text: string, ms = 4000) => {
@@ -530,12 +547,11 @@ export function createShell(a: ShellActions) {
 
   const label = (v: ShellView, slot: string) => v.nameOf(slot) ?? slot;
 
-  let lastSession = '';
-  let lastId = '';
+  let lastPlace = '';
+  let lastMe = '';
   let lastBoard = '';
   let lastMsg = '';
   let lastStruggle = '';
-  let lastPanel = '';
   let lastConsent = false;
   let lastBanner = '';
 
@@ -637,8 +653,8 @@ export function createShell(a: ShellActions) {
     peopleBox.replaceChildren(...parts);
   };
   const inviteSection = (v: ShellView): Node[] => {
-    const out: Node[] = [el('h4', undefined, 'Invite a friend')];
-    if (v.invite.mode === 'guest') return [...out, el('div', 'rs-sub', 'Connect Nostr to send private invites. Or copy the link above.')];
+    const out: Node[] = [el('div', 'rs-sec', 'Invite a Nostr friend')];
+    if (v.invite.mode === 'guest') return [...out, el('div', 'rs-sub', 'Connect Nostr (your profile) to send private invites. Or share the code or the link above.')];
     if (v.invite.mode === 'no-nip44') return [...out, el('div', 'rs-sub', 'Your Nostr extension can’t encrypt private messages (NIP-44), so it can’t send invites. Copy the link above instead.')];
     const row = el('div', 'rs-row');
     const input = el('input', 'rs-link');
@@ -705,7 +721,7 @@ export function createShell(a: ShellActions) {
 
   const inboxSection = (v: ShellView, ib: NonNullable<ShellView['inbox']>): Node[] => {
     const st = ib.state;
-    const out: Node[] = [el('h4', undefined, `Invites${ib.cards.length ? ` (${ib.cards.length})` : ''}`)];
+    const out: Node[] = [el('div', 'rs-sec', `Invites${ib.cards.length ? ` (${ib.cards.length})` : ''}`)];
     const explain = 'Checking decrypts a few recent private Nostr messages on this device to find Blobbi Rumble invites. Other messages are not shown or kept.';
     switch (st.phase) {
       case 'no-nip44':
@@ -770,7 +786,7 @@ export function createShell(a: ShellActions) {
 
   /** M9A: the player's Blobbis (kind 31124 by this identity, through the kit), and a local choice among them; M9B: the form the chosen one takes here. */
   const blobbiSection = (ps: PickerState, form: RumbleForm | null, note: 'worn' | 'default' | 'refused', shared: boolean): Node[] => {
-    const out: Node[] = [el('h4', undefined, 'My Blobbis')];
+    const out: Node[] = [el('div', 'rs-sec', 'My Blobbis')];
     const stageWord = { egg: 'Egg', baby: 'Baby', adult: 'Adult' } as const;
     switch (ps.phase) {
       case 'idle':
@@ -977,7 +993,7 @@ export function createShell(a: ShellActions) {
       row.appendChild(
         button(st.active ? 'Exit full screen' : 'Full screen', async () => {
           if (!(await toggleFullscreen(document as never, document.documentElement as never))) toast('This browser did not allow full screen');
-          lastPanel = lastSettings = '';
+          lastSheet = '';
         }),
       );
       out.push(row);
@@ -986,29 +1002,17 @@ export function createShell(a: ShellActions) {
     if (note) out.push(el('div', 'rs-sub', note));
     return out;
   };
-  const graphicsSection = (v: ShellView): Node[] => {
+  const graphicsNodes = (v: ShellView): Node[] => {
     graphicsLines.length = 0;
-    return [el('h4', undefined, 'Graphics'), qualityRow(v), liveLine(v), el('div', 'rs-sub', 'Lower settings draw fewer pixels and a coarser shadow; the game and its rules are the same at every level.'), ...displayNodes()];
-  };
-  const renderSettings = (v: ShellView) => {
-    graphicsLines.length = 0;
-    const parts: Node[] = [button('✕', () => toggleSettings(false), 'rs-btn x'), el('h4', undefined, 'Graphics'), qualityRow(v), liveLine(v)];
-    parts.push(el('div', 'rs-sub', v.graphics.choice === 'auto' ? 'Auto follows how the device keeps up; pick a level to fix it (remembered on this device).' : 'Fixed by you (remembered on this device). Auto adapts to the device.'));
-    parts.push(el('h4', undefined, 'Performance'));
-    const fpsRow = el('div', 'rs-row');
-    fpsRow.append(button(v.fps ? '✓ FPS counter' : 'FPS counter', () => a.setFps(!v.fps), v.fps ? 'rs-btn go' : 'rs-btn'));
-    parts.push(fpsRow);
-    if (touch) {
-      parts.push(el('h4', undefined, 'Camera'));
-      const camRow = el('div', 'rs-row');
-      camRow.append(button('Recenter camera', () => a.recenterCamera()));
-      parts.push(camRow, el('div', 'rs-sub', 'Drag a finger across the arena (away from the stick and the buttons) to turn the camera.'));
-    }
-    parts.push(el('h4', undefined, 'Display'), ...displayNodes());
-    settings.replaceChildren(...parts);
+    return [
+      el('div', 'rs-sec', 'Graphics'),
+      qualityRow(v),
+      liveLine(v),
+      el('div', 'rs-sub', v.graphics.choice === 'auto' ? 'Auto follows how the device keeps up; pick a level to fix it (remembered on this device). The game and its rules are the same at every level.' : 'Fixed by you (remembered on this device). Auto adapts to the device.'),
+    ];
   };
   const refreshGraphics = () => {
-    if (!graphicsLines.length || !graphicsInfo || (!panelOpen && !settingsOpen)) return;
+    if (!graphicsLines.length || !graphicsInfo || sheetKind !== 'settings') return;
     const now = performance.now();
     if (now - graphicsAt < 1000) return;
     graphicsAt = now;
@@ -1017,101 +1021,168 @@ export function createShell(a: ShellActions) {
     for (const line of graphicsLines) if (line.isConnected) line.textContent = text;
   };
   const onFullscreen = () => {
-    lastPanel = lastSettings = '';
+    lastSheet = '';
   };
   document.addEventListener('fullscreenchange', onFullscreen);
   document.addEventListener('webkitfullscreenchange', onFullscreen);
   let fpsAt = 0;
 
-  const renderPanel = (v: ShellView) => {
-    const parts: Node[] = [];
-    // Room.
-    parts.push(el('h4', undefined, 'Room'));
-    if (v.room?.arena) parts.push(el('div', 'rs-sub', `${arenaById(v.room.arena)?.name ?? v.room.arena}${v.room.rotate ? ' · rotating between matches' : ''}`));
-    if (v.room && v.room.kind === 'private') {
-      parts.push(el('div', 'rs-code', v.room.id));
-      if (v.share) {
-        const row = el('div', 'rs-row');
-        const link = el('input', 'rs-link');
-        link.readOnly = true;
-        link.value = v.share;
-        link.addEventListener('focus', () => {
-          link.select();
-          a.releaseKeys();
-        });
-        const hint = el('div', 'rs-sub', 'Anyone with the link or the code joins this room.');
-        // Copied by hand (the shortcut, or the context menu): say so, and give the keyboard back to the game.
-        link.addEventListener('copy', () => {
-          toast('Link copied');
-          setTimeout(() => link.blur(), 0);
-        });
-        link.addEventListener('keydown', (e) => {
-          e.stopPropagation();
-          if (e.key === 'Escape' || e.key === 'Enter') link.blur();
-        });
-        /** Where one-click copy is impossible (plain http on a LAN) or refused: select the link and say which keys copy it. */
-        const selectForCopy = () => {
-          link.focus();
-          link.select();
-          hint.textContent = `Link selected: press ${copyShortcut()} to copy it.${canCopy() ? '' : ' (One-click copy needs https or localhost.)'}`;
-        };
-        row.append(
-          link,
-          canCopy()
-            ? button('Copy link', async () => ((await copyText(v.share!)) === 'copied' ? toast('Link copied') : selectForCopy()), 'rs-btn go')
-            : button('Select link', selectForCopy, 'rs-btn go'),
-        );
-        parts.push(row, hint);
-      }
-      parts.push(el('div', 'rs-row'));
-      (parts.at(-1) as HTMLElement).append(button('Back to the open room', a.openRoom));
-      parts.push(...hostForm());
-      parts.push(...inviteSection(v));
-    } else if (v.room?.kind === 'plaza') {
-      // L4.1: the public plaza: no code to share (everyone on this server can come), the ways on from here.
-      parts.push(el('div', 'rs-sub', 'Blobbi Plaza: the public square of this server. Anyone can come here to walk around and meet other Blobbis.'));
-      parts.push(...hostForm());
-    } else {
-      parts.push(el('div', 'rs-sub', 'Quick Match: anyone who chooses it on this server plays here, with bots in the empty slots.'));
-      parts.push(...hostForm());
-      parts.push(el('div', 'rs-sub', 'A public game is listed below for anyone on this server; a private one is reached by its code or link only (a code is an address, not a secret).'));
+  /** A picture of a look, drawn once and kept (the profile button, the profile card). */
+  const lookPictures = new Map<string, string | null>();
+  const lookPic = (look: RumbleLook, cls = 'pic') => {
+    const box = el('span', cls);
+    const key = `${look.seed}|${look.colors ? JSON.stringify(look.colors) : ''}`;
+    const put = (src: string | null) => {
+      if (!src) return;
+      const img = el('img');
+      img.alt = '';
+      img.src = src;
+      box.replaceChildren(img);
+    };
+    if (lookPictures.has(key)) put(lookPictures.get(key)!);
+    else
+      void lookPreview(look).then((src) => {
+        lookPictures.set(key, src);
+        put(src);
+      });
+    return box;
+  };
+  /** This player's fighter as it looks: their Blobbi's form when worn, else their seat's default fighter (P1's on the menu). */
+  const myLook = (v: ShellView): RumbleLook => (v.blobbis?.form && v.blobbis.note !== 'refused' ? v.blobbis.form.look : defaultLook(v.you ?? 'P1'));
+
+  /** A sheet's header: its title and a line under it, and the close button. */
+  const sheetHead = (title: string, sub: string | null, lead?: Node): HTMLElement => {
+    const hd = el('div', 'hd');
+    const words = el('div', 'ttl');
+    words.append(el('h3', undefined, title));
+    if (sub) words.append(el('span', 'rs-sub', sub));
+    const x = button('✕', closeSheet, 'rs-btn icon soft x');
+    x.setAttribute('aria-label', 'Close');
+    if (lead) hd.append(lead);
+    hd.append(words, x);
+    return hd;
+  };
+  const sec = (text: string) => el('div', 'rs-sec', text);
+  /** A folding part of a sheet (rarely needed things: other rooms, hosting options, servers). */
+  const fold = (title: string, nodes: Node[]): HTMLElement => {
+    const d = el('details');
+    d.append(el('summary', undefined, title), ...nodes);
+    return d;
+  };
+
+  /** The room's code, its link, and the Nostr invitations (one place for all of them). */
+  const inviteNodes = (v: ShellView): Node[] => {
+    const out: Node[] = [];
+    if (!v.room || v.room.kind !== 'private') return [el('div', 'rs-sub', 'Only a private room has a code to share.')];
+    out.push(sec('Room code'), el('div', 'rs-code', v.room.id));
+    const acts = el('div', 'rs-grid2');
+    acts.append(button('Copy code', async () => toast((await copyText(v.room!.id)) === 'copied' ? 'Code copied' : `Code: ${v.room!.id}`)));
+    if (v.share) {
+      const link = el('input', 'rs-link');
+      link.readOnly = true;
+      link.value = v.share;
+      link.setAttribute('aria-label', 'Invitation link');
+      const hint = el('div', 'rs-sub', 'Anyone with the link or the code joins this room.');
+      link.addEventListener('focus', () => {
+        link.select();
+        a.releaseKeys();
+      });
+      // Copied by hand (the shortcut, or the context menu): say so, and give the keyboard back to the game.
+      link.addEventListener('copy', () => {
+        toast('Link copied');
+        setTimeout(() => link.blur(), 0);
+      });
+      link.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape' || e.key === 'Enter') link.blur();
+      });
+      /** Where one-click copy is impossible (plain http on a LAN) or refused: select the link and say which keys copy it. */
+      const selectForCopy = () => {
+        link.focus();
+        link.select();
+        hint.textContent = `Link selected: press ${copyShortcut()} to copy it.${canCopy() ? '' : ' (One-click copy needs https or localhost.)'}`;
+      };
+      acts.append(canCopy() ? button('Copy link', async () => ((await copyText(v.share!)) === 'copied' ? toast('Link copied') : selectForCopy()), 'rs-btn go') : button('Select link', selectForCopy, 'rs-btn go'));
+      const row = el('div', 'rs-row');
+      row.append(link);
+      out.push(acts, row, hint);
+    } else out.push(acts);
+    out.push(...inviteSection(v));
+    return out;
+  };
+
+  /** Where else to go: the plaza, Quick Match, a new room, a code; the public rooms and hosting options folded away. */
+  const elsewhereNodes = (v: ShellView, from: 'plaza' | 'elsewhere'): Node[] => [plazaUi.ways(from), fold('Public rooms on this server', roomsSection(v)), fold('Host a game (arena, public or private)', hostForm())];
+
+  /** The tabs of a room's sheet; the chosen one lit. */
+  const tabs = (list: [RoomTab, string][]): HTMLElement => {
+    const bar = el('div', 'rs-tabs');
+    bar.setAttribute('role', 'tablist');
+    for (const [t, words] of list) {
+      const b = button(words, () => {
+        roomTab = t;
+        lastSheet = '';
+      });
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', String(t === roomTab));
+      bar.append(b);
     }
-    const err = el('div', 'rs-err');
-    parts.push(el('div', 'rs-sub', 'Join a game by its code:'), joinRow(err), err);
-    parts.push(...roomsSection(v));
-    // Players.
-    parts.push(el('h4', undefined, 'Players'));
-    const list = el('div', 'rs-players');
-    for (const [slot, id] of Object.entries(v.roster ?? {})) {
-      const mine = slot === v.you;
-      let name: string;
-      let pic: HTMLElement;
-      let tag = mine ? 'you' : '';
-      if (id.who === 'nostr') {
-        const p = v.profile(id.pubkey);
-        name = clip(displayName(p, id.pubkey), 22);
-        pic = avatar(id.pubkey, p?.picture, 18);
-        // M9D: the person, then the Blobbi their fighter wears (its Rumble form), kept apart.
-        const b = v.blobbiNameOf(slot);
-        tag = `${mine ? 'you · ' : ''}nostr${b ? ` · ${clip(b, 16)} (Rumble form)` : ''}`;
-      } else {
-        name = id.who === 'bot' ? 'Bot' : id.who === 'empty' ? 'Empty seat' : 'Guest';
-        pic = avatar(null, undefined, 18);
-      }
-      list.append(el('span', 'slot', slot), pic, el('span', 'nm', name), el('span', 'rs-sub', tag));
+    return bar;
+  };
+
+  /** L4.2: the place sheet: the plaza's menu, a room's players / settings / invitations / other rooms, Quick Match's players. */
+  const placeNodes = (v: ShellView, hv: HudView, lv: LobbyView | null): Node[] => {
+    const menuFoot = () => {
+      const f = el('div', 'foot');
+      f.append(button('⌂ Main menu', () => a.toMenu(), 'rs-btn soft'));
+      return f;
+    };
+    if (hv.context === 'plaza' && v.plaza) {
+      return [sheetHead('Blobbi Plaza', `${v.plaza.here} of ${v.plaza.capacity} here · everyone sees your name and your Blobbi`), sec('Play'), ...elsewhereNodes(v, 'plaza'), menuFoot()];
     }
-    parts.push(list);
-    if (v.spectators) parts.push(el('div', 'rs-sub', v.lobby ? `${v.spectators} waiting for next match` : `${v.spectators} watching`));
-    // Identity.
-    parts.push(el('h4', undefined, 'You'));
+    if (hv.context === 'away' || !v.room) return [sheetHead(hv.name, 'Not connected'), ...elsewhereNodes(v, 'elsewhere'), menuFoot()];
+    const priv = v.room.kind === 'private';
+    const list: [RoomTab, string][] = priv ? [['players', `Players`], ['settings', 'Settings'], ['invite', 'Invite'], ['rooms', 'Leave']] : [['players', 'Players'], ['rooms', 'Leave']];
+    if (!list.some(([t]) => t === roomTab)) roomTab = 'players';
+    const sub = lv ? (lv.status || (lv.mode === 'hidden' ? 'Match in progress' : '')) : 'Anyone on this server can join · bots fill the empty seats';
+    const out: Node[] = [sheetHead(priv ? `Room ${v.room.id}` : 'Quick Match', sub || null), tabs(list)];
+    if (roomTab === 'players') {
+      if (lv) out.push(...lobbyUi.players(lv));
+      else {
+        const names = (pk: string) => clip(displayName(v.profile(pk), pk), 22);
+        out.push(...lobbyUi.seats(rosterSeats(v.roster, v.you, names, (slot) => (v.blobbiNameOf(slot) ? clip(v.blobbiNameOf(slot)!, 18) : null))));
+        if (v.spectators) out.push(el('div', 'rs-note', `${v.spectators} watching`));
+      }
+    } else if (roomTab === 'settings') {
+      if (lv) out.push(...lobbyUi.settings(lv));
+      else out.push(el('div', 'rs-arena-now', `${arenaById(v.room.arena ?? '')?.name ?? 'Classic'}${v.room.rotate ? ' · rotating between matches' : ''}`));
+    } else if (roomTab === 'invite') out.push(...inviteNodes(v));
+    else out.push(sec('Go somewhere else'), ...elsewhereNodes(v, 'elsewhere'), menuFoot());
+    return out;
+  };
+
+  /** L4.2: the profile sheet: who you are (a name, never a key), your Blobbi, your invitations. */
+  const profileNodes = (v: ShellView): Node[] => {
     const s = v.identity;
     const own = s.pubkey ? v.profile(s.pubkey) : undefined;
+    const out: Node[] = [];
+    const card = el('div', 'rs-idcard');
+    const who = el('div', 'who');
+    const verified = s.phase === 'verified' && !!s.pubkey;
+    who.append(el('b', undefined, verified ? clip(displayName(own, s.pubkey!), 28) : 'Guest'));
+    const blobbi = v.blobbis?.form && v.blobbis.note !== 'refused' ? v.blobbis.form.blobbi.name : null;
+    who.append(el('span', 'rs-sub', blobbi ? `Playing as ${clip(blobbi, 22)}` : 'Playing the default Blobbi'));
+    card.append(lookPic(myLook(v)), who);
+    out.push(sheetHead('Your profile', null), card);
+    // Identity.
+    out.push(sec('Nostr'));
     const row = el('div', 'rs-row');
-    if (s.phase === 'verified' && s.pubkey) {
-      const who = el('span');
-      who.append(el('div', undefined, clip(displayName(own, s.pubkey), 28)), el('div', 'rs-sub', shortNpub(s.pubkey, 8, 6)));
-      who.title = npubOf(s.pubkey);
-      row.append(avatar(s.pubkey, own?.picture, 26), who, button('Disconnect Nostr', a.disconnectNostr));
+    if (verified) {
+      const id = el('span');
+      id.append(avatar(s.pubkey!, own?.picture, 22));
+      const words = el('span', 'rs-sub', shortNpub(s.pubkey!, 8, 6));
+      words.title = npubOf(s.pubkey!);
+      row.append(id, words, button('Disconnect', a.disconnectNostr, 'rs-btn soft'));
     } else if (s.phase === 'error') {
       row.append(el('span', 'rs-err', s.error ?? 'Something went wrong.'), button('Try again', a.connectNostr, 'rs-btn go'), button('Play as guest', a.dismissIdentityError));
     } else if (s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring') {
@@ -1119,24 +1190,18 @@ export function createShell(a: ShellActions) {
     } else if (s.phase === 'changed' && s.pubkey && s.other) {
       const o = v.profile(s.other);
       row.append(avatar(s.other, o?.picture, 22), el('span', undefined, `Your extension is signed in as ${clip(displayName(o, s.other), 20)}, not ${clip(displayName(own, s.pubkey), 20)}.`));
-      parts.push(row);
+      out.push(row);
       const acts = el('div', 'rs-row');
       acts.append(button(`Connect as ${clip(displayName(o, s.other), 16)}`, a.connectOtherNostr, 'rs-btn go'), button('Not now', a.dismissOtherNostr), button('Forget', a.disconnectNostr));
-      parts.push(acts);
-      parts.push(el('div', 'rs-sub', 'Nothing switched by itself: your saved Blobbi and invites belong to the remembered identity.'));
-      parts.push(el('h4', undefined, 'Server'));
-      if (v.trust) {
-        parts.push(el('div', undefined, `${v.trust.label} · ${v.trust.host}`));
-        parts.push(el('div', 'rs-sub', v.trust.detail));
-      }
-      panel.replaceChildren(...parts);
-      return;
+      out.push(acts, el('div', 'rs-sub', 'Nothing switched by itself: your saved Blobbi and invites belong to the remembered identity.'));
+      return out;
     } else if (s.phase === 'known' && s.pubkey) {
       row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'), button('Forget', a.disconnectNostr));
     } else {
-      row.append(el('span', undefined, 'Guest'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
+      row.append(button('Connect Nostr', a.connectNostr, 'rs-btn go'));
+      out.push(row, el('div', 'rs-sub', 'Connect to play as your own Blobbi, send private invites and receive them. As a guest you play the default Blobbi.'));
     }
-    parts.push(row);
+    if (!out.includes(row)) out.push(row);
     if (v.diag) {
       const box = el('details');
       box.append(el('summary', 'rs-sub', `Nostr diagnostics (${v.diag.length} lines, development only)`));
@@ -1146,64 +1211,105 @@ export function createShell(a: ShellActions) {
       const text = v.diag.join('\n');
       r.append(button('Copy diagnostics', async () => void ((await copyText(text)) === 'copied' && toast('Diagnostics copied'))));
       box.append(pre, r);
-      parts.push(box);
+      out.push(box);
     }
-    if (v.blobbis && s.phase === 'verified') parts.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note, v.blobbis.shared));
-    if (v.inbox) parts.push(...inboxSection(v, v.inbox));
-    parts.push(...graphicsSection(v));
-    // Server.
-    parts.push(el('h4', undefined, 'Server'));
-    if (v.trust) {
-      parts.push(el('div', undefined, `${v.trust.label} · ${v.trust.host}`));
-      if (v.server?.name) parts.push(el('div', 'rs-sub', `Calls itself “${v.server.name}”`));
-      if (v.server?.operator) {
-        const p = v.profile(v.server.operator);
-        parts.push(el('div', 'rs-sub', `Operator (as the server states): ${clip(displayName(p, v.server.operator), 28)}`));
-      }
-      parts.push(el('div', 'rs-sub', v.trust.detail));
-    }
-    parts.push(...serversSection(v));
-    panel.replaceChildren(...parts);
+    if (v.blobbis && verified) out.push(...blobbiSection(v.blobbis.state, v.blobbis.form, v.blobbis.note, v.blobbis.shared));
+    if (v.inbox) out.push(...inboxSection(v, v.inbox));
+    return out;
   };
 
+  /** L4.2: the settings sheet: graphics, the counter, the camera, full screen, the help, and the server. */
+  const settingsNodes = (v: ShellView): Node[] => {
+    const out: Node[] = [sheetHead('Settings', null), ...graphicsNodes(v)];
+    out.push(sec('Performance'));
+    const fpsRow = el('div', 'rs-row');
+    const fps = button(v.fps ? '✓ FPS counter' : 'FPS counter', () => a.setFps(!v.fps), v.fps ? 'rs-btn on' : 'rs-btn');
+    fps.setAttribute('aria-pressed', String(v.fps));
+    fpsRow.append(fps);
+    out.push(fpsRow);
+    if (touch) {
+      out.push(sec('Camera'));
+      const camRow = el('div', 'rs-row');
+      camRow.append(button('⟲ Recenter camera', () => a.recenterCamera()));
+      out.push(camRow, el('div', 'rs-sub', 'Drag a finger across the arena (away from the stick and the buttons) to turn the camera.'));
+    }
+    const display = displayNodes();
+    if (display.length) out.push(sec('Display'), ...display);
+    out.push(sec('Help'));
+    const helpRow = el('div', 'rs-row');
+    helpRow.append(button('How to play', () => toggleHelp(true)));
+    out.push(helpRow);
+    out.push(sec('Server'));
+    if (v.trust) {
+      out.push(el('div', undefined, `${v.trust.label} · ${v.trust.host}`));
+      if (v.server?.name) out.push(el('div', 'rs-sub', `Calls itself “${v.server.name}”`));
+      if (v.server?.operator) {
+        const p = v.profile(v.server.operator);
+        out.push(el('div', 'rs-sub', `Operator (as the server states): ${clip(displayName(p, v.server.operator), 28)}`));
+      }
+      out.push(el('div', 'rs-sub', v.trust.detail));
+    }
+    out.push(fold('Game servers', serversSection(v)));
+    return out;
+  };
+
+  /** The open sheet's contents, rebuilt only when something it shows changed, never under someone typing; a focused button keeps the focus. */
+  const renderSheet = (v: ShellView, hv: HudView, lv: LobbyView | null) => {
+    if (!sheetKind) return;
+    const s = v.identity;
+    const own = s.pubkey ? v.profile(s.pubkey) : undefined;
+    let key: string;
+    if (sheetKind === 'place') {
+      const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
+      key = JSON.stringify(['place', roomTab, hv, lv, v.plaza, v.roster, v.spectators, v.room, v.share, roomTab === 'rooms' ? v.servers.rooms : null, v.servers.roomsSupported, v.invite.mode, roomTab === 'invite' ? [v.invite, inviteWho] : null, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), v.you, touch]);
+    } else if (sheetKind === 'profile') {
+      const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
+      key = JSON.stringify(['profile', s, own, v.blobbis, inboxKey, v.diag?.length, v.you]);
+    } else key = JSON.stringify(['settings', v.graphics.choice, v.fps, touch, v.trust, v.server, v.server?.operator ? v.profile(v.server.operator) ?? null : null, v.servers.known, v.servers.current, v.servers.linkError, v.conn.phase]);
+    if (key === lastSheet) return;
+    const active = document.activeElement as HTMLElement | null;
+    if (active && sheet.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) return;
+    // A details folded open stays open across the rebuild.
+    const opened = new Set([...sheet.querySelectorAll('details')].filter((d) => d.open).map((d) => d.querySelector('summary')?.textContent ?? ''));
+    const focused = active && sheet.contains(active) ? active.textContent : null;
+    lastSheet = key;
+    sheet.replaceChildren(...(sheetKind === 'place' ? placeNodes(v, hv, lv) : sheetKind === 'profile' ? profileNodes(v) : settingsNodes(v)));
+    for (const d of sheet.querySelectorAll('details')) if (opened.has(d.querySelector('summary')?.textContent ?? '')) d.open = true;
+    if (focused !== null) [...sheet.querySelectorAll('button')].find((b) => b.textContent === focused)?.focus();
+  };
 
   return {
     toast,
-    openSession: () => togglePanel(true),
+    /** Open the place sheet (L4.2: at a part of it: the invitations, say). */
+    openSession: (tab?: RoomTab) => openSheet('place', tab),
     get helpOpen() {
       return helpOpen;
     },
+    /** Any sheet is open (the place, the profile or the settings). */
     get panelOpen() {
-      return panelOpen;
+      return sheetKind !== null;
     },
     get settingsOpen() {
-      return settingsOpen;
+      return sheetKind === 'settings';
     },
-    /** M12: something over the arena wants the player's fingers (a panel, a card, the banner, the rotate ask): the touch controls step aside. */
+    /** M12: something over the arena wants the player's fingers (a sheet, a card, the banner, the rotate ask): the touch controls step aside. */
     get modalOpen() {
-      return panelOpen || helpOpen || settingsOpen || lobbyUi.resultsOpen || plazaUi.menuOpen || banner.style.display === 'flex' || rotate.style.display === 'flex';
+      return sheetKind !== null || helpOpen || lobbyUi.resultsOpen || plazaUi.menuOpen || banner.style.display === 'flex' || rotate.style.display === 'flex';
     },
-    /** M12: the player plays by touch: touch help, the help chip as a button, no browser gestures on the game. */
+    /** M12: the player plays by touch: touch help, no browser gestures on the game. */
     setTouch(on: boolean) {
       if (on === touch) return;
       touch = on;
       document.body.classList.toggle('rs-touch', on);
-      hint.replaceChildren(...(on ? [document.createTextNode('? Help')] : [el('kbd', undefined, 'H'), document.createTextNode(' Help')]));
       buildHelp();
       lastStruggle = '';
+      lastSheet = '';
     },
     show(v: ShellView) {
       const c = v.conn;
       const rotateOn = v.rotate ? 'flex' : 'none';
       if (rotate.style.display !== rotateOn) rotate.style.display = rotateOn;
-      // M12.1: the settings card (rebuilt when its choices change) and the FPS counter (twice a second).
-      if (settingsOpen) {
-        const sk = JSON.stringify([v.graphics.choice, v.fps, touch]);
-        if (sk !== lastSettings) {
-          lastSettings = sk;
-          renderSettings(v);
-        }
-      }
+      // M12.1: the FPS counter (twice a second).
       refreshGraphics();
       const fpsDisplay = v.fps ? 'block' : 'none';
       if (fpsBox.style.display !== fpsDisplay) fpsBox.style.display = fpsDisplay;
@@ -1213,29 +1319,35 @@ export function createShell(a: ShellActions) {
         fpsBox.textContent = g ? `${g.fps.toFixed(0)} fps` : '… fps';
       }
       const healthy = c.phase === 'playing' || c.phase === 'watching';
-      // Session chip: room · server, and a dot for the connection (quiet when healthy).
-      const roomText = c.phase === 'idle' ? 'Menu' : v.room ? (v.room.kind === 'private' ? v.room.id : v.room.kind === 'plaza' ? 'Blobbi Plaza' : 'Quick Match') : c.room ?? '…';
-      const sKey = JSON.stringify([c.phase, roomText, v.trust?.label, !!v.lobby]);
-      if (sKey !== lastSession) {
-        lastSession = sKey;
-        const dot = el('span', `dot${healthy ? '' : c.phase === 'connecting' ? ' wait' : ' off'}`);
-        sessionChip.replaceChildren(dot, el('b', undefined, roomText), el('span', 'dim', `· ${healthy ? (v.trust?.label ?? 'server') : c.phase === 'connecting' ? 'connecting…' : c.phase === 'idle' ? 'not connected' : 'offline'}${c.phase === 'watching' ? (v.lobby ? ' · waiting for next match' : ' · watching') : ''}`));
-        sessionChip.title = 'Room, players, identity and server';
-      }
-      // Identity chip.
       const s = v.identity;
       const own = s.pubkey ? v.profile(s.pubkey) : undefined;
+      // L4.2: where the player is decides what the corners say.
+      const hv = hudView({ menu: v.menu, healthy, room: v.room, asked: c.room, lobby: v.lobby, roster: v.roster });
+      const lv = v.lobby ? lobbyView({ lobby: v.lobby, roster: v.roster, tick: v.tick, tickHz: v.tickHz, personName: (pk) => clip(displayName(v.profile(pk), pk), 22), blobbiNameOf: (slot) => (v.blobbiNameOf(slot) ? clip(v.blobbiNameOf(slot)!, 18) : null), keys: !touch }) : null;
+      if (hv.context === 'menu' && sheetKind === 'place') closeSheet();
+      // The place pill: the place, its counts, a dot while not connected.
+      const pKey = JSON.stringify([hv, c.phase]);
+      if (pKey !== lastPlace) {
+        lastPlace = pKey;
+        place.style.display = hv.context === 'menu' ? 'none' : '';
+        const parts: Node[] = [hv.context === 'away' ? el('span', 'dot') : el('span', 'ic', hv.icon), el('b', undefined, hv.name)];
+        hv.counts.forEach((n, i) => parts.push(el('span', `cnt${hv.context === 'room' && i === 1 && lv && lv.seats.some((x) => x.kind === 'person') && v.lobby!.ready.length >= v.lobby!.seated.length ? ' ok' : ''}`, n)));
+        parts.push(el('span', 'car', '▾'));
+        place.replaceChildren(...parts);
+        place.setAttribute('aria-label', hv.label);
+        place.title = hv.context === 'plaza' ? 'Plaza menu' : hv.context === 'away' ? 'Not connected' : 'Room: players, settings, invitations';
+      }
+      // The profile button: your fighter's picture and your name (never a key), invitations waiting.
       const invites = v.inbox?.cards.length ?? 0;
-      const iKey = JSON.stringify([s.phase, s.pubkey, s.other, own?.displayName, own?.name, own?.picture, invites]);
-      if (iKey !== lastId) {
-        lastId = iKey;
-        if (s.phase === 'verified' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('b', undefined, clip(displayName(own, s.pubkey), 18)), el('span', 'dim', 'Nostr'), ...(invites ? [el('span', 'rs-badge', `✉ ${invites}`)] : []));
-        else if (s.phase === 'asking' || s.phase === 'proving') idChip.replaceChildren(el('span', 'dim', 'Nostr · check your extension…'));
-        else if (s.phase === 'restoring') idChip.replaceChildren(el('span', 'dim', 'Restoring Nostr… ·'), button('Connect Nostr', a.connectNostr));
-        else if (s.phase === 'changed') idChip.replaceChildren(el('span', 'dim', 'Nostr · another account'), button('Session', () => togglePanel(true)));
-        else if (s.phase === 'error') idChip.replaceChildren(el('span', 'dim', 'Nostr · didn’t connect'));
-        else if (s.phase === 'known' && s.pubkey) idChip.replaceChildren(avatar(s.pubkey, own?.picture, 22), el('span', 'dim', `${clip(displayName(own, s.pubkey), 14)} · `), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'));
-        else idChip.replaceChildren(el('span', 'dim', 'Guest ·'), button('Connect Nostr', a.connectNostr, 'rs-btn go'));
+      const look = myLook(v);
+      const verified = s.phase === 'verified' && !!s.pubkey;
+      const name = verified ? clip(displayName(own, s.pubkey!), 18) : s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring' ? 'Connecting…' : s.phase === 'error' || s.phase === 'changed' ? 'Nostr ⚠' : 'Guest';
+      const mKey = JSON.stringify([look, name, invites]);
+      if (mKey !== lastMe) {
+        lastMe = mKey;
+        me.replaceChildren(lookPic(look), el('span', 'nm', name), ...(invites ? [el('span', 'rs-badge', `✉ ${invites}`)] : []));
+        me.setAttribute('aria-label', `Your profile: ${name}${invites ? `, ${invites} invitation${invites === 1 ? '' : 's'}` : ''}`);
+        me.title = 'Your profile, your Blobbi, invitations';
       }
       // Scoreboard.
       const snap = v.snapshot;
@@ -1255,9 +1367,8 @@ export function createShell(a: ShellActions) {
           board.replaceChildren(...items);
         }
       }
-      // L3: in a lobby room between matches the lobby and results cards speak; the scoreboard is for play.
-      const between = (!!v.lobby && v.lobby.phase !== 'playing') || isSocialSpace(snap?.arena);
-      board.style.display = snap && healthy && !between ? '' : 'none';
+      // L3, L4.2: the scoreboard is for a match on; the plaza and a room between matches have none.
+      board.style.display = snap && hv.context === 'combat' && !isSocialSpace(snap.arena) ? '' : 'none';
       // The contextual message, with names for slot ids.
       const m = v.message ? v.message.replace(/\bP[1-4]\b/g, (id) => clip(label(v, id), 16)) : '';
       if (m !== lastMsg) {
@@ -1266,8 +1377,8 @@ export function createShell(a: ShellActions) {
         msg.style.display = m ? 'block' : 'none';
       }
       // Your struggle.
-      const me = snap && v.you ? snap.fighters.find((f) => f.id === v.you) : undefined;
-      const held = me?.heldBy && !me.eliminated ? me : undefined;
+      const meF = snap && v.you ? snap.fighters.find((f) => f.id === v.you) : undefined;
+      const held = meF?.heldBy && !meF.eliminated ? meF : undefined;
       const stKey = held ? `${held.heldBy}|${Math.round(held.combat.struggle * 20)}` : '';
       if (stKey !== lastStruggle) {
         lastStruggle = stKey;
@@ -1280,54 +1391,32 @@ export function createShell(a: ShellActions) {
         }
         struggle.style.display = held ? 'block' : 'none';
       }
-      // The session panel, while open.
-      if (panelOpen) {
-        const inviteWho = v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null;
-        const inboxKey = v.inbox ? [v.inbox.setup, v.inbox.state, v.inbox.offer, v.inbox.cards.map((c) => [c.invite.id, c.trust.label, v.profile(c.invite.from) ?? null, Math.ceil((c.invite.expiresAt - Date.now() / 1000) / 60)])] : null;
-        const pKey = JSON.stringify([v.graphics.choice, inboxKey, v.blobbis, v.diag?.length, v.servers, v.invite, inviteWho, v.room, v.share, v.roster, v.spectators, !!v.lobby, v.you, s, v.trust, v.server, Object.values(v.roster ?? {}).map((x) => (x.who === 'nostr' ? v.profile(x.pubkey) ?? null : null)), own, v.server?.operator ? v.profile(v.server.operator) ?? null : null]);
-        // Never rebuild under someone typing a code.
-        if (pKey !== lastPanel && !panel.contains(document.activeElement)) {
-          lastPanel = pKey;
-          renderPanel(v);
-        }
-      }
-      // The people part of the invite section (M8C-C): refreshed on its own, so typing never loses results or focus.
-      if (panelOpen && v.people) {
+      // The open sheet.
+      renderSheet(v, hv, lv);
+      // The people part of the invitations (M8C-C): refreshed on its own, so typing never loses results or focus.
+      if (sheetKind === 'place' && roomTab === 'invite' && v.people) {
         const pplKey = JSON.stringify([v.people, v.invite, v.invite.status && 'pubkey' in v.invite.status ? v.profile(v.invite.status.pubkey) ?? null : null, [...v.people.follows.rows, ...v.people.search.rows, ...(v.people.selected ? [v.people.selected] : [])].map((r) => v.profile(r.pubkey) ?? null)]);
         if (pplKey !== lastPeople) {
           lastPeople = pplKey;
           renderPeople(v);
         }
       }
-      // L4.1: the menu (a plain visit: nothing connected until the player chooses).
-      const who = { name: s.phase === 'verified' && s.pubkey ? clip(displayName(own, s.pubkey), 24) : null, busy: s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring' };
-      const showStart = v.menu && !panelOpen && !helpOpen && !settingsOpen;
-      plazaUi.showMenu(showStart ? { who } : null);
-      // The automatic-invites question (M8C-B.2): a corner card while unanswered, unless the panel (which asks it too) is open.
-      const showConsent = !!v.inbox?.offer && healthy && !showStart && !panelOpen;
+      // L4.1: the menu (a plain visit: nothing connected until the player chooses); the profile and settings sheets may sit over it.
+      const who = { name: verified ? clip(displayName(own, s.pubkey!), 24) : null, busy: s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring', pubkey: verified ? s.pubkey : null, ...(verified && own?.picture ? { picture: own.picture } : {}) };
+      const showMenu = v.menu && !helpOpen;
+      plazaUi.showMenu(showMenu ? { who } : null);
+      corner.style.display = v.menu ? 'none' : '';
+      // The automatic-invites question (M8C-B.2): a corner card while unanswered, unless the profile (which asks it too) is open.
+      const showConsent = !!v.inbox?.offer && healthy && !showMenu && sheetKind !== 'profile';
       if (showConsent !== lastConsent) {
         lastConsent = showConsent;
         consent.style.display = showConsent ? 'block' : 'none';
         if (showConsent) consent.replaceChildren(...consentNodes());
       }
-      // L3: the lobby (its card steps aside for the session panel, help, settings, the start card and the banner).
-      shareNow = v.share;
-      const otherCard = panelOpen || helpOpen || settingsOpen || showStart || !!describe(c, v.now);
-      // L4.1: the plaza card (the public plaza only), stepping aside like the lobby's.
-      plazaUi.showPlaza(v.plaza && healthy && !otherCard ? { who, here: v.plaza.here, capacity: v.plaza.capacity, blobbi: v.plaza.blobbi ? clip(v.plaza.blobbi, 20) : null, touch } : null);
-      lobbyUi.show(
-        v.lobby && healthy && !otherCard
-          ? {
-              view: lobbyView({ lobby: v.lobby, roster: v.roster, tick: v.tick, tickHz: v.tickHz, personName: (pk) => clip(displayName(v.profile(pk), pk), 22), blobbiNameOf: (slot) => (v.blobbiNameOf(slot) ? clip(v.blobbiNameOf(slot)!, 18) : null), keys: !touch }),
-              room: v.room?.kind === 'private' ? v.room.id : null,
-              share: !!v.share,
-              verified: s.phase === 'verified',
-              touch,
-            }
-          : null,
-      );
-      // The banner: loud, only when play is impossible.
+      // L3: the room bar, the countdown, the results and the waiting chip (the results step aside for the help and the banner).
       const d = describe(c, v.now);
+      lobbyUi.show(lv && healthy && !helpOpen && !d ? { view: lv, touch } : null);
+      // The banner: loud, only when play is impossible (or a connection is on its way), with the way out.
       const bnKey = d ? JSON.stringify(d) : '';
       if (bnKey !== lastBanner) {
         lastBanner = bnKey;
@@ -1335,12 +1424,16 @@ export function createShell(a: ShellActions) {
         if (d) {
           const acts: Record<BannerAction, () => HTMLButtonElement> = {
             retry: () => button(c.phase === 'refused' || c.phase === 'plazaFull' ? 'Try again' : 'Retry now', a.retry, 'rs-btn go'),
-            quick: () => button('Quick Match', a.quickMatch),
-            private: () => button('Create private room', () => a.hostGame(false)),
-            open: () => button('Play in the open room', a.openRoom, c.phase === 'missing' ? 'rs-btn go' : 'rs-btn'),
+            quick: () => button('⚡ Quick Match', a.quickMatch),
+            private: () => button('＋ Create private room', () => a.hostGame(false)),
+            open: () => button('Play Quick Match', a.openRoom, c.phase === 'missing' ? 'rs-btn go' : 'rs-btn'),
             host: () => button('Host a new game', () => a.hostGame(true)),
+            menu: () => button('⌂ Main menu', a.toMenu, 'rs-btn soft'),
           };
-          bannerBox.replaceChildren(el('h2', undefined, d.title), el('p', undefined, d.detail), ...d.actions.map((k) => acts[k]()));
+          banner.className = `rs-banner${d.icon === 'wait' ? ' quiet' : ''}`;
+          const row = el('div', 'acts');
+          row.append(...d.actions.map((k) => acts[k]()));
+          bannerBox.replaceChildren(d.icon === 'wait' ? el('div', 'spin') : el('div', 'ic', d.icon), el('h2', undefined, d.title), el('p', undefined, d.detail), ...(d.actions.length ? [row] : []));
         }
       }
     },

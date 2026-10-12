@@ -62,9 +62,9 @@ describe('connection words for rooms', () => {
     const missing = onClose(c, 4004, 'no such room', 1);
     expect(missing.phase).toBe('missing');
     expect(missing.retryAt).toBe(Infinity);
-    expect(words(missing, 2)).toMatchObject({ title: 'Room ZZZZ isn’t here', actions: ['open', 'host'] });
+    expect(words(missing, 2)).toMatchObject({ title: 'Room ZZZZ isn’t here', actions: ['open', 'host', 'menu'] });
     const refused = onClose(c, 4003, 'too many new rooms, wait a minute', 1);
-    expect(words(refused, 2)).toMatchObject({ title: 'Couldn’t start a new game', detail: expect.stringMatching(/wait a minute/), actions: ['open', 'retry'] });
+    expect(words(refused, 2)).toMatchObject({ title: 'Couldn’t start a new game', detail: expect.stringMatching(/wait a minute/), actions: ['open', 'retry', 'menu'] });
     const full = onClose(c, 1013, 'room full', 1);
     expect(full.phase).toBe('full');
     expect(words(full, 2)!.title).toBe('Room ZZZZ is full');
