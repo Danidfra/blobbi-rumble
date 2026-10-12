@@ -2,7 +2,7 @@
  * `npm run server`: the authoritative Rumble server on ws://127.0.0.1:8787,
  * for development beside `npm run dev` (HOST=0.0.0.0 for LAN play). For a
  * hosted game (page and WebSocket on one origin) use `npm run serve`.
- * Environment: PORT (8787), HOST (127.0.0.1), TICK_HZ (60), SNAPSHOT_HZ (20),
+ * Environment: PORT (8787), HOST (127.0.0.1), TICK_HZ (60), SNAPSHOT_HZ (20), ROOM_IDLE_MINUTES (20),
  * and, DEV ONLY, LAG_MS / JITTER_MS (added one-way delay on every message,
  * each way), PUBLIC_URL (the ws:// address identity proofs must name;
  * unset, the Host each connection uses). Prints the loop's health every 10 seconds.
@@ -25,6 +25,7 @@ const server = await startRumbleServer({
   tickHz: env('TICK_HZ', 60),
   snapshotHz: env('SNAPSHOT_HZ', 20),
   lagMs: env('LAG_MS', 0),
+  roomIdleMs: env('ROOM_IDLE_MINUTES', 20) * 60_000,
   jitterMs: env('JITTER_MS', 0),
   identity,
   authUrls,

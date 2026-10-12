@@ -38,6 +38,16 @@
  * (an IPv4, or an IPv6 /64) holds at most `maxPerAddress` connections, and
  * `maxPerAddressPerRoom` in one room: a single client can fill neither.
  *
+ * PRIVATE-ROOM CAPACITY (L4.5A): a network keeps at most `roomsPerAddress`
+ * private rooms open that it made (`roomsPerAddressWhenBusy` once only
+ * `reservedRooms` places are left, so the last places go to networks with
+ * none); when every place is taken, a room empty the longest gives way to
+ * a new one (`rooms.ts` `reclaim`); and a private room where nobody has
+ * done anything a person does (moved, pressed, asked the lobby, changed a
+ * look, arrived) for `roomIdleMs` is closed, after warnings, never while
+ * its match is on. Staying connected, pinging or resending the same input
+ * is not activity.
+ *
  * IDENTITY (M8A): any connection may prove it holds a Nostr key, NIP-42
  * style (`social/auth.ts`): it asks for a challenge, signs a kind-22242
  * event naming the challenge and this server's address, and the server
@@ -61,7 +71,7 @@ import { arenaById } from '../arena/arenas';
 import { shortNpub } from '../../social/keys';
 import type { RumbleHost, ConnectionId } from './host';
 import type { LookDeclaration } from './looks';
-import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type LobbyCommand, type RefusedMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
+import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type LobbyCommand, type RefusedMessage, type NoticeMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
 import { RoomManager, type Room } from './rooms';
 import { addressGroup, isLoopback } from './address';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
@@ -96,8 +106,21 @@ export const SERVER_LIMITS = Object.freeze({
   idleMs: 120_000,
   /** M1: a connection's look is applied at most this often, ms; a newer one meanwhile waits (the latest wins, none is lost). */
   lookEveryMs: 1000,
-  /** M2: private rooms one address may have open at once (made by it, not yet closed). */
-  roomsPerAddress: 3,
+  /** M2: private rooms one address may have open at once (made by it, not yet closed). L4.5A: 3 → 2. */
+  roomsPerAddress: 2,
+  /** L4.5A: once only `reservedRooms` places for private rooms are left, a network with a room open makes no other. */
+  roomsPerAddressWhenBusy: 1,
+  reservedRooms: 4,
+  /**
+   * L4.5A: a private room with people in it but no activity for this long, ms, is closed (`roomIdleWarnMs` before, the
+   * people in it are told, each warning once); a lobby room's match (countdown, play, results) always counts as activity.
+   */
+  roomIdleMs: 20 * 60_000,
+  roomIdleWarnMs: Object.freeze([120_000, 30_000]),
+  /** L4.5A: address groups each per-minute limiter remembers at most (the oldest are forgotten first). */
+  limiterKeys: 4096,
+  /** L4.5A: refusal lines logged per 10 s at most; the rest are counted and summed up in one line. */
+  refusalLogsPer10s: 20,
   /** M3: room codes one address may try in vain per minute; past that, joining by code waits for the minute to pass. */
   roomGuessesPerMinute: 10,
   /**
@@ -175,6 +198,12 @@ export interface ServerConfig {
   /** M1, M2, M3 (SERVER_LIMITS defaults): look interval, open rooms per address, failed room codes per address per minute. */
   lookEveryMs?: number;
   roomsPerAddress?: number;
+  /** L4.5A (SERVER_LIMITS / ROOMS defaults): see `SERVER_LIMITS`; `roomReclaimAfterMs`: `ROOMS.reclaimAfterMs`. */
+  roomsPerAddressWhenBusy?: number;
+  reservedRooms?: number;
+  roomIdleMs?: number;
+  roomIdleWarnMs?: readonly number[];
+  roomReclaimAfterMs?: number;
   roomGuessesPerMinute?: number;
   /** Compact lines about connections and abnormal traffic (never every message). */
   log?: (line: string) => void;
@@ -211,8 +240,10 @@ export interface RumbleServer {
   readonly host: RumbleHost;
   rooms: RoomManager;
   identity: ServerIdentity;
-  /** Close empty private rooms past their grace period now (the server does this every second by itself). */
+  /** Close empty private rooms past their grace period, and warn or close idle ones, now (the server does this every second by itself). */
   sweep(): void;
+  /** L4.5A: how many address groups the per-minute limiters remember (for checks: it stays bounded). */
+  limiterSizes(): { creations: number; guesses: number };
   port: number;
   stats: ServerStats;
   resetStats(): void;
@@ -271,7 +302,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const jitter = config.jitterMs ?? 0;
   const log = config.log ?? (() => {});
   const identity: ServerIdentity = config.identity ?? { name: null, operator: null, public: null };
-  const rooms = new RoomManager({ havok: config.havok, tickHz: config.tickHz, snapshotHz: config.snapshotHz, maxRooms: config.maxRooms, perRoom: config.perRoom, graceMs: config.roomGraceMs });
+  const rooms = new RoomManager({ havok: config.havok, tickHz: config.tickHz, snapshotHz: config.snapshotHz, maxRooms: config.maxRooms, perRoom: config.perRoom, graceMs: config.roomGraceMs, reclaimAfterMs: config.roomReclaimAfterMs });
   const tickHz = rooms.open.host.tickHz;
   const ticksPerSnapshot = rooms.open.host.ticksPerSnapshot;
   const fresh = () => ({ ticks: 0, dropped: 0, lateMean: 0, lateMax: 0, statesSent: 0, bytesOut: 0, bytesIn: 0, refused: 0, malformed: 0, rateDropped: 0, kicked: 0, authOk: 0, authFailed: 0, roomsCreated: 0, roomsClosed: 0 });
@@ -289,20 +320,68 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   let nextConn = 1;
   const challenges = new ChallengeBook({ max: Math.max(maxConnections * 2, 8) });
   const configuredAddresses = [...(config.authUrls ?? []), ...(identity.public ? [identity.public.websocket] : [])].map(authAddress).filter((a): a is string => !!a);
-  const creations = windowLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute);
+  const creations = windowLimiter(config.roomsPerMinute ?? SERVER_LIMITS.roomsPerMinute, SERVER_LIMITS.limiterKeys);
   /** M3: room codes tried in vain, per address group. */
-  const guesses = windowLimiter(config.roomGuessesPerMinute ?? SERVER_LIMITS.roomGuessesPerMinute);
+  const guesses = windowLimiter(config.roomGuessesPerMinute ?? SERVER_LIMITS.roomGuessesPerMinute, SERVER_LIMITS.limiterKeys);
   /** M2: who made each private room still open (its address group; none for loopback). */
   const owners = new Map<Room, string>();
   const roomsPerAddress = config.roomsPerAddress ?? SERVER_LIMITS.roomsPerAddress;
+  const roomsPerAddressWhenBusy = config.roomsPerAddressWhenBusy ?? SERVER_LIMITS.roomsPerAddressWhenBusy;
+  const reservedRooms = config.reservedRooms ?? SERVER_LIMITS.reservedRooms;
+  // L4.5A: 0 (or anything not a positive number) turns idle closing off.
+  const roomIdleMs = config.roomIdleMs ?? SERVER_LIMITS.roomIdleMs;
+  const idleClosing = Number.isFinite(roomIdleMs) && roomIdleMs > 0;
+  const roomIdleWarnMs = [...(config.roomIdleWarnMs ?? SERVER_LIMITS.roomIdleWarnMs)].filter((w) => w > 0 && w < roomIdleMs).sort((a, b) => b - a);
   const ipHeader = config.clientIpHeader?.trim().toLowerCase() || null;
   /** The player's address: from the trusted proxy's header when configured (and sane), else the socket's. */
-  const clientAddress = (req: IncomingMessage): string => {
+  const clientAddress = (req: IncomingMessage): string => peerAddress(req).address;
+  /**
+   * L4.5A: the address, and whether it came from the proxy's header. Only an address the socket itself has is the
+   * operator's loopback (never limited): a header saying 127.0.0.1 is just another address, limited like any other.
+   */
+  const peerAddress = (req: IncomingMessage): { address: string; fromHeader: boolean } => {
     const socket = req.socket.remoteAddress ?? '?';
-    if (!ipHeader) return socket;
+    if (!ipHeader) return { address: socket, fromHeader: false };
     const raw = req.headers[ipHeader];
     const first = (Array.isArray(raw) ? raw[0] : raw)?.split(',')[0]?.trim() ?? '';
-    return /^[0-9a-fA-F:.]{2,45}$/.test(first) ? first : socket;
+    return /^[0-9a-fA-F:.]{2,45}$/.test(first) ? { address: first, fromHeader: true } : { address: socket, fromHeader: false };
+  };
+  /** L4.5A: refusals are logged, but never more than `refusalLogsPer10s` lines in ten seconds (a burst is summed up). */
+  let refusalWindow = 0;
+  let refusalLines = 0;
+  let refusalsHidden = 0;
+  const logRefusal = (line: string) => {
+    const t = Date.now();
+    if (t - refusalWindow >= 10_000) {
+      if (refusalsHidden) log(`(${refusalsHidden} more refusals in the last 10 s not logged)`);
+      refusalWindow = t;
+      refusalLines = 0;
+      refusalsHidden = 0;
+    }
+    if (refusalLines < SERVER_LIMITS.refusalLogsPer10s) {
+      refusalLines += 1;
+      log(line);
+    } else refusalsHidden += 1;
+  };
+  /** L4.5A: per private room, the host's activity count last seen and how many idle warnings went out (gone with the room). */
+  const idleSeen = new Map<Room, { activity: number; warned: number }>();
+  /** L4.5A: rooms closing for inactivity, by id, until they are gone. */
+  const closing = new Set<string>();
+  /** L4.5A: tell everyone in a room it closes in `closesIn` seconds for inactivity (null: it does not any more). */
+  const notice = (room: Room, closesIn: number | null) => {
+    const data = JSON.stringify({ t: 'notice', kind: 'idle', closesIn } satisfies NoticeMessage);
+    for (const c of members.get(room) ?? []) c.send(data);
+  };
+  /** A private room is gone (reaped, reclaimed): everything the server kept about it goes too. */
+  const forget = (id: string, why: string) => {
+    for (const r of [...members.keys()]) if (r.id === id) members.delete(r);
+    for (const r of [...lobbySent.keys()]) if (r.id === id) lobbySent.delete(r);
+    for (const r of [...owners.keys()]) if (r.id === id) owners.delete(r);
+    for (const r of [...idleSeen.keys()]) if (r.id === id) idleSeen.delete(r);
+    closing.delete(id);
+    stats.roomsClosed += 1;
+    stats.rooms = rooms.size;
+    log(`room ${id} closed (${why}) · ${rooms.size} rooms`);
   };
   const allowedOrigins = (config.allowedOrigins ?? []).map((o) => o.trim().replace(/\/$/, '').toLowerCase()).filter(Boolean);
   /** M10D: whether a browser from this Origin may connect (no list: anyone; no Origin: not a browser, allowed). */
@@ -331,13 +410,21 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if (q.has('create')) {
       // Per address group: an IPv6 /64 is one (rotating through it makes no more rooms).
       const key = group ?? addressGroup(clientAddress(req));
-      if (group !== null && [...owners.values()].filter((g) => g === group).length >= roomsPerAddress) return { code: 4003, why: 'too many open games from your network' };
+      // L4.5A: two at most; once the server is nearly full, one per network (the last places go to networks with none).
+      const cap = rooms.free <= reservedRooms ? roomsPerAddressWhenBusy : roomsPerAddress;
+      if (group !== null && [...owners.values()].filter((g) => g === group).length >= cap) return { code: 4003, why: 'too many open games from your network' };
       if (!creations.allow(key)) return { code: 4003, why: 'too many new rooms, wait a minute' };
+      // L4.5A: every place taken: the room empty the longest (if long enough) gives way; never a room anyone is in.
+      if (rooms.free <= 0) {
+        const id = rooms.reclaim();
+        if (id) forget(id, 'given up to a new game: empty while the server was full');
+      }
       // M10B: `public=1` lists the new room for anyone on this server; otherwise it is reached by its code or link only.
       // M11A: `arena=<id>` picks the arena (unknown: the classic island); `rotate=1` moves to another after each match.
       // L1: a client that speaks the lobby makes a lobby room; an older one, a continuous room it understands.
       const room = rooms.create({ listed: q.get('public') === '1', arena: arenaById(q.get('arena')) ?? undefined, rotate: q.get('rotate') === '1', lifecycle: lobby ? 'lobby' : 'continuous' });
       if (!room) return { code: 4003, why: 'room limit reached' };
+      idleSeen.set(room, { activity: room.host.activity, warned: 0 });
       if (group !== null) owners.set(room, group);
       stats.roomsCreated += 1;
       stats.rooms = rooms.size;
@@ -349,6 +436,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if (group !== null && guesses.full(group)) return { code: 4003, why: 'too many room codes tried, wait a minute' };
     const room = rooms.get(q.get('room'));
     if (!room && group !== null) guesses.add(group);
+    // L4.5A: a room closing for inactivity takes nobody new (it is gone in a moment).
+    if (room?.expired) return { code: 4009, why: 'room closed: inactive' };
     return room ? { room } : { code: 4004, why: 'no such room' };
   };
 
@@ -384,28 +473,29 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   const netTag = (address: string) => (isLoopback(address) ? 'local' : createHash('sha256').update(salt).update(addressGroup(address)).digest('hex').slice(0, 8));
 
   wss.on('connection', (ws, req: IncomingMessage) => {
-    const address = clientAddress(req);
-    const group = isLoopback(address) ? null : addressGroup(address);
+    const peer = peerAddress(req);
+    const address = peer.address;
+    const group = !peer.fromHeader && isLoopback(address) ? null : addressGroup(address);
     const origin = req.headers.origin ? ` (${req.headers.origin})` : '';
     const from = `${address}${origin}`;
     const seen = `net ${netTag(address)}${origin}`;
     if (!originAllowed(req.headers.origin)) {
       stats.refused += 1;
-      log(`refused ${from}: origin not allowed`);
+      logRefusal(`refused ${from}: origin not allowed`);
       ws.close(4005, 'origin not allowed');
       return;
     }
     if (clients.size >= maxConnections) {
       // Full: refused cleanly, before it takes a slot, a room or any state.
       stats.refused += 1;
-      log(`refused ${from}: server full (${clients.size}/${maxConnections})`);
+      logRefusal(`refused ${from}: server full (${clients.size}/${maxConnections})`);
       ws.close(1013, 'server full');
       return;
     }
     if (group !== null && heldBy(group) >= maxPerAddress) {
       // H1: one address cannot hold the server; refused before it takes a room or any state.
       stats.refused += 1;
-      log(`refused ${from}: ${maxPerAddress} connections from this address already`);
+      logRefusal(`refused ${from}: ${maxPerAddress} connections from this address already`);
       ws.close(1013, 'network full: too many connections from your network');
       return;
     }
@@ -413,7 +503,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     const target = roomFor(req, seen, group, caps.has('lobby'));
     if ('code' in target) {
       stats.refused += 1;
-      log(`refused ${from}: ${target.why}`);
+      logRefusal(`refused ${from}: ${target.why}`);
       ws.close(target.code, target.why);
       return;
     }
@@ -421,13 +511,13 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if ((room.lifecycle === 'lobby' && !caps.has('lobby')) || (room.kind === 'plaza' && !caps.has('plaza'))) {
       // L1: a page that does not know the lobby would misread this room: refused, plainly, without a retry loop.
       stats.refused += 1;
-      log(`refused ${from}: room ${room.id} needs a newer client`);
+      logRefusal(`refused ${from}: room ${room.id} needs a newer client`);
       ws.close(1008, UPDATE_REQUIRED);
       return;
     }
     if (!rooms.hasRoom(room)) {
       stats.refused += 1;
-      log(`refused ${from}: room ${room.id} full`);
+      logRefusal(`refused ${from}: room ${room.id} full`);
       // L4.1: the plaza says so in its own words (the page offers another room or Quick Match, never sends anyone into a match).
       ws.close(1013, room.kind === 'plaza' ? 'plaza full' : 'room full');
       return;
@@ -435,7 +525,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
     if (group !== null && heldBy(group, room) >= maxPerAddressPerRoom) {
       // H1: nor every place of one room.
       stats.refused += 1;
-      log(`refused ${from}: ${maxPerAddressPerRoom} connections from this address in room ${room.id} already`);
+      logRefusal(`refused ${from}: ${maxPerAddressPerRoom} connections from this address in room ${room.id} already`);
       ws.close(1013, 'network full: too many connections from your network in this room');
       return;
     }
@@ -637,17 +727,38 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   }, config.heartbeatMs ?? SERVER_LIMITS.heartbeatMs);
   heartbeat.unref?.();
 
-  /** Empty private rooms past their grace period go, with their match. */
+  /** Empty private rooms past their grace period go, with their match; L4.5A: idle ones are warned, then closed. */
   const sweep = () => {
-    for (const id of rooms.reap()) {
-      const room = [...members.keys()].find((r) => r.id === id);
-      if (room) {
-        members.delete(room);
-        lobbySent.delete(room);
+    for (const id of rooms.reap()) forget(id, closing.has(id) ? 'inactive' : `empty for ${Math.round(rooms.graceMs / 1000)} s`);
+    const t = Date.now();
+    for (const room of rooms.all()) {
+      if (!idleClosing || room.kind !== 'private' || room.expired || room.connections.size === 0) continue;
+      const seen = idleSeen.get(room) ?? { activity: -1, warned: 0 };
+      idleSeen.set(room, seen);
+      const phase = room.host.lobby?.phase;
+      // Something a person did since the last look, or a match on: the room is in use.
+      if (seen.activity !== room.host.activity || phase === 'countdown' || phase === 'playing' || phase === 'results') {
+        seen.activity = room.host.activity;
+        room.activeAt = Math.max(room.activeAt, t);
+        if (seen.warned) notice(room, null);
+        seen.warned = 0;
+        continue;
       }
-      for (const r of owners.keys()) if (r.id === id) owners.delete(r);
-      stats.roomsClosed += 1;
-      log(`room ${id} closed (empty for ${Math.round(rooms.graceMs / 1000)} s) · ${rooms.size} rooms`);
+      const left = room.activeAt + roomIdleMs - t;
+      if (left <= 0) {
+        // Closed: everyone in it is told why; the room goes as soon as the last socket has (the next sweep).
+        rooms.expire(room);
+        closing.add(room.id);
+        log(`room ${room.id} closing: nobody has played or moved for ${Math.round(roomIdleMs / 60_000)} min`);
+        for (const [ws, c] of clients) if (c.room === room) kick(ws, 4009, 'room closed: inactive');
+        continue;
+      }
+      // A warning when each threshold is crossed, once (the largest first).
+      const due = roomIdleWarnMs.filter((w) => left <= w).length;
+      if (due > seen.warned) {
+        seen.warned = due;
+        notice(room, Math.ceil(left / 1000));
+      }
     }
     stats.rooms = rooms.size;
   };
@@ -716,6 +827,7 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       resetStats,
       broadcast,
       sweep,
+      limiterSizes: () => ({ creations: creations.size, guesses: guesses.size }),
       close: () =>
         new Promise<void>((done) => {
           running = false;
@@ -744,11 +856,17 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   });
 }
 
-/** Events per key (an address group) in any minute: room creations, room codes tried in vain. Bounded memory. */
-function windowLimiter(perMinute: number) {
+/**
+ * Events per key (an address group) in any minute: room creations, room codes tried in vain. Bounded memory: keys
+ * with nothing in the last minute are forgotten, and (L4.5A) never more than `maxKeys` are kept, the oldest first to go.
+ */
+export function windowLimiter(perMinute: number, maxKeys = 4096) {
   const seen = new Map<string, number[]>();
   const recent = (key: string, t: number) => (seen.get(key) ?? []).filter((x) => t - x < 60_000);
   return {
+    get size() {
+      return seen.size;
+    },
     /** Whether `key` has had `perMinute` events in the last minute. */
     full(key: string) {
       return recent(key, Date.now()).length >= perMinute;
@@ -757,8 +875,11 @@ function windowLimiter(perMinute: number) {
     add(key: string) {
       const t = Date.now();
       if (seen.size > 1024) for (const [k, v] of seen) if (!v.some((x) => t - x < 60_000)) seen.delete(k);
-      // Never more than a minute's worth kept per key.
-      seen.set(key, [...recent(key, t), t].slice(-perMinute));
+      // Never more than a minute's worth kept per key; a key seen again moves to the newest end.
+      const kept = [...recent(key, t), t].slice(-perMinute);
+      seen.delete(key);
+      seen.set(key, kept);
+      while (seen.size > maxKeys) seen.delete(seen.keys().next().value!);
     },
     /** An event for `key` if it is under the limit (counted), else false. */
     allow(key: string) {

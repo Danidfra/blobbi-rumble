@@ -85,6 +85,59 @@ describe('the room manager', () => {
     m.dispose();
   });
 
+  it('L4.5A: full, the private room empty the longest (long enough) is reclaimed; never one with people, the open room or the plaza', () => {
+    let t = 0;
+    const m = new RoomManager({ havok, maxRooms: 5, graceMs: 120_000, reclaimAfterMs: 20_000, now: () => t });
+    const [a, b, c] = [m.create()!, m.create()!, m.create()!];
+    expect(m.create()).toBeNull();
+    expect(m.free).toBe(0);
+    m.enter(a, 1);
+    m.enter(b, 2);
+    m.enter(c, 3);
+    m.enter(m.open, 4);
+    m.enter(m.plaza, 5);
+    t = 1000;
+    m.leave(b, 2);
+    t = 2000;
+    m.leave(c, 3);
+    // Just emptied: kept for its people.
+    t = 15_000;
+    expect(m.reclaim()).toBeNull();
+    // b has been empty the longest: it goes first, then c; a (someone in it) never.
+    t = 40_000;
+    expect(m.reclaim()).toBe(b.id);
+    expect(m.get(b.id)).toBeNull();
+    expect(m.reclaim()).toBe(c.id);
+    expect(m.reclaim()).toBeNull();
+    expect(m.get(a.id)).toBe(a);
+    // Even empty, the open room and the plaza are never reclaimed.
+    m.leave(m.open, 4);
+    m.leave(m.plaza, 5);
+    t = 1_000_000;
+    expect(m.reclaim()).toBeNull();
+    expect(m.get('OPEN')).toBe(m.open);
+    expect(m.get('PLAZA')).toBe(m.plaza);
+    m.dispose();
+  });
+
+  it('L4.5A: a room closing for inactivity takes nobody new and goes as soon as it is empty, grace or not; the open room never expires', () => {
+    let t = 0;
+    const m = new RoomManager({ havok, graceMs: 120_000, now: () => t });
+    const a = m.create()!;
+    m.enter(a, 1);
+    t = 5000;
+    expect(a.activeAt).toBe(0);
+    m.expire(a);
+    expect(m.hasRoom(a)).toBe(false);
+    expect(m.reap()).toEqual([]);
+    m.leave(a, 1);
+    t = 5001;
+    expect(m.reap()).toEqual([a.id]);
+    m.expire(m.open);
+    expect(m.open.expired).toBe(false);
+    m.dispose();
+  });
+
   it('counts connections against the per-room limit', () => {
     const m = new RoomManager({ havok, perRoom: 2 });
     const a = m.create()!;

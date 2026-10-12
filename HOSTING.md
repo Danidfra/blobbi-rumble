@@ -434,16 +434,29 @@ itself is still antialiased).
 
 ## Server limits
 
-Per address (an IPv4 address, or an IPv6 /64; loopback is never limited,
-so behind a tunnel set `CLIENT_IP_HEADER` or every player counts as the
-tunnel): at most 8 connections server-wide and 4 in one room (a household
-can still put four fighters in a room; nobody fills a room or the
-server), 3 private rooms open, 5 new rooms per minute, 10 wrong room codes
-per minute. A connection that sends nothing for 2 minutes is closed
+Per address (an IPv4 address, or an IPv6 /64; the socket's own loopback
+is never limited, so behind a tunnel set `CLIENT_IP_HEADER` or every
+player counts as the tunnel; an address from that header is always
+limited, even one claiming to be loopback): at most 8 connections
+server-wide and 4 in one room (a household can still put four fighters in
+a room; nobody fills a room or the server), 2 private rooms open (1 once
+only 4 places for private rooms are left), 5 new rooms per minute, 10
+wrong room codes per minute. A connection that sends nothing for 2 minutes is closed
 (`4008 idle`; a real page pings every second, so standing still never
 counts) and the page reconnects. A connection's look is applied at most
 once a second (the latest wins). These came out of the October 2026
 security audit (H1, M1-M3).
+
+Private-room capacity (L4.5A): when all 16 rooms are taken, a new game
+takes the place of the private room empty the longest, if it has been
+empty for 20 s (never a room anyone is in, never OPEN or PLAZA). A private
+room where nobody has moved, pressed a button, used the lobby, changed a
+look or arrived for `ROOM_IDLE_MINUTES` (20; 0 turns it off) is closed:
+its players are warned 2 minutes and 30 seconds before, a match in
+progress always counts as activity, and the page then says the room was
+closed (`4009 room closed: inactive`). Staying connected or pinging is
+not activity. Refusals are logged at most 20 lines per 10 s (the rest
+summed up), and the per-minute limiters remember at most 4096 networks.
 
 Logs: connection, room and identity lines show a network tag (a salted
 hash of the address group, new on each restart), never the address beside

@@ -50,6 +50,7 @@ import { arenaById } from '../arena/arenas';
 import { isUiKey } from './dom';
 import { InputPacer, quantizeMove } from './inputPacer';
 import { createShell, type InviteMode } from './shell';
+import { idleWords } from './connection';
 import { sendInvite, type InviteStatus } from './inviteSender';
 import { InviteInbox } from './inviteInbox';
 import { InboxSetup } from './inboxSetup';
@@ -805,6 +806,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
       } else if (m.t === 'refused') {
         // L2: a lobby request the server would not do.
         shell.toast(refusalWords(m.of, m.reason));
+      } else if (m.t === 'notice') {
+        // L4.5A: the room is idle and will close (or, null, it stays after all).
+        shell.toast(idleWords(m.closesIn), m.closesIn === null ? 4000 : 12_000);
       } else if (m.t === 'pong') {
         rtt = performance.now() - m.ct;
       } else if (m.t === 'rooms') {

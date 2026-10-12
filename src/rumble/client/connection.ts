@@ -22,7 +22,7 @@
  * a bot that is not there. Every refusal also offers the way back to the
  * menu: no state traps the player.
  */
-export type ConnectionPhase = 'idle' | 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'plazaFull' | 'missing' | 'refused' | 'incompatible' | 'rejected';
+export type ConnectionPhase = 'idle' | 'connecting' | 'playing' | 'watching' | 'lost' | 'failed' | 'full' | 'plazaFull' | 'missing' | 'refused' | 'incompatible' | 'rejected' | 'closed';
 /** What the banner may offer: try again, go to the open room, make a new room; L4.1: Quick Match, a private room. */
 export type BannerAction = 'retry' | 'open' | 'host' | 'quick' | 'private' | 'menu';
 
@@ -86,6 +86,8 @@ export function onClose(s: ConnectionState, code: number, reason: string, now: n
   const attempts = s.attempts + 1;
   if (code === 4004) return { ...s, phase: 'missing', you: null, attempts, retryAt: Infinity, why: reason };
   if (code === 4003) return { ...s, phase: 'refused', you: null, attempts, retryAt: Infinity, why: reason };
+  // L4.5A: the room was closed because nobody played or moved in it for a long time: no retry (it is gone).
+  if (code === 4009) return { ...s, phase: 'closed', you: null, attempts, retryAt: Infinity, why: reason };
   // M10: the server would not have this page (its origin, or a policy): no retry; the player picks another server.
   if (code === 4005 || code === 1008) return { ...s, phase: 'rejected', you: null, attempts, retryAt: Infinity, why: reason };
   if (s.phase === 'incompatible') return { ...s, you: null, attempts, retryAt: Infinity };
@@ -150,8 +152,10 @@ export function describe(s: ConnectionState, now: number): Words | null {
     case 'refused':
       // Security audit M3, M2: room codes tried in vain from this network, or games it already has open.
       if (/code/.test(s.why)) return { icon: '✋', title: 'Too many room codes tried', detail: 'Wait a minute, then check the code (or the link) and try again.', retry: false, actions: ['open', 'retry', 'menu'] };
-      if (/open games/.test(s.why)) return { icon: '✋', title: 'Your network already has games open', detail: 'Join one of them by its code or link, or wait a couple of minutes for an empty one to close.', retry: false, actions: ['open', 'retry', 'menu'] };
-      return { icon: '✋', title: 'Couldn’t start a new game', detail: /minute/.test(s.why) ? 'Too many new games from here: wait a minute and try again.' : 'This server is hosting as many games as it can right now.', retry: false, actions: ['open', 'retry', 'menu'] };
+      if (/open games/.test(s.why)) return { icon: '✋', title: 'Your network already has a game open', detail: 'Someone on your network (or you, in another tab) already hosts a game here. Join it by its code or link, or try again once it has closed.', retry: false, actions: ['open', 'retry', 'menu'] };
+      return { icon: '✋', title: 'Couldn’t start a new game', detail: /minute/.test(s.why) ? 'Too many new games from here: wait a minute and try again.' : 'All private rooms on this server are in use right now. Try again in a little while, or join a game.', retry: false, actions: ['open', 'retry', 'menu'] };
+    case 'closed':
+      return { icon: '💤', title: `${room} was closed`, detail: 'Nobody played or moved in it for a long time. Make a new room whenever you like.', retry: false, actions: ['host', 'open', 'menu'] };
     case 'incompatible':
       return { icon: '⬆️', title: 'This server runs a newer Blobbi Rumble', detail: 'Reload the page to update the game, or pick another server in Settings.', retry: false, actions: ['retry', 'menu'] };
     case 'rejected':
@@ -161,6 +165,13 @@ export function describe(s: ConnectionState, now: number): Words | null {
     default:
       return null;
   }
+}
+
+/** L4.5A: the idle room's warning, as the page shows it (`closesIn` seconds; null: activity came back). */
+export function idleWords(closesIn: number | null): string {
+  if (closesIn === null) return 'Welcome back: this room stays open.';
+  const when = closesIn >= 90 ? `${Math.round(closesIn / 60)} minutes` : `${closesIn} seconds`;
+  return `Nobody has moved or played here for a while: this room closes in ${when}. Move, jump or press Ready to keep it.`;
 }
 
 /** The small always-visible status line (`lobbyRoom`: watching means waiting for the next match). */

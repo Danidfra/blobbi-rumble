@@ -141,6 +141,16 @@ export class RumbleHost {
   private readonly lastSeq = new Map<string, number>();
   /** L4.4A: per connection, the press counts it has sent (`PressCounter`). */
   private readonly presses = new Map<ConnectionId, PressCounter>();
+  /**
+   * L4.5A: how many things people have done here that a person does: a
+   * new movement (not the same one resent), a press, a throw, an accepted
+   * lobby request, a new look, someone arriving. Pings, keepalives, refused
+   * or malformed messages never count. The server reads it to tell a room
+   * in use from one only held open (`server.ts`).
+   */
+  activity = 0;
+  /** L4.5A: per slot, the movement last applied (a resent one is not activity). */
+  private readonly lastMove = new Map<string, string>();
   private readonly lastInputTick = new Map<string, number>();
   private readonly acked = new Map<string, number>();
   /** Per slot: the step on which the acknowledged input was first applied. */
@@ -230,6 +240,7 @@ export class RumbleHost {
   connect(conn: ConnectionId): WelcomeMessage {
     this.arrivals.push(conn);
     this.slotOf.set(conn, null);
+    this.activity += 1;
     const free = !this.lobby || this.lobby.phase === 'lobby' ? this.freeSeat() : null;
     if (free) this.seat(conn, free);
     this.lobby?.join(conn);
@@ -325,6 +336,7 @@ export class RumbleHost {
     if (msg.t === 'throw') {
       // M11F: the match judges the throw (out of the round, budget, cooldown, floor); a refusal is silent. L4: none on the plaza.
       if (this.current && !this.social) this.current.throwBanana(slot, msg.x, msg.z);
+      this.activity += 1;
       return null;
     }
     // A repeated or older message is refused before its press counts are read (L4.4A): it makes no action and raises no count.
@@ -335,7 +347,11 @@ export class RumbleHost {
     this.lastSeq.set(slot, msg.seq);
     this.lastInputTick.set(slot, space.tick);
     const i = msg.intent;
-    space.setInput(slot, { ...i, jump: i.jump || up.jump, punch: i.punch || up.punch, grab: i.grab || up.grab });
+    const intent = { ...i, jump: i.jump || up.jump, punch: i.punch || up.punch, grab: i.grab || up.grab };
+    space.setInput(slot, intent);
+    const move = `${i.x.toFixed(2)},${i.z.toFixed(2)},${i.run}`;
+    if (intent.jump || intent.punch || intent.grab || this.lastMove.get(slot) !== move) this.activity += 1;
+    this.lastMove.set(slot, move);
     return null;
   }
 
@@ -370,7 +386,9 @@ export class RumbleHost {
     const before = this.looks.get(conn) ?? null;
     if (bound) this.looks.set(conn, bound);
     else this.looks.delete(conn);
-    return { ok: true, changed: !sameForm(before, bound) };
+    const changed = !sameForm(before, bound);
+    if (changed) this.activity += 1;
+    return { ok: true, changed };
   }
 
   /** The form a connection's fighter wears, or null. */
@@ -596,6 +614,12 @@ export class RumbleHost {
    * readiness is taken but the request itself.
    */
   command(conn: ConnectionId, cmd: LobbyCommand): LobbyRefusal | null {
+    const refused = this.runCommand(conn, cmd);
+    if (refused === null) this.activity += 1;
+    return refused;
+  }
+
+  private runCommand(conn: ConnectionId, cmd: LobbyCommand): LobbyRefusal | null {
     const life = this.lobby;
     if (!life) return 'no-lobby';
     if (!this.slotOf.has(conn)) return 'spectator';

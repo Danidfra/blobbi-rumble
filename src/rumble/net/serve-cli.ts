@@ -11,6 +11,7 @@
  *
  * Environment: PORT (8080), HOST (0.0.0.0: reachable from the network, this
  * is its purpose), STATIC_DIR (dist), MAX_CONNECTIONS (16), TICK_HZ (60),
+ * ROOM_IDLE_MINUTES (20: a private room nobody plays or moves in closes after this, with warnings),
  * SNAPSHOT_HZ (20), MAX_ROOMS (16), and the server's identity
  * (`serverIdentity.ts`):
  *   PUBLIC_URL       the one address people open, e.g. https://rumble.example
@@ -60,7 +61,7 @@ const http = createServer(staticHandler(root, () => ({ ok: true, clients: rumble
 await new Promise<void>((done) => http.listen(port, bind, done));
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
 const clientIpHeader = process.env.CLIENT_IP_HEADER?.trim() || undefined;
-rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: env('MAX_CONNECTIONS', 64), maxRooms: env('MAX_ROOMS', 16), tickHz: env('TICK_HZ', 60), snapshotHz: env('SNAPSHOT_HZ', 20), identity, authUrls, allowedOrigins, clientIpHeader, log });
+rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: env('MAX_CONNECTIONS', 64), maxRooms: env('MAX_ROOMS', 16), roomIdleMs: env('ROOM_IDLE_MINUTES', 20) * 60_000, tickHz: env('TICK_HZ', 60), snapshotHz: env('SNAPSHOT_HZ', 20), identity, authUrls, allowedOrigins, clientIpHeader, log });
 
 log(`Blobbi Rumble on http://${bind}:${port} (game ${LANDING}, WebSocket /ws) · serving ${root}`);
 for (const [name, addrs] of Object.entries(networkInterfaces()))

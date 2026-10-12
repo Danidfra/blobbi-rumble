@@ -1,6 +1,6 @@
 /** The connection as a player sees it: connecting, playing or watching, lost (and retrying), failed, full. */
 import { describe, expect, it } from 'vitest';
-import { CONNECTION, describe as words, initialConnection, onClose, onRetry, onWelcome, statusLine, onProtocol } from './connection';
+import { CONNECTION, describe as words, initialConnection, onClose, onRetry, onWelcome, statusLine, onProtocol, idleWords } from './connection';
 
 describe('the connection', () => {
   it('connecting, then playing as the slot the server gave, or watching when all four are taken', () => {
@@ -124,8 +124,21 @@ describe('the room limits as a player hears them (security audit M2, M3)', () =>
     expect(codes.retryAt).toBe(Infinity);
     expect(words(codes, 0)?.title).toBe('Too many room codes tried');
     const open = onClose(initialConnection('x'), 4003, 'too many open games from your network', 0);
-    expect(words(open, 0)?.title).toBe('Your network already has games open');
+    expect(words(open, 0)?.title).toBe('Your network already has a game open');
     expect(words(onClose(initialConnection('x'), 4003, 'too many new rooms, wait a minute', 0), 0)?.detail).toMatch(/Too many new games/);
-    expect(words(onClose(initialConnection('x'), 4003, 'room limit reached', 0), 0)?.detail).toMatch(/as many games as it can/);
+    expect(words(onClose(initialConnection('x'), 4003, 'room limit reached', 0), 0)?.detail).toMatch(/All private rooms on this server are in use/);
+  });
+
+  it('L4.5A: a room closed for inactivity says so, offers a new room, and is not retried; the warnings read plainly', () => {
+    const closed = onClose({ ...initialConnection('x', 'A7F2'), phase: 'playing', you: 'P1', everConnected: true }, 4009, 'room closed: inactive', 0);
+    expect(closed.phase).toBe('closed');
+    expect(closed.retryAt).toBe(Infinity);
+    const w = words(closed, 0)!;
+    expect(w.title).toBe('Room A7F2 was closed');
+    expect(w.detail).toMatch(/Nobody played or moved/);
+    expect(w.actions).toContain('host');
+    expect(idleWords(120)).toMatch(/closes in 2 minutes/);
+    expect(idleWords(30)).toMatch(/closes in 30 seconds/);
+    expect(idleWords(null)).toMatch(/stays open/);
   });
 });

@@ -42,6 +42,9 @@
  *                                                     to each connection (`you`: its seat now, which can change
  *                                                     between matches)
  *     { t: 'refused', of, reason }                    L2: why a ready / start / settings was not done
+ *     { t: 'notice', kind: 'idle', closesIn }         L4.5A: this private room closes in closesIn seconds because
+ *                                                     nobody has played or moved (null: it does not any more); a
+ *                                                     room closed so closes its sockets with 4009 "room closed: inactive"
  *
  * THE LOBBY (L1) is negotiated both ways, so no client misreads a room: a
  * client that knows it says so in the socket URL (`caps=lobby`); a server
@@ -342,7 +345,13 @@ export interface RefusedMessage {
   of: LobbyCommand['t'];
   reason: LobbyRefusalReason;
 }
-export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage | LobbyMessage | RefusedMessage;
+/** L4.5A: the room is idle and closes in `closesIn` seconds (null: activity came back, it stays). */
+export interface NoticeMessage {
+  t: 'notice';
+  kind: 'idle';
+  closesIn: number | null;
+}
+export type ServerMessage = WelcomeMessage | StateMessage | PongMessage | ChallengeMessage | AuthReply | RosterMessage | LookReply | RoomsMessage | LobbyMessage | RefusedMessage | NoticeMessage;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
