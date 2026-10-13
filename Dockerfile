@@ -17,6 +17,9 @@ RUN npm run build \
  && npx vite build --ssr src/rumble/net/serve-cli.ts --outDir .serve --emptyOutDir --logLevel warn
 
 FROM node:22-alpine AS run
+# The commit this image was built from (compose passes RUMBLE_TAG): `docker inspect` shows it.
+ARG RUMBLE_REVISION=unknown
+LABEL org.opencontainers.image.title="Blobbi Rumble" org.opencontainers.image.revision="${RUMBLE_REVISION}"
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -10,7 +10,7 @@
  * page derives its WebSocket from its own origin, so https gives wss.
  *
  * Environment: PORT (8080), HOST (0.0.0.0: reachable from the network, this
- * is its purpose), STATIC_DIR (dist), MAX_CONNECTIONS (16), TICK_HZ (60),
+ * is its purpose), STATIC_DIR (dist), MAX_CONNECTIONS (64), TICK_HZ (60),
  * ROOM_IDLE_MINUTES (20: a private room nobody plays or moves in closes after this, with warnings),
  * TRUSTED_PROXIES (which peers may set CLIENT_IP_HEADER: loopback, private, addresses, IPv4 CIDRs; unset: any),
  * SNAPSHOT_HZ (20), MAX_ROOMS (16), and the server's identity
@@ -31,7 +31,8 @@
  *                    (cf-connecting-ip behind Cloudflare Tunnel), for the
  *                    per-address limits; unset: the socket's address. Only
  *                    when nothing but that proxy can reach this port.
- * A malformed setting stops the server at start, with the reason.
+ * A malformed setting stops the server at start, with the reason (L4.7B.1:
+ * the numeric ones too, `settings.ts`).
  */
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
@@ -40,16 +41,18 @@ import { loadHavokNode } from '../sim/havokNode';
 import { startRumbleServer } from './server';
 import { identityFromEnv, wellKnown } from './serverIdentity';
 import { LANDING, staticHandler } from './static';
+import { numberSettings } from './settings';
 
-const env = (k: string, d: number) => (process.env[k] === undefined ? d : Number(process.env[k]));
-const port = env('PORT', 8080);
 const bind = process.env.HOST ?? '0.0.0.0';
 const root = resolve(process.env.STATIC_DIR ?? 'dist');
 const stamp = () => new Date().toISOString().slice(11, 19);
 const log = (line: string) => console.log(`[${stamp()}] ${line}`);
 let configured: ReturnType<typeof identityFromEnv>;
+// L4.7B.1: numeric settings are checked too (a typo used to become NaN: no limit at all).
+let settings: ReturnType<typeof numberSettings>;
 try {
   configured = identityFromEnv(process.env);
+  settings = numberSettings(process.env);
 } catch (e) {
   console.error(`Blobbi Rumble: ${(e as Error).message}`);
   process.exit(1);
@@ -59,11 +62,12 @@ const { identity, authUrls, warnings } = configured;
 const havok = await loadHavokNode();
 let rumble: Awaited<ReturnType<typeof startRumbleServer>> | null = null;
 const http = createServer(staticHandler(root, () => ({ ok: true, clients: rumble?.stats.clients ?? 0, rooms: rumble?.rooms.size ?? 0, tick: rumble?.host.latest.tick ?? 0 }), { wellKnown: () => wellKnown(identity) }));
+const port = settings.PORT;
 await new Promise<void>((done) => http.listen(port, bind, done));
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
 const clientIpHeader = process.env.CLIENT_IP_HEADER?.trim() || undefined;
 const trustedProxyList = process.env.TRUSTED_PROXIES?.trim() ? process.env.TRUSTED_PROXIES.trim() : undefined;
-rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: env('MAX_CONNECTIONS', 64), maxRooms: env('MAX_ROOMS', 16), roomIdleMs: env('ROOM_IDLE_MINUTES', 20) * 60_000, tickHz: env('TICK_HZ', 60), snapshotHz: env('SNAPSHOT_HZ', 20), identity, authUrls, allowedOrigins, clientIpHeader, trustedProxies: trustedProxyList, log });
+rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: settings.MAX_CONNECTIONS, maxRooms: settings.MAX_ROOMS, roomIdleMs: settings.ROOM_IDLE_MINUTES * 60_000, tickHz: settings.TICK_HZ, snapshotHz: settings.SNAPSHOT_HZ, identity, authUrls, allowedOrigins, clientIpHeader, trustedProxies: trustedProxyList, log });
 
 log(`Blobbi Rumble on http://${bind}:${port} (game ${LANDING}, WebSocket /ws) · serving ${root}`);
 for (const [name, addrs] of Object.entries(networkInterfaces()))

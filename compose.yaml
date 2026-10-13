@@ -4,7 +4,7 @@
 # forwards https://rumble.blobbi.pet to http://localhost:8080). See HOSTING.md.
 #
 #   cp .env.example .env        # once; the values are the production ones
-#   docker compose up -d --build
+#   set RUMBLE_TAG to the commit (HOSTING.md), then: docker compose build && docker compose up -d
 #
 # The port is published on the host's LOOPBACK only (127.0.0.1): nothing on
 # the LAN or the Internet reaches the container except through the tunnel.
@@ -12,8 +12,13 @@ name: blobbi-rumble
 
 services:
   rumble:
-    build: .
-    image: blobbi-rumble:${RUMBLE_TAG:-latest}
+    build:
+      context: .
+      # Recorded in the image (org.opencontainers.image.revision): `docker inspect` says which commit runs.
+      args:
+        RUMBLE_REVISION: ${RUMBLE_TAG:?set RUMBLE_TAG in .env to the commit being deployed (see HOSTING.md)}
+    # One image per commit, never "latest": a rollback is RUMBLE_TAG=<previous commit> and `up -d --no-build`.
+    image: blobbi-rumble:${RUMBLE_TAG:?set RUMBLE_TAG in .env to the commit being deployed (see HOSTING.md)}
     restart: unless-stopped
     init: true
     ports:
@@ -27,12 +32,20 @@ services:
       # Behind Cloudflare Tunnel every connection comes from the tunnel: take the player's address from this header
       # (only safe because the port is reachable from the host's loopback alone, i.e. only through the tunnel).
       CLIENT_IP_HEADER: ${CLIENT_IP_HEADER:-}
+      # L4.7B.1: the one peer whose CLIENT_IP_HEADER is believed: this project's network gateway (below), which is
+      # where every connection to the published 127.0.0.1 port (cloudflared's) arrives from. Not "private": that
+      # would also believe any other private address that ever reached the container.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.31.250.1}
       SERVER_NAME: ${SERVER_NAME:-Blobbi Rumble}
       OPERATOR_PUBKEY: ${OPERATOR_PUBKEY:-}
       MAX_CONNECTIONS: ${MAX_CONNECTIONS:-64}
       MAX_ROOMS: ${MAX_ROOMS:-16}
+      # A private room nobody plays or moves in closes after this many minutes (warned first); 0: never.
+      ROOM_IDLE_MINUTES: ${ROOM_IDLE_MINUTES:-20}
       TICK_HZ: 60
       SNAPSHOT_HZ: 20
+    networks:
+      - rumble
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -61,3 +74,15 @@ services:
         max-size: "10m"
         max-file: "3"
     stop_grace_period: 15s
+
+# L4.7B.1: this project's own bridge network, with a fixed address range, so its gateway (where the host's
+# connections, cloudflared's included, arrive from) is a known single address that TRUSTED_PROXIES names. If the
+# range is taken on the host, `up` fails with "Pool overlaps": pick another (RUMBLE_SUBNET / RUMBLE_GATEWAY, and
+# TRUSTED_PROXIES = the new gateway). A second copy of the project (a release candidate on another port) needs its
+# own range too (HOSTING.md).
+networks:
+  rumble:
+    ipam:
+      config:
+        - subnet: ${RUMBLE_SUBNET:-172.31.250.0/29}
+          gateway: ${RUMBLE_GATEWAY:-172.31.250.1}

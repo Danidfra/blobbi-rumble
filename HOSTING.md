@@ -31,8 +31,9 @@ on the Vite server too.
 Environment: `PORT`, `HOST`, `STATIC_DIR` (dist), `MAX_CONNECTIONS` (64,
 all rooms), `MAX_ROOMS` (16, the open room included), `TICK_HZ` (60),
 `SNAPSHOT_HZ` (20), and the server identity: `PUBLIC_URL`, `SERVER_NAME`,
-`OPERATOR_PUBKEY`. A malformed identity setting stops the server at start
-with the reason.
+`OPERATOR_PUBKEY`. A malformed setting (identity or, since L4.7B.1, a
+number: `MAX_CONNECTIONS=6O` used to mean no limit at all) stops the server
+at start with the reason.
 
 ## Rooms
 
@@ -187,7 +188,8 @@ bundle, runs them as `node` with production dependencies) and a
 
 ```
 cp .env.example .env    # the production values for rumble.blobbi.pet; adjust for another host
-docker compose up -d --build
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env   # required: the image is tagged by commit
+docker compose build && docker compose up -d
 curl -s http://127.0.0.1:8080/healthz
 docker compose exec rumble node scripts/smoke.mjs http://127.0.0.1:8080 "$(grep ^PUBLIC_URL= .env | cut -d= -f2)"
 ```
@@ -201,11 +203,13 @@ Environment (`npm run serve` and the container read the same):
 | `SERVER_NAME`, `OPERATOR_PUBKEY` | unset | the server's claims (name; npub or hex) |
 | `ALLOWED_ORIGINS` | unset (any) | browser origins that may connect, comma-separated; a browser from another origin is refused (4005); non-browser clients (no Origin) are let in. Usually equal to `PUBLIC_URL`. |
 | `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (connections, rooms, room codes) and the refusal lines of the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. L4.5B: the header must hold one real IPv4 / IPv6 address (else the socket's counts). |
-| `TRUSTED_PROXIES` | unset (any peer) | L4.5B: which peers may set `CLIENT_IP_HEADER`: `loopback`, `private` (any private network: the Docker bridge, a LAN proxy), exact addresses, IPv4 CIDRs. A header from any other peer is ignored (its own address counts). Unset, the header is believed from anyone, and the server warns at start. Behind compose's loopback-published port, `private` is right. |
+| `TRUSTED_PROXIES` | unset (any peer); compose: `172.31.250.1` | L4.5B: which peers may set `CLIENT_IP_HEADER`: `loopback`, `private` (any private network), exact addresses, IPv4 CIDRs. A header from any other peer is ignored (its own address counts). Unset, the header is believed from anyone, and the server warns at start. **Behind compose (L4.7B.1): exactly the project network's gateway** (`RUMBLE_GATEWAY`): every connection to the published `127.0.0.1` port, cloudflared's included, reaches the container from that one address. Not `private`, which would also believe any other private address that ever reached the container. |
 | `ROOM_IDLE_MINUTES` | 20 | a private room nobody plays or moves in closes after this (warned 2 min and 30 s before); 0 turns it off |
-| `RUMBLE_HOST_PORT`, `RUMBLE_TAG` | 8080, latest | compose only: the host port, published on **127.0.0.1** only, and the image tag to run (rollbacks) |
-| `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once |
-| `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
+| `RUMBLE_HOST_PORT` | 8080 | compose only: the host port, published on **127.0.0.1** only |
+| `RUMBLE_TAG` | **required** | compose only (L4.7B.1): the image to build and run, `blobbi-rumble:<tag>`: the short commit being deployed (no `latest` fallback; the image also records it, `docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' blobbi-rumble:<tag>`). A rollback is the previous tag with `up -d --no-build`. |
+| `RUMBLE_SUBNET`, `RUMBLE_GATEWAY` | 172.31.250.0/29, 172.31.250.1 | compose only (L4.7B.1): this project's own Docker network, a fixed range so its gateway is known. If the range is taken on the host, `up` stops with "Pool overlaps": choose another and set `TRUSTED_PROXIES` to the new gateway (all three together). |
+| `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once (1–10000, 2–1000; L4.7B.1: anything not a whole number in range stops the server) |
+| `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate (compose fixes them at 60 and 20) |
 | `STATIC_DIR` | dist | the built page |
 
 **Without Docker** (a VPS with Node 22):
@@ -239,8 +243,9 @@ browser ──https / wss──► Cloudflare ──tunnel──► cloudflared 
 
 What the repository provides for it, and what it does not touch:
 
-- `compose.yaml`: project **`blobbi-rumble`** (its own default network; no
-  volumes, no host mounts), one service `rumble`, published on
+- `compose.yaml`: project **`blobbi-rumble`** (its own network `rumble`,
+  172.31.250.0/29, gateway 172.31.250.1; no volumes, no host mounts), one
+  service `rumble`, image `blobbi-rumble:<RUMBLE_TAG>`, published on
   **`127.0.0.1:8080` only** (the LAN and the Internet cannot reach it; only
   processes on the host, i.e. cloudflared). Restart `unless-stopped`; health
   check on `/healthz`; limits 2 CPUs, 1 GB, 256 processes; runs as the
@@ -250,7 +255,10 @@ What the repository provides for it, and what it does not touch:
   any other): different project, network and port.
 - `.env.example`: the production settings (`PUBLIC_URL` and
   `ALLOWED_ORIGINS` = `https://rumble.blobbi.pet`, `CLIENT_IP_HEADER` =
-  `cf-connecting-ip`). No secrets exist: the server holds no keys. `.env`
+  `cf-connecting-ip`, `TRUSTED_PROXIES` = the gateway, `ROOM_IDLE_MINUTES`,
+  the network range; `RUMBLE_TAG` empty, to be set). Every variable in it
+  reaches the container or compose (a test checks that compose passes every
+  setting the server reads). No secrets exist: the server holds no keys. `.env`
   is ignored by git and excluded from the Docker build context, as are
   `*.pem` / `*.key`.
 - `scripts/smoke.mjs` (also in the image): checks the page, `/healthz`, the
@@ -283,19 +291,27 @@ Mac would be arm64 unless built with `--platform linux/amd64`).
 
 ```
 cd ~/blobbi-rumble
-cp .env.example .env                 # review it: PUBLIC_URL, ALLOWED_ORIGINS, CLIENT_IP_HEADER, RUMBLE_HOST_PORT=8080
-sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env   # tag the image by commit (rollbacks)
+cp .env.example .env                 # review it: PUBLIC_URL, ALLOWED_ORIGINS, CLIENT_IP_HEADER, TRUSTED_PROXIES, RUMBLE_HOST_PORT=8080
+git status --short                   # empty: the image is tagged by this commit, so build exactly it
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env   # tag the image by commit (required; rollbacks)
+docker network inspect $(docker network ls -q) -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'   # 172.31.250.0/29 must be free
 docker compose config | grep -A3 ports   # must show host_ip: 127.0.0.1, published "8080"
+docker compose config | grep -E 'TRUSTED_PROXIES|subnet|gateway'   # 172.31.250.1, 172.31.250.0/29, 172.31.250.1
 docker compose build
 docker compose up -d
 ```
+
+A copy of the working tree (rsync) has no `.git`: set `RUMBLE_TAG` by hand
+to the commit it was copied from (`git rev-parse --short HEAD` on the Mac).
+The bundle is better: the tag is then the commit, provably.
 
 **3. Verify** (on the server):
 
 ```
 docker compose ps                                     # rumble: Up … (healthy) after ~20 s
 ss -ltnp | grep ':8080'                               # 127.0.0.1:8080 only, never 0.0.0.0:8080 or [::]:8080
-curl -s http://127.0.0.1:8080/healthz                 # {"ok":true,"clients":…,"rooms":1,"tick":…}
+curl -s http://127.0.0.1:8080/healthz                 # {"ok":true,"clients":…,"rooms":2,"tick":…}
+docker compose logs rumble | grep -E 'believed only from|WARNING'   # "believed only from 172.31.250.1"; no WARNING
 docker compose exec rumble node scripts/smoke.mjs http://127.0.0.1:8080 https://rumble.blobbi.pet
 docker compose exec rumble node scripts/smoke.mjs https://rumble.blobbi.pet      # the whole path, through Cloudflare
 ```
@@ -312,24 +328,69 @@ accepted address). Opening the game through `http://127.0.0.1:8080` on the
 server itself is refused by `ALLOWED_ORIGINS` (4005) and its proofs would
 name the wrong address: test through the public hostname.
 
-**Logs, restarts, updates, rollback:**
+**Logs and restarts:**
 
 ```
 docker compose logs -f --tail=200 rumble    # connections, rooms, refusals, a 30 s summary; never keys or messages
 docker compose restart rumble               # matches in progress end; pages reconnect by themselves
-docker compose stop / docker compose up -d  # only this project's container and network
-# update: bring the new code (step 1), then
-sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$(git rev-parse --short HEAD)/" .env
-docker compose build && docker compose up -d && docker compose ps
-# rollback: point RUMBLE_TAG at the previous commit's image (still on the host) and restart, no build
-docker image ls blobbi-rumble
-sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=<previous>/" .env && docker compose up -d
+docker compose stop / docker compose up -d --no-build   # only this project's container and network
 ```
 
-Old images can be removed one by one (`docker image rm blobbi-rumble:<tag>`);
-never `docker system prune` on a host with other services. Rooms live in
-memory: a restart or an update closes every room and match (players'
-pages reconnect to the open room; private room codes are gone).
+**Updates (L4.7B.1), keeping the previous version runnable:**
+
+```
+cd ~/blobbi-rumble
+docker compose images rumble                          # the tag running now: note it (PREV)
+cp .env .env.bak-$(date +%Y%m%d-%H%M)                 # the settings as they are
+git pull ~/blobbi-rumble.bundle master && git status --short   # the new code (step 1); clean tree
+NEW=$(git rev-parse --short HEAD)
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=$NEW/" .env
+docker compose build                                  # a NEW image blobbi-rumble:$NEW; PREV's image is untouched
+docker compose up -d --no-build && docker compose ps  # seconds of downtime: the container is replaced
+docker compose exec rumble node scripts/smoke.mjs https://rumble.blobbi.pet
+```
+
+Between `docker compose build` and `up` (recommended for the first L4.7
+deployment), the new image can be tried beside the live one,
+as a second project on another port and its own network range (nothing of
+the live one changes; cloudflared is not involved, so this checks the
+container, not the tunnel):
+
+```
+RUMBLE_TAG=$NEW RUMBLE_HOST_PORT=8081 RUMBLE_SUBNET=172.31.250.8/29 RUMBLE_GATEWAY=172.31.250.9 TRUSTED_PROXIES=172.31.250.9 \
+  docker compose -p blobbi-rumble-rc up -d --no-build
+docker compose -p blobbi-rumble-rc ps                 # (healthy)
+docker compose -p blobbi-rumble-rc exec rumble node scripts/smoke.mjs http://127.0.0.1:8080 https://rumble.blobbi.pet
+docker compose -p blobbi-rumble-rc down               # removes only that project's container and network
+```
+
+**Rollback**: back to the previous image, which is still on the host, with
+no build (a build here would make an image of the *new* code under the old
+tag; `--no-build` refuses instead if the image is gone):
+
+```
+docker image ls blobbi-rumble                          # PREV must be listed
+sed -i "s/^RUMBLE_TAG=.*/RUMBLE_TAG=<PREV>/" .env      # or restore the .env.bak-… copy
+docker compose up -d --no-build && docker compose ps
+docker compose exec rumble node scripts/smoke.mjs https://rumble.blobbi.pet
+```
+
+The first update from a deployment made before L4.7B.1 (image tagged
+`latest`, project on its default network): keep the running image under a
+name first, `docker tag blobbi-rumble:latest blobbi-rumble:pre-l47`, so
+`RUMBLE_TAG=pre-l47` is the rollback. Rolling back to it with this
+compose.yaml puts the old image on the new network and passes it
+`TRUSTED_PROXIES`, which it understands (L4.5B+); an image older than
+L4.5B ignores it (a warning, not a failure). Nothing else needs to match:
+there is no stored data (rooms live in memory) and the page and the server
+come from the same image, so they never disagree; the protocol is version 1
+before and after (L4.4A's press counts are optional both ways).
+
+Keep two or three previous images and remove older ones one by one
+(`docker image rm blobbi-rumble:<tag>`); never `docker system prune` on a
+host with other services. Rooms live in memory: a restart, an update or a
+rollback closes every room and match (players' pages reconnect to the open
+room; private room codes are gone).
 
 **Cloudflare Tunnel and long-lived WebSockets** (free plan; nothing paid
 is needed):
@@ -343,7 +404,13 @@ is needed):
   (1, 2, 4, 8 s) as a new connection and may get another slot.
 - Every connection reaches the server from cloudflared, so the server
   takes the player's address from `CF-Connecting-IP` (`CLIENT_IP_HEADER`);
-  trusting it is safe only because the port is loopback-only.
+  trusting it is safe only because the port is loopback-only. Inside the
+  container every such connection comes from the network's gateway
+  (172.31.250.1), the only peer `TRUSTED_PROXIES` believes. After the first
+  real player: `docker compose logs rumble | grep -E 'conn [0-9]+ from net|ignoring cf-connecting-ip'`
+  must show `from net <tag>` (the header is read) and never `ignoring
+  cf-connecting-ip from …` (that would mean connections arrive from another
+  address, e.g. rootless Docker: put that address in `TRUSTED_PROXIES`).
 - The tunnel's origin is `http://localhost:8080`. The container listens on
   IPv4 loopback only; if cloudflared ever logs refused connections to
   `[::1]:8080`, change the origin to `http://127.0.0.1:8080` in the
@@ -413,8 +480,9 @@ For a public server, before it takes players (compose / `npm run serve`):
 2. **`ALLOWED_ORIGINS`** set to that origin: other sites' pages cannot open the game's socket.
 3. **The port reachable only through the proxy**: compose publishes `127.0.0.1:8080` only (never `8080:8080`); a VPS without Docker: listen on `127.0.0.1` or firewall the port.
 4. **`CLIENT_IP_HEADER`** (`cf-connecting-ip` behind Cloudflare Tunnel): without it every player is the tunnel, one network for everyone (8 connections, 2 rooms, for the whole server). With it, it is only as safe as point 3.
-5. **`TRUSTED_PROXIES`** (recommended, defence in depth): `private` behind compose (the tunnel reaches the container from the Docker bridge); the start-up log then says the header is believed only from it, and warns when it is unset. Check the first player's log line: `conn N from net <tag>` (not `net local`) means the header is read.
-6. **Limits**: `MAX_CONNECTIONS` (64), `MAX_ROOMS` (16), `ROOM_IDLE_MINUTES` (20) as wanted; the per-network caps are in Server limits.
+5. **`TRUSTED_PROXIES`** (defence in depth): behind compose, exactly the project network's gateway, `172.31.250.1` (L4.7B.1; compose passes it, `.env.example` sets it; not `private`). The start-up log then says the header is believed only from it, and warns when it is unset. Check the first player's log line: `conn N from net <tag>` (not `net local`) means the header is read, and no `ignoring cf-connecting-ip from …`.
+6. **Limits**: `MAX_CONNECTIONS` (64), `MAX_ROOMS` (16), `ROOM_IDLE_MINUTES` (20) as wanted (all passed by compose; a malformed number stops the server); the per-network caps are in Server limits.
+11. **`RUMBLE_TAG`** set to the commit being deployed, and the previous image still listed (`docker image ls blobbi-rumble`): the rollback.
 7. **TLS and HSTS** at the proxy (Cloudflare); the page sets its own CSP and frame protection.
 8. **No secrets**: the server needs none (no private key, no token); `.env` holds settings only.
 9. **Logs**: bounded by compose; connection lines carry a salted network tag, never an address beside a Nostr key; refusals (which carry no identity) name the address, at most 20 lines per 10 s.
