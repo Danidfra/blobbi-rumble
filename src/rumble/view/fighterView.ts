@@ -26,6 +26,29 @@ import type { FighterSnapshot } from '../sim/snapshot';
 
 export { combatOf };
 
+/**
+ * L4.4B: the meshes of a Blobbi that cast its shadow: everything but the
+ * face (eyes, lids, brows, mouth). The face lies on the body's surface,
+ * inside the silhouette the sun sees: drawn into the shadow map it changed
+ * no pixel of any view measured (standing, mid-jump, from the shadow's
+ * side, close up), and it was 21 of a Blobbi's 30 shadow draws. Body,
+ * arms, feet, ears, horns, tufts, antennae and tail all still cast.
+ */
+export function shadowCastersOf(blobbi: Pick<Blobbi3D, 'meshes' | 'face'>): Blobbi3D['meshes'] {
+  const face = new Set(blobbi.face.root.getChildMeshes());
+  return blobbi.meshes.filter((m) => !face.has(m));
+}
+
+/**
+ * L4.4B: the skin's width in texels (its height is half). The kit's
+ * default, 2048, is 8 MB of pixels per Blobbi on the GPU (and as much again
+ * in its canvas), repainted whole on every blush. At 1024 a close-up on a
+ * 3× phone and on a desktop was indistinguishable from 2048 (blush edges,
+ * freckles, stripes), a quarter of the memory and of the repaint; at 512
+ * the blush's edge and freckles visibly softened.
+ */
+export const SKIN_WIDTH = 1024;
+
 /** What the kit's animator is told: the body's truth, unless the combat state says the body is not walking anywhere. */
 export function presentationInput(c: CombatState, truth: AnimatorInput): AnimatorInput {
   if (c.held) return { ...truth, speed: 0, grounded: true, verticalVelocity: 0, jumped: false, landed: false };
@@ -71,8 +94,12 @@ export class FighterView {
     /** A V3 seed, or a V3 identity input (a seed with stated colours): what the kit builds the one adult body from. */
     look: BlobbiIdentityInput | string,
     private readonly shadows?: ShadowGenerator,
+    /** L4.4B: the skin's width in texels (`SKIN_WIDTH`); its height is half. */
+    skinWidth = SKIN_WIDTH,
   ) {
-    this.blobbi = createBlobbi3D(look, scene, { name: label, shadows });
+    // L4.4B: the shadow casters are chosen here (`shadowCastersOf`), not by the kit (which would add every mesh, face included).
+    this.blobbi = createBlobbi3D(look, scene, { name: label, textureWidth: skinWidth });
+    if (shadows) for (const m of shadowCastersOf(this.blobbi)) shadows.addShadowCaster(m, false);
     this.blobbi.setExpression('happy', 0);
     // Debug rings: the grab and punch reach, on the ground under the fighter. Hidden unless debug is on.
     const ring = (name: string, radius: number, hex: string) => {
