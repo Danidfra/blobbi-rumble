@@ -22,6 +22,7 @@ import { powerCap } from '../pickups/power';
 import { COMBAT } from '../tuning';
 import { isHolding, isPunching, isRecovering, isStunned, isTumbling, type CombatState } from '../combat/combat';
 import { combatOf } from '../sim/read';
+import { cacheFaceSurface, warmBlink } from './surfaceCache';
 import type { FighterSnapshot } from '../sim/snapshot';
 
 export { combatOf };
@@ -99,6 +100,9 @@ export class FighterView {
   ) {
     // L4.4B: the shadow casters are chosen here (`shadowCastersOf`), not by the kit (which would add every mesh, face included).
     this.blobbi = createBlobbi3D(look, scene, { name: label, textureWidth: skinWidth });
+    // L4.6-FIX1: the face's skin lookups, cached (a blink or a new expression no longer stalls the page), warmed for the blink.
+    cacheFaceSurface(this.blobbi.surface);
+    warmBlink(this.blobbi);
     if (shadows) for (const m of shadowCastersOf(this.blobbi)) shadows.addShadowCaster(m, false);
     this.blobbi.setExpression('happy', 0);
     // Debug rings: the grab and punch reach, on the ground under the fighter. Hidden unless debug is on.

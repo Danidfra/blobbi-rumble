@@ -177,7 +177,7 @@ export interface ShellView {
   /** M8C-B: the invite inbox of the connected identity (null: no identity connected in this page); `offer`: ask about automatic checking now (M8C-B.2). */
   inbox: { state: InboxState; cards: InviteCard[]; setup: SetupState | null; offer: boolean } | null;
   /** M12: the graphics choice, and what the renderer does with it now (read live, outside the panel's rebuild). */
-  graphics: { choice: QualityChoice; info: () => { level: string; ratio: number; width: number; height: number; fps: number; shadowMap: number } | null };
+  graphics: { choice: QualityChoice; info: () => { level: string; ratio: number; width: number; height: number; fps: number; worstMs: number; shadowMap: number } | null };
   /** M12: ask to turn the phone (portrait on a touch phone). */
   rotate: boolean;
   /** M12.1: the FPS counter is on. */
@@ -1353,7 +1353,8 @@ export function createShell(actions: ShellActions) {
       if (v.fps && performance.now() - fpsAt > 500) {
         fpsAt = performance.now();
         const g = v.graphics.info();
-        fpsBox.textContent = g ? `${g.fps.toFixed(0)} fps` : '… fps';
+        // L4.6-FIX1: the real frame rate and the worst frame of the last second (a stutter shows, an average would hide it).
+        fpsBox.textContent = g ? `${g.fps.toFixed(0)} fps · worst ${g.worstMs.toFixed(0)} ms` : '… fps';
       }
       const healthy = c.phase === 'playing' || c.phase === 'watching';
       const s = v.identity;

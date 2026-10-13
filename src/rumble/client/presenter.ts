@@ -28,6 +28,7 @@ import { createSocialView, type SocialArena } from '../view/socialView';
 import { spaceById } from '../arena/lobbySpace';
 import { Camera } from '@babylonjs/core/Cameras/camera';
 import { ShadowGenerator } from '@babylonjs/core/Lights/Shadows/shadowGenerator';
+import { FrameMeter } from './frameMeter';
 import { easeYaw } from '../control/look';
 import { FrameBudget, profileFor, ratioFor, type DeviceHints, type QualityChoice, type RenderProfile } from '../view/quality';
 import { PhysicsDebug } from '../view/debug';
@@ -108,6 +109,8 @@ export class RumblePresenter {
   /** M12: the graphics choice, the profile it resolved to, and (auto) the frame budget that adapts the pixel ratio. */
   private quality: { choice: QualityChoice; profile: RenderProfile; ratio: number; budget: FrameBudget | null } | null = null;
   private lastFrameAt = 0;
+  /** L4.6-FIX1: the real delivery of drawn frames (the FPS counter; Babylon's own figure is not measured outside its loop). */
+  private readonly frames = new FrameMeter();
   private readonly verticalFov: number;
   /** M12.1: touch play turns the camera round the fight by dragging (its target), eased; desktop keeps Babylon's own mouse orbit. */
   private touchLayout = false;
@@ -293,7 +296,8 @@ export class RumblePresenter {
       ratio: this.quality?.ratio ?? 1 / this.engine.getHardwareScalingLevel(),
       width: this.engine.getRenderWidth(),
       height: this.engine.getRenderHeight(),
-      fps: this.engine.getFps(),
+      // L4.6-FIX1: measured here (Babylon's getFps() stays at 60 when the page draws from its own loop).
+      ...((m) => ({ fps: m.fps ?? 0, worstMs: m.worstMs }))(this.frames.read(performance.now())),
       shadowMap: this.env.shadows.mapSize,
       /** L4: what the scene holds now (a check that swapping spaces leaks nothing). */
       meshes: this.scene.meshes.length,
@@ -512,6 +516,7 @@ export class RumblePresenter {
       if (next !== null) this.applyRatio(next);
     }
     this.lastFrameAt = nowMs;
+    this.frames.frame(nowMs);
     this.syncArena(s);
     const prev = this.previous;
     const fresh = prev === null || s.tick !== prev.tick;
