@@ -25,6 +25,14 @@
  * no answer keeps `known` (a Reconnect button); a refusal keeps `known`
  * and turns `auto` off; another pubkey is `changed`, shown, never
  * switched to without a click. A click or Disconnect during it wins.
+ *
+ * WHICH SERVER (L4.5B): a proof tells the game server who the player is,
+ * so it only goes by itself to a server this page trusts (`trusted`: built
+ * in, this site's own, or an exact address approved before). On any other
+ * server, a remembered login is NOT restored (`held`: no extension is even
+ * asked), and Connect first asks (`confirm`): only a yes (`confirmServer`)
+ * approves that exact address (`approve`) and goes on as a click would.
+ * No proof ever leaves without the player having said yes to that server.
  */
 import type { ClientMessage, AuthReply } from '../net/protocol';
 import { authTemplate } from '../../social/auth';
@@ -36,7 +44,7 @@ export const RESTORE = Object.freeze({
   waitMs: 15_000,
 });
 
-export type IdentityPhase = 'guest' | 'known' | 'restoring' | 'changed' | 'asking' | 'proving' | 'verified' | 'error';
+export type IdentityPhase = 'guest' | 'known' | 'restoring' | 'changed' | 'confirm' | 'asking' | 'proving' | 'verified' | 'error';
 
 export interface IdentityState {
   phase: IdentityPhase;
@@ -50,6 +58,8 @@ export interface IdentityState {
   auto: boolean;
   /** M9B.1: the pubkey the extension holds now, when it is not the remembered one (phase 'changed'). */
   other: string | null;
+  /** L4.5B: a remembered login was not restored by itself because this server is not trusted with it (yet). */
+  held: boolean;
 }
 
 export interface IdentityDeps {
@@ -68,6 +78,10 @@ export interface IdentityDeps {
   diag?: (stage: string, detail?: string) => void;
   /** M12: what to say when no signer is found, if not the desktop words (a phone has no extension store of the same kind). */
   unavailable?: string;
+  /** L4.5B: whether this game server may be sent a proof without asking (absent: yes, as before). */
+  trusted?: () => boolean;
+  /** L4.5B: the player said yes to proving to this server: remember that exact address. */
+  approve?: () => void;
 }
 
 const SIGNER_WORDS: Record<string, string> = {
@@ -99,8 +113,16 @@ export class IdentitySession {
   constructor(private readonly d: IdentityDeps) {
     this.key = d.storageKey ?? 'rumble:nostr-login';
     const saved = loadLogin(d.storage, this.key);
-    this.state = { phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, serverSupports: null, auto: saved?.auto ?? false, other: null };
+    this.state = { phase: saved ? 'known' : 'guest', pubkey: saved?.pubkey ?? null, method: saved?.method ?? null, error: null, serverSupports: null, auto: saved?.auto ?? false, other: null, held: false };
   }
+
+  /** L4.5B: whether proofs may go to this server without asking. */
+  private get trusted(): boolean {
+    return this.d.trusted ? this.d.trusted() : true;
+  }
+
+  /** L4.5B: where Connect was clicked from, to go back to on "Stay a guest". */
+  private beforeConfirm: 'guest' | 'known' = 'guest';
 
   /** The signer, while this connection's identity is proven (for sending invites; null otherwise). */
   get provenSigner(): NostrSigner | null {
@@ -136,6 +158,15 @@ export class IdentitySession {
   /** The user clicked Connect (or Continue as …): ask the signer, then prove it to the server. */
   async connect(): Promise<void> {
     if (this.state.phase === 'asking') return;
+    // L4.5B: a server not trusted with the identity: ask first (nothing is asked of the extension, nothing is sent).
+    if (!this.trusted) {
+      if (this.state.phase === 'confirm') return;
+      ++this.gen;
+      this.beforeConfirm = this.state.pubkey && loadLogin(this.d.storage, this.key) ? 'known' : 'guest';
+      this.d.diag?.('connect:confirm', 'this server is not trusted with the identity yet: asking first');
+      this.set({ phase: 'confirm', error: null, other: null });
+      return;
+    }
     const g = ++this.gen;
     this.pending = null;
     this.d.diag?.('connect:start', `gen ${g}, from ${this.state.phase}`);
@@ -154,6 +185,31 @@ export class IdentitySession {
       this.d.diag?.('connect:failed', code);
       this.set({ phase: 'error', error: this.words(code) });
     }
+  }
+
+  /**
+   * L4.5B: the player said yes to this server (the `confirm` question, or
+   * "Connect" on a held login): remember the exact address, then connect as
+   * a click on a trusted server does.
+   */
+  async confirmServer(): Promise<void> {
+    if (this.state.phase !== 'confirm' && !(this.state.phase === 'known' && this.state.held)) return;
+    this.d.approve?.();
+    this.set({ held: false });
+    if (!this.trusted) {
+      // The approval could not be kept (storage refused it): nothing goes without it.
+      this.set({ phase: 'error', error: 'This browser could not remember the server; your identity was not shared.' });
+      return;
+    }
+    this.d.diag?.('connect:approved', 'the player approved this server');
+    await this.connect();
+  }
+
+  /** L4.5B: "Stay a guest": nothing was shared; back to where Connect was clicked. */
+  cancelConfirm() {
+    if (this.state.phase !== 'confirm') return;
+    ++this.gen;
+    this.set({ phase: this.beforeConfirm, error: null });
   }
 
   /** A signer that answered: remember it (with reconnection on), and prove it to the server. The one path to a connected identity. */
@@ -177,6 +233,12 @@ export class IdentitySession {
     const saved = loadLogin(this.d.storage, this.key);
     this.d.diag?.('restore:start', !saved ? 'no remembered login' : !saved.auto ? 'remembered, auto off' : this.state.phase !== 'known' ? `phase ${this.state.phase}, not known` : `remembered ${saved.pubkey.slice(0, 8)}…, auto on`);
     if (!saved?.auto || this.state.phase !== 'known') return;
+    // L4.5B: another server than the trusted ones: the login is kept for them, and not used here without a yes.
+    if (!this.trusted) {
+      this.d.diag?.('restore:held', 'this server is not trusted with the identity: not restored by itself');
+      this.set({ held: true });
+      return;
+    }
     const g = ++this.gen;
     this.set({ phase: 'restoring', error: null });
     let signer: NostrSigner | null = null;
@@ -240,6 +302,12 @@ export class IdentitySession {
   /** Ask the server for a challenge (now, or as soon as the game connection is up). */
   private prove() {
     if (!this.signer) return;
+    // L4.5B: the last guard: no challenge, so no proof, to a server the player has not said yes to.
+    if (!this.trusted) {
+      this.d.diag?.('prove:refused', 'this server is not trusted with the identity');
+      this.set({ phase: 'confirm', error: null });
+      return;
+    }
     if (this.connected && this.state.serverSupports === false) {
       this.set({ phase: 'error', error: 'This game server does not support Nostr identity.' });
       return;

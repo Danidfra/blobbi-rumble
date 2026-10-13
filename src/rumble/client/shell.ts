@@ -78,6 +78,9 @@ export interface ShellActions {
   refreshRooms(): void;
   joinGame(code: string): void;
   connectNostr(): void;
+  /** L4.5B: yes / no to sharing the Nostr identity with this (not built-in) server. */
+  confirmNostrServer(): void;
+  cancelNostrServer(): void;
   disconnectNostr(): void;
   /** M9B.1: the extension holds another identity than the remembered one; connect it only on this click, or keep the hint without reconnecting. */
   connectOtherNostr(): void;
@@ -448,6 +451,8 @@ export function createShell(actions: ShellActions) {
       joinRoom: (code) => a.joinGame(code),
       toMenu: () => a.toMenu(),
       connectNostr: () => a.connectNostr(),
+      confirmNostrServer: () => a.confirmNostrServer(),
+      cancelNostrServer: () => a.cancelNostrServer(),
       releaseKeys: () => a.releaseKeys(),
     },
     { preview: lookPreview, mascots: ['P2', 'P1', 'P3'].map(defaultLook) },
@@ -1177,6 +1182,15 @@ export function createShell(actions: ShellActions) {
   };
 
   /** L4.2: the profile sheet: who you are (a name, never a key), your Blobbi, your invitations. */
+  /** L4.5B: the question before a first proof to a server that is not built in: what is shared, with whom, and the two answers. */
+  const serverConsent = (serverUrl: string, name: string | null): Node[] => {
+    const host = hostOf(serverUrl);
+    const box = el('div', 'rs-warn');
+    box.append(el('b', undefined, `Connect to ${host} with Nostr?`), el('br'), document.createTextNode(`This game runs on ${host}, not on this site’s own server. Connecting shows whoever runs it your public Nostr identity${name ? ` (${name})` : ''}. Your private key stays in your extension, and you can keep playing as a guest.`));
+    const acts = el('div', 'rs-row');
+    acts.append(button(`Connect to ${clip(host, 24)}`, a.confirmNostrServer, 'rs-btn go'), button('Stay a guest', a.cancelNostrServer));
+    return [box, acts];
+  };
   const profileNodes = (v: ShellView): Node[] => {
     const s = v.identity;
     const own = s.pubkey ? v.profile(s.pubkey) : undefined;
@@ -1209,6 +1223,14 @@ export function createShell(actions: ShellActions) {
       const acts = el('div', 'rs-row');
       acts.append(button(`Connect as ${clip(displayName(o, s.other), 16)}`, a.connectOtherNostr, 'rs-btn go'), button('Not now', a.dismissOtherNostr), button('Forget', a.disconnectNostr));
       out.push(acts, el('div', 'rs-sub', 'Nothing switched by itself: your saved Blobbi and invites belong to the remembered identity.'));
+      return out;
+    } else if (s.phase === 'confirm') {
+      // L4.5B: not a built-in server: say what connecting shares, and ask.
+      out.push(...serverConsent(v.servers.current.url, s.pubkey ? clip(displayName(own, s.pubkey), 16) : null));
+      return out;
+    } else if (s.phase === 'known' && s.pubkey && s.held) {
+      row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button(`Use it on this server`, a.confirmNostrServer, 'rs-btn go'), button('Forget', a.disconnectNostr));
+      out.push(row, el('div', 'rs-sub', `You’re a guest here. This game runs on ${hostOf(v.servers.current.url)}, a server you haven’t used Nostr with: connecting would show it your public Nostr identity.`));
       return out;
     } else if (s.phase === 'known' && s.pubkey) {
       row.append(avatar(s.pubkey, own?.picture, 22), el('span', undefined, clip(displayName(own, s.pubkey), 20)), button('Reconnect Nostr', a.connectNostr, 'rs-btn go'), button('Forget', a.disconnectNostr));
@@ -1417,7 +1439,7 @@ export function createShell(actions: ShellActions) {
         }
       }
       // L4.1: the menu (a plain visit: nothing connected until the player chooses); the profile and settings sheets may sit over it.
-      const who = { name: verified ? clip(displayName(own, s.pubkey!), 24) : null, busy: s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring', pubkey: verified ? s.pubkey : null, ...(verified && own?.picture ? { picture: own.picture } : {}) };
+      const who = { name: verified ? clip(displayName(own, s.pubkey!), 24) : null, busy: s.phase === 'asking' || s.phase === 'proving' || s.phase === 'restoring', pubkey: verified ? s.pubkey : null, ...(verified && own?.picture ? { picture: own.picture } : {}), ...(s.phase === 'confirm' ? { confirm: hostOf(v.servers.current.url) } : {}) };
       const showMenu = v.menu && !helpOpen;
       plazaUi.showMenu(showMenu ? { who } : null);
       corner.style.display = v.menu ? 'none' : '';
@@ -1453,4 +1475,13 @@ export function createShell(actions: ShellActions) {
       }
     },
   };
+}
+
+/** L4.5B: a server address as a person reads it: its host (and port). */
+function hostOf(wsUrl: string): string {
+  try {
+    return new URL(wsUrl).host;
+  } catch {
+    return 'this server';
+  }
 }

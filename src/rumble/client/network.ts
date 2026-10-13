@@ -38,7 +38,7 @@
  */
 import { canAct, type CombatState } from '../combat/combat';
 import { Keyboard, NET_BINDINGS, PlayerInput, type MoveIntent } from '../control/input';
-import { addCommunityServer, chooseServer, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
+import { addCommunityServer, approveIdentityServer, chooseServer, identityTrusted, loadIdentityApprovals, loadChosenServer, loadCommunityServers, officialServers, ownServers, removeCommunityServer, saveChosenServer, saveCommunityServers, type GameServer } from './servers';
 import { PROTOCOL, type RoomListing } from '../net/protocol';
 import { onProtocol } from './connection';
 import { CONNECTION, idleConnection, initialConnection, onClose, onRetry, onSeat, onWelcome, statusLine } from './connection';
@@ -147,6 +147,9 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const picked = chooseServer(knownServers(), loadChosenServer(prefs), location.search, rules);
   const server: GameServer = picked.server;
   const url = server.url;
+  /** L4.5B: the exact addresses the player let see their Nostr identity (this page keeps a yes even if storage refuses it). */
+  let identityApprovals = loadIdentityApprovals(prefs, rules);
+  const identityTrustedHere = () => identityTrusted(server, identityApprovals);
   /** M10B: the server's public rooms, as last listed, and when. */
   let rooms: RoomListing[] | null = null;
   let roomsAskedAt = 0;
@@ -419,7 +422,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const profiles = () => {
     if (!directory) {
       relayPool = new BoundedPool(new SimplePool({ enablePing: false, enableReconnect: false }));
-      directory = new ProfileDirectory(relayPool, { lookupRelays: devRelays ?? LOOKUP_RELAYS, storage, storageKey: 'rumble:profiles:v1' });
+      // L4.5B: other players' profiles only from the fixed lookup relays; only the player's own may be looked for on its own relays.
+      directory = new ProfileDirectory(relayPool, { lookupRelays: devRelays ?? LOOKUP_RELAYS, storage, storageKey: 'rumble:profiles:v1', ownRelaysFor: (pk) => pk === identity.state.pubkey });
     }
     return directory;
   };
@@ -447,6 +451,12 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   const identity = new IdentitySession({
     url,
     send,
+    // L4.5B: proofs go by themselves only to a trusted server; any other asks first, and a yes is kept for this exact address.
+    trusted: identityTrustedHere,
+    approve: () => {
+      const kept = approveIdentityServer(prefs, url, rules);
+      identityApprovals = kept.includes(url) ? kept : [...identityApprovals, url];
+    },
     // M12: a phone rarely has a NIP-07 signer; say so plainly, and that the game needs none.
     ...(matchMedia('(pointer: coarse)').matches ? { unavailable: MOBILE_NO_SIGNER } : {}),
     findSigner: async () => {
@@ -551,6 +561,8 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
     refreshRooms: () => askRooms(true),
     joinGame: (id) => switchTo({ kind: 'join', id }),
     connectNostr: () => void identity.connect(),
+    confirmNostrServer: () => void identity.confirmServer(),
+    cancelNostrServer: () => identity.cancelConfirm(),
     disconnectNostr: () => identity.disconnect(),
     dismissIdentityError: () => identity.dismissError(),
     // M9B.1: the extension holds another identity than the remembered one: only a click connects it.
@@ -648,7 +660,10 @@ export async function startNetwork(canvas: HTMLCanvasElement, hud: HTMLElement) 
   // Idle relays close; nothing stays open for long.
   setInterval(() => relayPool?.sweep(), 10_000);
   // M9B.1: a remembered, explicit connection is restored by itself (the same signer, the same pubkey, or nothing); once per page.
-  void identity.restore();
+  void identity.restore().then(() => {
+    // L4.5B: said once, quietly: the login was kept off this server (the profile sheet has the choice).
+    if (identity.state.held) shell.toast(`Playing as a guest on ${new URL(url).host}: your Nostr login is only used there if you choose to (Your profile).`, 8000);
+  });
   /** What a slot is called: a proven person's name, or null (its slot label). */
   const nameFor = (slot: string): string | null => {
     const r = roster?.[slot];

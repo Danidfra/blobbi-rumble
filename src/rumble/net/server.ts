@@ -73,7 +73,7 @@ import type { RumbleHost, ConnectionId } from './host';
 import type { LookDeclaration } from './looks';
 import { parseCaps, parseClientMessage, type AuthReply, type ChallengeMessage, type ClientMessage, type LobbyCommand, type RefusedMessage, type NoticeMessage, type RoomInfo, type ServerInfo, PROTOCOL, type RoomsMessage, UPDATE_REQUIRED } from './protocol';
 import { RoomManager, type Room } from './rooms';
-import { addressGroup, isLoopback } from './address';
+import { addressGroup, isIpAddress, isLoopback, trustedProxies } from './address';
 import { roomShareUrl, type ServerIdentity } from './serverIdentity';
 
 export const SERVER_LIMITS = Object.freeze({
@@ -102,6 +102,12 @@ export const SERVER_LIMITS = Object.freeze({
    */
   maxPerAddress: 8,
   maxPerAddressPerRoom: 4,
+  /**
+   * L4.5B: once only `reservedConnections` places are left, a network may hold at most `maxPerAddressWhenBusy`: a few
+   * networks cannot take the whole server (a household of four still fits).
+   */
+  maxPerAddressWhenBusy: 4,
+  reservedConnections: 16,
   /** A connection that sent nothing at all for this long, ms, is closed (a real page pings every second, standing still or not). */
   idleMs: 120_000,
   /** M1: a connection's look is applied at most this often, ms; a newer one meanwhile waits (the latest wins, none is lost). */
@@ -186,6 +192,14 @@ export interface ServerConfig {
    * header is missing or malformed.
    */
   clientIpHeader?: string;
+  /**
+   * L4.5B: which peers may set `clientIpHeader` (TRUSTED_PROXIES: `loopback`, `private`, addresses, IPv4 CIDRs; see
+   * `address.ts` `trustedProxies`). Absent: any peer, as before (safe only when nothing but the proxy reaches this port);
+   * a header from any other peer is ignored and the socket's address counts.
+   */
+  trustedProxies?: string;
+  maxPerAddressWhenBusy?: number;
+  reservedConnections?: number;
   /** Per-address limits (SERVER_LIMITS defaults): connections server-wide and in one room. */
   maxPerAddress?: number;
   maxPerAddressPerRoom?: number;
@@ -339,12 +353,23 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
    * L4.5A: the address, and whether it came from the proxy's header. Only an address the socket itself has is the
    * operator's loopback (never limited): a header saying 127.0.0.1 is just another address, limited like any other.
    */
+  const proxies = config.trustedProxies === undefined ? null : trustedProxies(config.trustedProxies);
+  if (proxies?.invalid.length) log(`WARNING TRUSTED_PROXIES entries not understood (they trust nothing): ${proxies.invalid.join(', ')}`);
+  let warnedUntrustedHeader = false;
   const peerAddress = (req: IncomingMessage): { address: string; fromHeader: boolean } => {
     const socket = req.socket.remoteAddress ?? '?';
     if (!ipHeader) return { address: socket, fromHeader: false };
     const raw = req.headers[ipHeader];
+    // L4.5B: the header is believed only from a trusted proxy (when TRUSTED_PROXIES says which), and only as one real IP address.
+    if (proxies && !proxies.trusts(socket)) {
+      if (raw !== undefined && !warnedUntrustedHeader) {
+        warnedUntrustedHeader = true;
+        log(`ignoring ${ipHeader} from ${socket}: not a trusted proxy (TRUSTED_PROXIES); its own address counts`);
+      }
+      return { address: socket, fromHeader: false };
+    }
     const first = (Array.isArray(raw) ? raw[0] : raw)?.split(',')[0]?.trim() ?? '';
-    return /^[0-9a-fA-F:.]{2,45}$/.test(first) ? { address: first, fromHeader: true } : { address: socket, fromHeader: false };
+    return first.length <= 45 && isIpAddress(first) ? { address: first, fromHeader: true } : { address: socket, fromHeader: false };
   };
   /** L4.5A: refusals are logged, but never more than `refusalLogsPer10s` lines in ten seconds (a burst is summed up). */
   let refusalWindow = 0;
@@ -456,6 +481,8 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
   };
 
   const maxPerAddress = config.maxPerAddress ?? SERVER_LIMITS.maxPerAddress;
+  const maxPerAddressWhenBusy = config.maxPerAddressWhenBusy ?? SERVER_LIMITS.maxPerAddressWhenBusy;
+  const reservedConnections = config.reservedConnections ?? SERVER_LIMITS.reservedConnections;
   const maxPerAddressPerRoom = config.maxPerAddressPerRoom ?? SERVER_LIMITS.maxPerAddressPerRoom;
   /** Connections held by an address group, server-wide or in one room. */
   const heldBy = (group: string, room?: Room) => {
@@ -492,10 +519,12 @@ export function startRumbleServer(config: ServerConfig): Promise<RumbleServer> {
       ws.close(1013, 'server full');
       return;
     }
-    if (group !== null && heldBy(group) >= maxPerAddress) {
+    // L4.5B: near full, a network holds fewer, so the last places go to others (a household of four still fits).
+    const perAddress = maxConnections - clients.size <= reservedConnections ? Math.min(maxPerAddress, maxPerAddressWhenBusy) : maxPerAddress;
+    if (group !== null && heldBy(group) >= perAddress) {
       // H1: one address cannot hold the server; refused before it takes a room or any state.
       stats.refused += 1;
-      logRefusal(`refused ${from}: ${maxPerAddress} connections from this address already`);
+      logRefusal(`refused ${from}: ${perAddress} connections from this address already`);
       ws.close(1013, 'network full: too many connections from your network');
       return;
     }

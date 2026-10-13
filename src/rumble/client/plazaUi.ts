@@ -28,6 +28,8 @@ export interface PlazaUiActions {
   joinRoom(code: string): void;
   toMenu(): void;
   connectNostr(): void;
+  confirmNostrServer(): void;
+  cancelNostrServer(): void;
   /** A field took the keyboard: let go of every game key. */
   releaseKeys(): void;
 }
@@ -40,6 +42,8 @@ export interface Who {
   /** A proven identity's key and picture, for its avatar only (never shown as text). */
   pubkey?: string | null;
   picture?: string;
+  /** L4.5B: Connect was pressed on a server that is not built in: its host, while the player is asked. */
+  confirm?: string;
 }
 
 export interface MenuView {
@@ -212,6 +216,7 @@ export function createPlazaUi(a: PlazaUiActions, deps: PlazaUiDeps) {
     const who = el('div', 'who');
     if (v.who.name) who.append(avatar(v.who.pubkey ?? null, v.who.picture, 22), document.createTextNode('Playing as '), el('b', undefined, v.who.name));
     else if (v.who.busy) who.append(document.createTextNode('Connecting Nostr…'));
+    else if (v.who.confirm) who.append(document.createTextNode(`This game runs on ${v.who.confirm}. Connecting shows it your public Nostr identity.`), button('Connect', a.confirmNostrServer, 'rs-btn soft'), button('Stay a guest', a.cancelNostrServer, 'rs-btn soft'));
     else who.append(document.createTextNode('Playing as a guest'), button('Connect Nostr', a.connectNostr, 'rs-btn soft'));
     const box = el('div', 'box');
     box.append(hero, acts, who);

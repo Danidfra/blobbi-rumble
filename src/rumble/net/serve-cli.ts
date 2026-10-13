@@ -12,6 +12,7 @@
  * Environment: PORT (8080), HOST (0.0.0.0: reachable from the network, this
  * is its purpose), STATIC_DIR (dist), MAX_CONNECTIONS (16), TICK_HZ (60),
  * ROOM_IDLE_MINUTES (20: a private room nobody plays or moves in closes after this, with warnings),
+ * TRUSTED_PROXIES (which peers may set CLIENT_IP_HEADER: loopback, private, addresses, IPv4 CIDRs; unset: any),
  * SNAPSHOT_HZ (20), MAX_ROOMS (16), and the server's identity
  * (`serverIdentity.ts`):
  *   PUBLIC_URL       the one address people open, e.g. https://rumble.example
@@ -61,7 +62,8 @@ const http = createServer(staticHandler(root, () => ({ ok: true, clients: rumble
 await new Promise<void>((done) => http.listen(port, bind, done));
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
 const clientIpHeader = process.env.CLIENT_IP_HEADER?.trim() || undefined;
-rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: env('MAX_CONNECTIONS', 64), maxRooms: env('MAX_ROOMS', 16), roomIdleMs: env('ROOM_IDLE_MINUTES', 20) * 60_000, tickHz: env('TICK_HZ', 60), snapshotHz: env('SNAPSHOT_HZ', 20), identity, authUrls, allowedOrigins, clientIpHeader, log });
+const trustedProxyList = process.env.TRUSTED_PROXIES?.trim() ? process.env.TRUSTED_PROXIES.trim() : undefined;
+rumble = await startRumbleServer({ havok, http, path: '/ws', maxConnections: env('MAX_CONNECTIONS', 64), maxRooms: env('MAX_ROOMS', 16), roomIdleMs: env('ROOM_IDLE_MINUTES', 20) * 60_000, tickHz: env('TICK_HZ', 60), snapshotHz: env('SNAPSHOT_HZ', 20), identity, authUrls, allowedOrigins, clientIpHeader, trustedProxies: trustedProxyList, log });
 
 log(`Blobbi Rumble on http://${bind}:${port} (game ${LANDING}, WebSocket /ws) · serving ${root}`);
 for (const [name, addrs] of Object.entries(networkInterfaces()))
@@ -71,7 +73,8 @@ if (identity.public) log(`  public address ${identity.public.origin} · share li
 else log(`  no PUBLIC_URL: identity proofs are bound to the Host each connection uses, share links to the address each player opened (set PUBLIC_URL when hosting publicly)`);
 log(`  identity: ${identity.name ?? 'no SERVER_NAME'} · operator ${identity.operator ? `${identity.operator.slice(0, 12)}… (claimed)` : 'none'} · /.well-known/rumble.json`);
 log(allowedOrigins.length ? `  browser origins allowed: ${allowedOrigins.join(', ')}` : `  any browser origin may connect (set ALLOWED_ORIGINS when hosting publicly)`);
-if (clientIpHeader) log(`  player addresses from the ${clientIpHeader} header (trusted proxy in front)`);
+if (clientIpHeader) log(`  player addresses from the ${clientIpHeader} header (trusted proxy in front)${trustedProxyList ? `, believed only from ${trustedProxyList}` : ''}`);
+if (clientIpHeader && !trustedProxyList) log(`  WARNING ${clientIpHeader} is believed from any peer: only safe if nothing but the proxy can reach this port (set TRUSTED_PROXIES, e.g. "private" behind Docker)`);
 for (const w of warnings) log(`  WARNING ${w}`);
 
 const every = 30;

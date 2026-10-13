@@ -197,10 +197,12 @@ Environment (`npm run serve` and the container read the same):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PORT`, `HOST` | 8080, 0.0.0.0 | where to listen |
-| `PUBLIC_URL` | unset | the one address people open (`https://rumble.example`); identity proofs must name it, share links and the well-known document use it. Set it when hosting publicly. |
+| `PUBLIC_URL` | unset | the one address people open (`https://rumble.example`); identity proofs must name it, share links and the well-known document use it. **Required when hosting publicly** (L4.5B): without it a proof only has to name the `Host` the connection claimed, so a server a player was lured to could relay this server's challenge and replay the player's answer here. |
 | `SERVER_NAME`, `OPERATOR_PUBKEY` | unset | the server's claims (name; npub or hex) |
 | `ALLOWED_ORIGINS` | unset (any) | browser origins that may connect, comma-separated; a browser from another origin is refused (4005); non-browser clients (no Origin) are let in. Usually equal to `PUBLIC_URL`. |
-| `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (connections, rooms, room codes) and the refusal lines of the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. |
+| `CLIENT_IP_HEADER` | unset | a header a trusted proxy sets to the player's address (`cf-connecting-ip` behind Cloudflare Tunnel), used for the per-address limits (connections, rooms, room codes) and the refusal lines of the logs. **Only** when nothing but that proxy can reach the port: anyone else could forge it. Unset: the socket's address. L4.5B: the header must hold one real IPv4 / IPv6 address (else the socket's counts). |
+| `TRUSTED_PROXIES` | unset (any peer) | L4.5B: which peers may set `CLIENT_IP_HEADER`: `loopback`, `private` (any private network: the Docker bridge, a LAN proxy), exact addresses, IPv4 CIDRs. A header from any other peer is ignored (its own address counts). Unset, the header is believed from anyone, and the server warns at start. Behind compose's loopback-published port, `private` is right. |
+| `ROOM_IDLE_MINUTES` | 20 | a private room nobody plays or moves in closes after this (warned 2 min and 30 s before); 0 turns it off |
 | `RUMBLE_HOST_PORT`, `RUMBLE_TAG` | 8080, latest | compose only: the host port, published on **127.0.0.1** only, and the image tag to run (rollbacks) |
 | `MAX_CONNECTIONS`, `MAX_ROOMS` | 64, 16 | caps, all rooms together / rooms at once |
 | `TICK_HZ`, `SNAPSHOT_HZ` | 60, 20 | the simulation and the state rate |
@@ -395,10 +397,28 @@ operating system their share.
   rooms and connections, strict parsing of every message, a CSP on pages,
   no address beside an identity in the logs (see Server limits).
 - The server holds no keys: identity stays in the player's extension.
+- L4.5B: identity proofs only go by themselves to trusted servers (above);
+  `CLIENT_IP_HEADER` can be restricted to `TRUSTED_PROXIES`; near full (16
+  places left of 64), one network may hold 4 connections instead of 8.
 - Not provided: session recovery across a disconnect (a reconnect is a new
   connection with whatever slot is free), server-side proof that a
   declared Blobbi exists (the form binds to the owner's address; the rest
   is cosmetic), access control for rooms (a code is an address).
+
+## Deployment security checklist (L4.5B)
+
+For a public server, before it takes players (compose / `npm run serve`):
+
+1. **`PUBLIC_URL`** set to the one public address (`https://rumble.blobbi.pet`): required (identity proofs are bound to it).
+2. **`ALLOWED_ORIGINS`** set to that origin: other sites' pages cannot open the game's socket.
+3. **The port reachable only through the proxy**: compose publishes `127.0.0.1:8080` only (never `8080:8080`); a VPS without Docker: listen on `127.0.0.1` or firewall the port.
+4. **`CLIENT_IP_HEADER`** (`cf-connecting-ip` behind Cloudflare Tunnel): without it every player is the tunnel, one network for everyone (8 connections, 2 rooms, for the whole server). With it, it is only as safe as point 3.
+5. **`TRUSTED_PROXIES`** (recommended, defence in depth): `private` behind compose (the tunnel reaches the container from the Docker bridge); the start-up log then says the header is believed only from it, and warns when it is unset. Check the first player's log line: `conn N from net <tag>` (not `net local`) means the header is read.
+6. **Limits**: `MAX_CONNECTIONS` (64), `MAX_ROOMS` (16), `ROOM_IDLE_MINUTES` (20) as wanted; the per-network caps are in Server limits.
+7. **TLS and HSTS** at the proxy (Cloudflare); the page sets its own CSP and frame protection.
+8. **No secrets**: the server needs none (no private key, no token); `.env` holds settings only.
+9. **Logs**: bounded by compose; connection lines carry a salted network tag, never an address beside a Nostr key; refusals (which carry no identity) name the address, at most 20 lines per 10 s.
+10. **Official server list in the build** (`VITE_RUMBLE_SERVERS` / `OFFICIAL_HOSTS`): the servers the page signs in to without asking. Keep it to servers you run.
 
 ## Graphics problems and diagnostics
 
@@ -496,6 +516,28 @@ challenge and the server's address (NIP-42 style), and the page sends it
 server verifies it. The server then tells everyone in the room "P2 is
 pubkey X"; each browser looks up names and pictures on a few relays. The
 server never connects to a relay.
+
+**Which server may see your identity (L4.5B).** A proof tells a game
+server who the player is (their public key, and through it their
+profile): never a secret, but not something to give to any server a link
+points at. The page proves by itself (a remembered login on a visit, a
+reconnect) only to the servers it is built to trust: the official ones
+(`VITE_RUMBLE_SERVERS` / the built-in list), this site's own server, the
+dev server, and exact addresses the player said yes to before. On any
+other server (a `?server=` link, a community server) a remembered login is
+not used (the extension is not even asked; the player is told once, and
+the profile sheet offers "Use it on this server"), and Connect first says
+what connecting shares and with whom, with "Stay a guest". A yes is kept
+in this browser for that exact WebSocket URL only (another path, port or
+host is another server; at most 16 are kept).
+
+**Other players' profiles.** Names come from a few fixed lookup relays;
+only the player's own profile may also be looked for on the player's own
+relays: another player's relay list is never followed (it would let anyone
+send every page that sees them to a relay they run). Other people's
+pictures (any `https` URL their profile names, loaded with no referrer)
+appear only where the player opens them: the invite people list, an
+invitation card. In rooms and on the plaza, players are names (text) only.
 
 ## Private invites (M8C-A: sending; M8C-C: choosing whom)
 

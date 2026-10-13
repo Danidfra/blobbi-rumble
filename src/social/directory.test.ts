@@ -66,6 +66,23 @@ describe('the profile directory', () => {
     expect(net.asked[1].relays).toEqual(own.slice(0, 3));
   });
 
+  it('L4.5B: someone else’s own relays are never contacted when the game allows only the player’s own (no relay a stranger names)', async () => {
+    const me = person();
+    const stranger = person();
+    const theirs = ['wss://tracker.example/'];
+    const mine = ['wss://mine.example/'];
+    const net = network({ [LOOKUP[0]]: [relayList(stranger.sk, theirs), relayList(me.sk, mine)], [theirs[0]]: [profile(stranger.sk, { name: 'Bait' })], [mine[0]]: [profile(me.sk, { name: 'Me' })] });
+    const d = new ProfileDirectory(new BoundedPool(net.pool), { lookupRelays: LOOKUP, ownRelaysFor: (pk) => pk === me.pk });
+    d.ask([stranger.pk, me.pk]);
+    await d.flush();
+    const contacted = net.asked.flatMap((q) => q.relays);
+    expect(contacted).not.toContain(theirs[0]);
+    expect(contacted).toContain(mine[0]);
+    // The stranger without a profile on the lookup relays is simply nameless (a short npub), the player's own is found.
+    expect(d.get(stranger.pk)).toBeNull();
+    expect(d.get(me.pk)!.name).toBe('Me');
+  });
+
   it('newest wins; events by someone not asked about, or of another kind, are ignored', async () => {
     const a = person();
     const stranger = person();

@@ -4,7 +4,11 @@
  *   ask(pubkeys)  queue lookups; within a short window they go out as one
  *                 batch: kinds 0 and 10002 for all of them from the lookup
  *                 relays; anyone still without a profile is asked on (at
- *                 most three of) their own write relays.
+ *                 most three of) their own write relays, if `ownRelaysFor`
+ *                 allows it for that pubkey (L4.5B: a game asks only for
+ *                 its player's own: someone else's relay list is theirs to
+ *                 write, so following it would let any player send every
+ *                 page that sees them to a relay they run).
  *   get(pubkey)   what is known now: a Profile, null (looked up, none
  *                 found) or undefined (not looked up yet). Never waits.
  *   onChange      called with a pubkey when what is known about it changed.
@@ -29,6 +33,8 @@ export interface DirectoryOptions {
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
   storageKey?: string;
   batchMs?: number;
+  /** L4.5B: whether a pubkey's own write relays may be asked (default: every pubkey's, as before). */
+  ownRelaysFor?: (pubkey: string) => boolean;
   freshMs?: number;
   missingMs?: number;
   maxAgeMs?: number;
@@ -60,6 +66,7 @@ export class ProfileDirectory {
       storage: opts.storage ?? null,
       storageKey: opts.storageKey ?? 'nostr:profiles:v1',
       batchMs: opts.batchMs ?? 60,
+      ownRelaysFor: opts.ownRelaysFor ?? (() => true),
       freshMs: opts.freshMs ?? 30 * 60_000,
       missingMs: opts.missingMs ?? 60_000,
       maxAgeMs: opts.maxAgeMs ?? 24 * 60 * 60_000,
@@ -139,7 +146,7 @@ export class ProfileDirectory {
       // Not on the lookup relays: try (a few of) their own.
       const byRelays = new Map<string, string[]>();
       for (const pk of batch) {
-        if (found.has(pk)) continue;
+        if (found.has(pk) || !this.o.ownRelaysFor(pk)) continue;
         const relays = writeRelays(lists.get(pk), RELAY_LIMITS.perUser);
         if (!relays.length) continue;
         const key = relays.join(' ');

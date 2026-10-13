@@ -219,3 +219,53 @@ export function chooseServer(known: readonly GameServer[], chosenId: string | nu
   const server = chosen ?? known.find((s) => s.source === 'official') ?? known.find((s) => s.source === 'page' || s.source === 'dev') ?? known[0];
   return linkError ? { server, linkError } : { server };
 }
+
+/**
+ * L4.5B: WHICH SERVERS MAY SEE THE PLAYER'S NOSTR IDENTITY. Proving an
+ * identity tells a server who you are (your public key and, through it,
+ * your profile): never a secret, but not something to hand to any server a
+ * link points at. Proofs go by themselves (a remembered login on a visit,
+ * a reconnect) only to the servers this page is built to trust (official,
+ * this site's own, the dev server) and to exact addresses the player said
+ * yes to, once; any other server first asks. Trust is one exact canonical
+ * WebSocket URL, kept in this browser: no wildcard, no host or domain, no
+ * port or path left out; another address is another server.
+ */
+export const IDENTITY_TRUST = Object.freeze({ storageKey: 'rumble:identity-servers:v1', max: 16 });
+
+/** The exact addresses the player allowed identity proofs to, from storage, re-checked (storage is not trusted). */
+export function loadIdentityApprovals(store: Store | null, rules: EndpointRules): string[] {
+  try {
+    const raw = JSON.parse(store?.getItem(IDENTITY_TRUST.storageKey) ?? '[]') as unknown;
+    if (!Array.isArray(raw)) return [];
+    const out: string[] = [];
+    for (const item of raw.slice(-IDENTITY_TRUST.max)) {
+      const ep = parseEndpoint(item, rules);
+      // Only an address already in its canonical form: anything a hand (or a script) edited into another spelling is dropped.
+      if ('url' in ep && ep.url === item && !out.includes(ep.url)) out.push(ep.url);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Remember that the player allowed identity proofs to this exact address (bounded: the oldest approval goes first). */
+export function approveIdentityServer(store: Store | null, url: string, rules: EndpointRules): string[] {
+  const ep = parseEndpoint(url, rules);
+  const now = loadIdentityApprovals(store, rules).filter((u) => 'url' in ep && u !== ep.url);
+  if (!('url' in ep)) return now;
+  const next = [...now, ep.url].slice(-IDENTITY_TRUST.max);
+  try {
+    store?.setItem(IDENTITY_TRUST.storageKey, JSON.stringify(next));
+  } catch {
+    // Storage blocked: the approval holds for this page only (the caller keeps it).
+  }
+  return next;
+}
+
+/** Whether this server may be sent identity proofs without asking: built in, this site's own, or an exact address the player approved. */
+export function identityTrusted(server: Pick<GameServer, 'url' | 'source'>, approved: readonly string[]): boolean {
+  if (server.source === 'official' || server.source === 'page' || server.source === 'dev') return true;
+  return approved.includes(server.url);
+}
