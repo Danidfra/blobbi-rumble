@@ -1,7 +1,61 @@
-# blobbi-3d
+# Blobbi Rumble
+
+**Blobbi Rumble** is a 3D party brawler (matches of up to four players): Blobbis punch, grab, throw and knock each other off
+floating arenas. A Node server runs the authoritative match and browsers connect over a WebSocket. This repository
+(`blobbi-3d`) holds both the game and the playground of the procedural 3D Blobbi.
+
+## Blobbi Rumble and Nostr
+
+A Nostr account is optional; guests play without one. With a NIP-07 browser extension:
+
+- **Identity.** The player proves their pubkey to the game server with a signed challenge. Their profile (name,
+  picture) is read from relays ([spec §13](docs/BLOBBI_RUMBLE_SPEC.md)).
+- **Their own Blobbi fights.** The account's Blobbis (kind 31124, from [`@blobbi-kit/core`](https://github.com/Danidfra/blobbi-kit))
+  are read from relays. The chosen one is drawn by [`@blobbi-kit/3d`](https://www.npmjs.com/package/@blobbi-kit/3d)
+  from its Nostr address, so it is the same Blobbi as in the other Blobbi apps, and other players see it too.
+- **Private invites.** Room invites are NIP-17 direct messages (NIP-44 encrypted, NIP-59 gift-wrapped), sent to the
+  recipient's inbox relays (kind 10050), with NIP-42 relay authentication where a relay asks for it. Any NIP-17
+  client can read them.
+
+The game server holds no private key and signs nothing. The kinds it uses are NIPs, except the Blobbi
+ecosystem's own 31124 and 11125.
+
+## Status
+
+**There is no public Rumble server.** `rumble.blobbi.pet` is configured in this repository (`.env.example`,
+`compose.yaml`, [HOSTING.md](HOSTING.md)) but not running; anyone can run a server themselves with `npm run serve`.
+Evidence for every row: [spec §19, Validation status](docs/BLOBBI_RUMBLE_SPEC.md#19-validation-status).
+
+- **Validated over public networks**: tested by people with real Nostr extensions, public relays or a remote player
+  across the Internet, never on a public Rumble server.
+- **Tested locally**: played and checked by hand on one machine or a LAN.
+- **Implemented**: in the code and covered by automated tests; no manual validation yet.
+- **Planned**: not implemented.
+
+| Feature | Status |
+|---|---|
+| Network play with a remote player across the Internet (M7D) | Validated over public networks |
+| Nostr login with a real NIP-07 extension; profile read from relays (M8A) | Validated over public networks |
+| NIP-17 invites: sending (read in an independent client, Anagram), receiving, inbox setup with NIP-42 AUTH, automatic checking, choosing whom to invite, with two real identities (M8C) | Validated over public networks |
+| The player's own Blobbis read from relays and chosen as the fighter (M9A) | Validated over public networks |
+| Local 4-player match, authoritative server, prediction and smoothing (M1–M7C) | Tested locally |
+| LAN play across machines, rooms and private rooms (M7D, M8B) | Tested locally |
+| Every fighter's Blobbi seen by the other players (M9C–M9F) | Tested locally (two browsers) |
+| Adult fighter forms (M9B) | Tested locally in part; animation checks open |
+| Nostr session restoration (M9B.1) | Implemented; a real run found two bugs, fixed, awaiting a new run |
+| Online servers, public room listings, Docker hosting (M10, L4.7B.1) | Implemented; never deployed |
+| Lobby and the public Blobbi Plaza, new arenas, gameplay polish, phones and tablets, security hardening (L1–L4, M11, M11.1, M12, M12.1) | Implemented; awaiting manual and real-device validation |
+| A first official public server | Planned |
+| NIP-46 remote signers, sats or LNbits rewards, World Travel with other Blobbi apps | Planned; not started |
+
+## License
+
+MIT. See [LICENSE](LICENSE). The bundled Babylon.js (`@babylonjs/core`) is Apache-2.0.
+
+## The 3D playground
 
 The playground for the procedural 3D Blobbi. The renderer itself is
-[`@blobbi-kit/3d`](../blobbi-kit/packages/blobbi-3d), a package of blobbi-kit;
+[`@blobbi-kit/3d`](https://github.com/Danidfra/blobbi-kit/tree/main/packages/blobbi-3d), a package of blobbi-kit;
 this repository consumes it and holds only what is not the renderer: a scene,
 a stand-in character controller, presets, and the panel.
 
