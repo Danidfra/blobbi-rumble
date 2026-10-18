@@ -2,6 +2,7 @@
   "name": "blobbi-3d",
   "private": true,
   "version": "0.0.1",
+  "license": "MIT",
   "type": "module",
   "description": "A procedural 3D Blobbi: the same seed-derived identity as the 2D procedural Blobbi, rendered as a reusable Babylon.js game character.",
   "scripts": {
